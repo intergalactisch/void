@@ -1,0 +1,69 @@
+version: 2
+
+# Weekly version-update PRs across the three ecosystems Void depends on.
+# Security updates are handled separately (and always-on) by Dependabot itself
+# regardless of this config.
+#
+# Groupings keep PR noise low — a typical week is one PR per ecosystem instead
+# of one per package. Limits cap the total open PRs so the inbox can't blow up
+# during a week with many releases.
+
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+      include: scope
+    groups:
+      svelte:
+        patterns:
+          - "@sveltejs/*"
+          - "svelte"
+          - "svelte-*"
+      tauri-js:
+        patterns:
+          - "@tauri-apps/*"
+      prosemirror:
+        patterns:
+          - "prosemirror-*"
+      testing:
+        patterns:
+          - "@vitest/*"
+          - "vitest"
+          - "happy-dom"
+          - "@testing-library/*"
+          - "@playwright/*"
+      tailwind:
+        patterns:
+          - "@tailwindcss/*"
+          - "tailwindcss"
+          - "autoprefixer"
+          - "postcss"
+
+  - package-ecosystem: cargo
+    directory: "/src-tauri"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore(deps)"
+      include: scope
+    groups:
+      tauri-rust:
+        patterns:
+          - "tauri"
+          - "tauri-*"
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: "chore(ci)"
+      include: scope
