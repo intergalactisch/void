@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions / Discussion
+    url: https://github.com/intergalactisch/void/discussions
+    about: Have a question or want to discuss an idea before filing? Start a discussion.
+  - name: Report a security issue privately
+    url: https://github.com/intergalactisch/void/security/advisories/new
+    about: For anything sensitive, file a private advisory instead of a public issue.

@@ -1,0 +1,1 @@
+export { VoidLineageStorageAdapter } from './VoidLineageStorageAdapter';

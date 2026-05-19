@@ -1,0 +1,414 @@
+use crate::error::VoidError;
+use serde::{Deserialize, Deserializer, Serialize};
+use std::collections::HashMap;
+
+/// Expand ~ to home directory in a path string.
+/// Used when loading settings from disk where the stored path may contain ~.
+fn expand_tilde(path: &str) -> String {
+    if path.starts_with("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return format!("{}{}", home.display(), &path[1..]);
+        }
+    }
+    path.to_string()
+}
+
+/// Application settings
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Settings {
+    pub notes_path: String,
+    pub theme: Theme,
+    pub auto_save: bool,
+    pub auto_save_delay: u32,
+    pub ai_provider: Option<AiProvider>,
+    #[serde(default = "default_cli_provider")]
+    pub cli_provider: CliProvider,
+    #[serde(default = "default_ai_reasoning_effort")]
+    pub ai_reasoning_effort: AiReasoningEffort,
+    #[serde(default = "default_font_size")]
+    pub font_size: u32,
+    #[serde(default = "default_line_height")]
+    pub line_height: f64,
+    #[serde(default = "default_content_width")]
+    pub content_width: u32,
+    #[serde(default = "default_task_default_view")]
+    pub task_default_view: TaskDefaultView,
+    #[serde(default)]
+    pub keymap_overrides: HashMap<String, String>,
+    #[serde(default = "default_density")]
+    pub density: Density,
+    #[serde(default = "default_capture_shortcut")]
+    pub capture_shortcut: String,
+    #[serde(default = "default_capture_target")]
+    pub capture_target_default: CaptureTarget,
+}
+
+fn default_font_size() -> u32 {
+    16
+}
+fn default_line_height() -> f64 {
+    1.6
+}
+fn default_content_width() -> u32 {
+    720
+}
+fn default_task_default_view() -> TaskDefaultView {
+    TaskDefaultView::All
+}
+fn default_cli_provider() -> CliProvider {
+    CliProvider::Codex
+}
+fn default_ai_reasoning_effort() -> AiReasoningEffort {
+    AiReasoningEffort::Medium
+}
+fn default_density() -> Density {
+    Density::Comfortable
+}
+fn default_capture_shortcut() -> String {
+    "mod+shift+enter".to_string()
+}
+fn default_capture_target() -> CaptureTarget {
+    CaptureTarget::Inbox
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    Light,
+    Dark,
+    System,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "lowercase")]
+pub enum AiProvider {
+    Claude,
+    Openai,
+    Local,
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum CliProvider {
+    Codex,
+    ClaudeCode,
+}
+
+impl<'de> Deserialize<'de> for CliProvider {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            "claude-code" | "claude" => CliProvider::ClaudeCode,
+            "codex" | "auto" => CliProvider::Codex,
+            _ => CliProvider::Codex,
+        })
+    }
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum AiReasoningEffort {
+    Minimal,
+    Low,
+    Medium,
+    High,
+    Xhigh,
+}
+
+impl<'de> Deserialize<'de> for AiReasoningEffort {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            "minimal" => AiReasoningEffort::Minimal,
+            "low" => AiReasoningEffort::Low,
+            "high" => AiReasoningEffort::High,
+            "xhigh" => AiReasoningEffort::Xhigh,
+            "medium" => AiReasoningEffort::Medium,
+            _ => AiReasoningEffort::Medium,
+        })
+    }
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum Density {
+    Compact,
+    Comfortable,
+    Spacious,
+}
+
+impl<'de> Deserialize<'de> for Density {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            "compact" => Density::Compact,
+            "spacious" => Density::Spacious,
+            "comfortable" => Density::Comfortable,
+            _ => Density::Comfortable,
+        })
+    }
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum CaptureTarget {
+    Inbox,
+    Daily,
+}
+
+impl<'de> Deserialize<'de> for CaptureTarget {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            "daily" => CaptureTarget::Daily,
+            "inbox" => CaptureTarget::Inbox,
+            _ => CaptureTarget::Inbox,
+        })
+    }
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum TaskDefaultView {
+    All,
+    Inbox,
+    Today,
+    Upcoming,
+    Anytime,
+    Someday,
+    Notes,
+    Tags,
+    Logbook,
+}
+
+impl<'de> Deserialize<'de> for TaskDefaultView {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            "all" => TaskDefaultView::All,
+            "inbox" => TaskDefaultView::Inbox,
+            "today" => TaskDefaultView::Today,
+            "upcoming" => TaskDefaultView::Upcoming,
+            "anytime" => TaskDefaultView::Anytime,
+            "someday" => TaskDefaultView::Someday,
+            "notes" => TaskDefaultView::Notes,
+            "tags" => TaskDefaultView::Tags,
+            "logbook" => TaskDefaultView::Logbook,
+            _ => TaskDefaultView::All,
+        })
+    }
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        let notes_path = dirs::home_dir()
+            .map(|h| h.join("Documents").join("void"))
+            .unwrap_or_else(|| std::path::PathBuf::from("~/Documents/void"))
+            .to_string_lossy()
+            .to_string();
+
+        Self {
+            notes_path,
+            theme: Theme::System,
+            auto_save: true,
+            auto_save_delay: 1000,
+            ai_provider: None,
+            cli_provider: default_cli_provider(),
+            ai_reasoning_effort: default_ai_reasoning_effort(),
+            font_size: default_font_size(),
+            line_height: default_line_height(),
+            content_width: default_content_width(),
+            task_default_view: default_task_default_view(),
+            keymap_overrides: HashMap::new(),
+            density: default_density(),
+            capture_shortcut: default_capture_shortcut(),
+            capture_target_default: default_capture_target(),
+        }
+    }
+}
+
+/// Get the path to the settings file
+fn settings_path() -> Result<std::path::PathBuf, VoidError> {
+    dirs::config_dir()
+        .map(|c| c.join("void").join("settings.json"))
+        .ok_or(VoidError::SettingsPathNotFound)
+}
+
+/// Get the settings file path as a string
+#[tauri::command]
+pub async fn get_settings_path() -> Result<String, VoidError> {
+    settings_path().map(|p| p.to_string_lossy().to_string())
+}
+
+/// Load settings from disk, returning defaults if not found
+#[tauri::command]
+pub async fn get_settings() -> Result<Settings, VoidError> {
+    let path = settings_path()?;
+
+    // Use async metadata check instead of blocking path.exists()
+    if tokio::fs::metadata(&path).await.is_err() {
+        return Ok(Settings::default());
+    }
+
+    let content = tokio::fs::read_to_string(&path)
+        .await
+        .map_err(|e| VoidError::FileRead {
+            path: path.to_string_lossy().to_string(),
+            source: e,
+        })?;
+
+    let mut settings: Settings = serde_json::from_str(&content).map_err(VoidError::from)?;
+
+    // Expand ~ in notes_path to absolute path
+    settings.notes_path = expand_tilde(&settings.notes_path);
+
+    Ok(settings)
+}
+
+/// Save settings to disk
+#[tauri::command]
+pub async fn save_settings(settings: Settings) -> Result<(), VoidError> {
+    let path = settings_path()?;
+
+    // Ensure parent directory exists (use async metadata check)
+    if let Some(parent) = path.parent() {
+        if tokio::fs::metadata(parent).await.is_err() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| VoidError::DirectoryCreate {
+                    path: parent.to_string_lossy().to_string(),
+                    source: e,
+                })?;
+        }
+    }
+
+    let content = serde_json::to_string_pretty(&settings)?;
+
+    tokio::fs::write(&path, content)
+        .await
+        .map_err(|e| VoidError::FileWrite {
+            path: path.to_string_lossy().to_string(),
+            source: e,
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_expand_tilde_with_home() {
+        let path = "~/Documents/void";
+        let expanded = expand_tilde(path);
+        assert!(!expanded.starts_with("~"), "Path should not start with ~");
+        assert!(
+            expanded.ends_with("/Documents/void"),
+            "Path should end with /Documents/void"
+        );
+    }
+
+    #[test]
+    fn test_expand_tilde_absolute_unchanged() {
+        let path = "/absolute/path";
+        assert_eq!(expand_tilde(path), path);
+    }
+
+    #[test]
+    fn test_expand_tilde_relative_unchanged() {
+        let path = "relative/path";
+        assert_eq!(expand_tilde(path), path);
+    }
+
+    #[test]
+    fn test_expand_tilde_just_tilde_unchanged() {
+        // Edge case: just ~ without slash should not be expanded
+        let path = "~";
+        assert_eq!(expand_tilde(path), path);
+    }
+
+    #[test]
+    fn test_expand_tilde_nested_tilde_unchanged() {
+        // Edge case: ~ not at start should not be expanded
+        let path = "/home/user/~test";
+        assert_eq!(expand_tilde(path), path);
+    }
+
+    #[test]
+    fn test_task_default_view_defaults_to_all() {
+        let settings = Settings::default();
+        assert_eq!(settings.task_default_view, TaskDefaultView::All);
+    }
+
+    #[test]
+    fn test_ai_cli_defaults_to_codex_medium() {
+        let settings = Settings::default();
+        assert_eq!(settings.cli_provider, CliProvider::Codex);
+        assert_eq!(settings.ai_reasoning_effort, AiReasoningEffort::Medium);
+    }
+
+    #[test]
+    fn test_task_default_view_deserializes_all() {
+        let json = r#"{
+            "notesPath": "/notes",
+            "theme": "system",
+            "autoSave": true,
+            "autoSaveDelay": 1000,
+            "aiProvider": null,
+            "taskDefaultView": "all"
+        }"#;
+
+        let settings: Settings = serde_json::from_str(json).expect("settings should parse");
+        assert_eq!(settings.task_default_view, TaskDefaultView::All);
+        assert_eq!(settings.cli_provider, CliProvider::Codex);
+        assert_eq!(settings.ai_reasoning_effort, AiReasoningEffort::Medium);
+    }
+
+    #[test]
+    fn test_unknown_task_default_view_falls_back_to_all() {
+        let json = r#"{
+            "notesPath": "/notes",
+            "theme": "system",
+            "autoSave": true,
+            "autoSaveDelay": 1000,
+            "aiProvider": null,
+            "taskDefaultView": "mystery"
+        }"#;
+
+        let settings: Settings = serde_json::from_str(json).expect("settings should parse");
+        assert_eq!(settings.task_default_view, TaskDefaultView::All);
+    }
+
+    #[test]
+    fn test_legacy_auto_cli_provider_deserializes_as_codex() {
+        let json = r#"{
+            "notesPath": "/notes",
+            "theme": "system",
+            "autoSave": true,
+            "autoSaveDelay": 1000,
+            "aiProvider": null,
+            "cliProvider": "auto",
+            "aiReasoningEffort": "xhigh",
+            "taskDefaultView": "all"
+        }"#;
+
+        let settings: Settings = serde_json::from_str(json).expect("settings should parse");
+        assert_eq!(settings.cli_provider, CliProvider::Codex);
+        assert_eq!(settings.ai_reasoning_effort, AiReasoningEffort::Xhigh);
+    }
+}

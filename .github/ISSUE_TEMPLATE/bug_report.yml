@@ -1,0 +1,72 @@
+name: Bug report
+description: Report a reproducible problem in Void.
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. The more detail you can give, the faster we can fix it.
+
+  - type: dropdown
+    id: macos-version
+    attributes:
+      label: macOS version
+      description: Which version of macOS are you running?
+      options:
+        - macOS 12 (Monterey)
+        - macOS 13 (Ventura)
+        - macOS 14 (Sonoma)
+        - macOS 15+ (Sequoia or newer)
+    validations:
+      required: true
+
+  - type: input
+    id: void-version
+    attributes:
+      label: Void version
+      description: From "Void → About" or the release tag (e.g. v0.1.0).
+      placeholder: v0.1.0
+    validations:
+      required: true
+
+  - type: input
+    id: expected
+    attributes:
+      label: What did you expect?
+      description: One sentence describing the behavior you expected.
+    validations:
+      required: true
+
+  - type: input
+    id: actual
+    attributes:
+      label: What happened?
+      description: One sentence describing what actually happened.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: A minimal sequence of steps that triggers the bug.
+      placeholder: |
+        1. Open Void
+        2. Click ...
+        3. See ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / error output
+      description: Paste any relevant logs or error messages. They will be rendered as code.
+      render: shell
+
+  - type: textarea
+    id: media
+    attributes:
+      label: Screenshots or recordings
+      description: Optional. Drag and drop images or short clips here.
