@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>Void needs access to your Desktop to read and write notes you place there.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Void needs access to your Documents folder to read and write your notes.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>Void needs access to your Downloads folder to read notes you save there.</string>
+</dict>
+</plist>

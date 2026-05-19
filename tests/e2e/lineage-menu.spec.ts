@@ -1,0 +1,138 @@
+/**
+ * E2E coverage for the line-level lineage entry point.
+ */
+import { test, expect } from '@playwright/test';
+import type { Page } from '@playwright/test';
+
+async function createQuickNote(page: Page) {
+  await page
+    .getByRole('navigation', { name: 'Notes navigation' })
+    .getByRole('button', { name: 'Create new note' })
+    .click();
+
+  const editor = page.locator('.ProseMirror');
+  await expect(editor).toBeVisible();
+  await editor.click();
+  return editor;
+}
+
+async function saveAndWait(page: Page) {
+  await page.keyboard.press('Meta+s');
+  await expect(page.locator('.save-indicator.save-saved')).toBeVisible({ timeout: 5000 });
+}
+
+async function openLineHistory(page: Page, text: string) {
+  const block = page.locator('.void-block', { hasText: text }).first();
+  await expect(block).toBeVisible();
+  await block.hover();
+  await block.locator('.void-gutter-drag').click({ force: true });
+
+  const lineHistory = page.getByRole('menuitem', { name: 'Line history' });
+  await expect(lineHistory).toBeVisible();
+  await lineHistory.click();
+
+  const workspace = page.getByRole('dialog', { name: 'Lineage history workspace' });
+  await expect(workspace).toBeVisible();
+  return workspace;
+}
+
+async function deleteBlockFromMenu(page: Page, text: string) {
+  const block = page.locator('.void-block', { hasText: text }).first();
+  await expect(block).toBeVisible();
+  await block.hover();
+  await block.locator('.void-gutter-drag').click({ force: true });
+  await page.getByRole('menuitem', { name: /Delete/ }).click();
+}
+
+test.describe('Lineage menu entry', () => {
+  test('opens note history from the document toolbar', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.locator('main')).toBeVisible();
+
+    await createQuickNote(page);
+    await page.keyboard.type('Toolbar history test');
+    await saveAndWait(page);
+
+    await page.getByRole('button', { name: 'Open note history' }).click();
+    const workspace = page.getByRole('dialog', { name: 'Lineage history workspace' });
+    await expect(workspace).toBeVisible();
+    await expect(workspace.getByText('Timeline')).toBeVisible();
+  });
+
+  test('opens line history from the block menu', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.locator('main')).toBeVisible();
+
+    await createQuickNote(page);
+    await page.keyboard.type('This is a test');
+
+    const block = page.locator('.void-block', { hasText: 'This is a test' }).first();
+    await expect(block).toBeVisible();
+    await block.hover();
+
+    await expect(block.locator('.void-gutter-lineage')).toHaveCount(0);
+    await block.locator('.void-gutter-drag').click({ force: true });
+
+    const lineHistory = page.getByRole('menuitem', { name: 'Line history' });
+    await expect(lineHistory).toBeVisible();
+    await lineHistory.click();
+
+    await expect(page.getByRole('dialog', { name: 'Lineage history workspace' })).toBeVisible();
+  });
+
+  test('shows previous versions after editing and saving a line', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.locator('main')).toBeVisible();
+
+    const initial = 'Hoe gaat het daar?';
+    const updated = 'Hoe gaat het daar? Goed.';
+
+    await createQuickNote(page);
+    await page.keyboard.type(initial);
+    await saveAndWait(page);
+
+    const content = page.locator('.void-block', { hasText: initial }).first().locator('.void-block-content');
+    await content.click();
+    await page.keyboard.press('Meta+a');
+    await page.keyboard.type(updated);
+    await expect(page.locator('.void-block', { hasText: updated }).first()).toBeVisible();
+    await saveAndWait(page);
+
+    const workspace = await openLineHistory(page, updated);
+    await expect(workspace.getByRole('heading', { name: /History|User saved editor document|Sharpen/i }).first()).toBeVisible();
+    await expect(workspace.getByText(updated).first()).toBeVisible();
+    await expect(workspace.getByText(initial).first()).toBeVisible();
+    await expect(workspace.getByText('Sentence Diff')).toBeVisible();
+    await expect(workspace.getByText('Selected Line Trace')).toBeVisible();
+  });
+
+  test('recovers a deleted line from the note-wide history workspace', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.locator('main')).toBeVisible();
+
+    await createQuickNote(page);
+    await page.keyboard.type('Alpha');
+    await page.keyboard.press('Enter');
+    await page.keyboard.type('Beta');
+    await page.keyboard.press('Enter');
+    await page.keyboard.type('Gamma');
+    await saveAndWait(page);
+
+    await deleteBlockFromMenu(page, 'Beta');
+    await expect(page.locator('.void-block', { hasText: 'Beta' })).toHaveCount(0);
+    await saveAndWait(page);
+
+    const workspace = await openLineHistory(page, 'Alpha');
+    await workspace.getByRole('button', { name: 'Deleted', exact: true }).click();
+    await expect(workspace.getByText('Deleted archive')).toBeVisible();
+    await expect(workspace.getByText('Beta').first()).toBeVisible();
+
+    await workspace.getByRole('button', { name: /Restore preview/ }).first().click();
+    await expect(workspace.getByText('Restore Preview', { exact: true })).toBeVisible();
+    await expect(workspace.getByText('Placement')).toBeVisible();
+    await workspace.getByRole('button', { name: 'Apply restore' }).click();
+
+    await workspace.getByRole('button', { name: 'Close history' }).click();
+    await expect(page.locator('.void-block', { hasText: 'Beta' }).first()).toBeVisible({ timeout: 5000 });
+  });
+});

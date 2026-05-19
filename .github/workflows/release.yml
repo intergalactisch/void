@@ -1,0 +1,134 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+# Two pushes for the same tag should never race over the same release page.
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Test
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: 'src-tauri -> target'
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: TypeScript & Svelte check
+        run: npm run check
+
+      - name: Run unit tests
+        run: npm run test:run
+
+      - name: cargo check
+        run: cargo check
+        working-directory: src-tauri
+
+  release:
+    name: Build & release
+    needs: test
+    runs-on: macos-14
+
+    # Per-arch matrix — each job builds, signs, and uploads its DMG +
+    # .app.tar.gz + .sig, then merges its platform entry into latest.json on
+    # the release. Run sequentially (max-parallel: 1) so two jobs cannot race
+    # the latest.json upload and drop the other arch's entry.
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        target:
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: 'src-tauri -> target'
+          key: ${{ matrix.target }}
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build & publish release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Void ${{ github.ref_name }}"
+          releaseBody: |
+            See [CHANGELOG.md](https://github.com/intergalactisch/void/blob/main/CHANGELOG.md) for the full list of changes.
+
+            ## Download
+
+            - **Apple Silicon (M1 / M2 / M3 / M4)** — `Void_*_aarch64.dmg`
+            - **Intel** — `Void_*_x64.dmg`
+
+            Not sure which? Open the Apple menu → **About This Mac**. "Apple M…" = Apple Silicon.
+
+            ---
+
+            ## First-launch on macOS
+
+            macOS will refuse to open Void on first launch ("damaged" / "developer cannot be verified") because Void is not Apple-notarized. This is expected — Void is ad-hoc signed and open-source. Bypass once per machine using either method:
+
+            **Method A — System Settings (recommended)**
+            1. Try to open Void from `/Applications`. macOS will block it.
+            2. Open **System Settings → Privacy & Security**.
+            3. Scroll down to the message about Void being blocked and click **Open Anyway**.
+            4. Confirm in the dialog that follows.
+
+            **Method B — Terminal**
+
+            ```sh
+            xattr -d com.apple.quarantine /Applications/Void.app
+            ```
+
+            After the first launch, all future updates apply silently via the in-app updater.
+          releaseDraft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          args: --target ${{ matrix.target }}
+          includeUpdaterJson: true

@@ -1,0 +1,87 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Void",
+  "version": "0.1.0",
+  "identifier": "com.intergalactisch.void",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Void",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 600,
+        "decorations": false,
+        "transparent": false,
+        "center": true,
+        "visible": false,
+        "resizable": true,
+        "fullscreen": false
+      },
+      {
+        "label": "capture",
+        "title": "Quick Capture",
+        "url": "/capture/",
+        "width": 560,
+        "height": 320,
+        "minWidth": 440,
+        "minHeight": 260,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "center": true,
+        "visible": false,
+        "resizable": false,
+        "focus": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: asset: https://asset.localhost; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; worker-src 'self' blob:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "createUpdaterArtifacts": true,
+    "targets": ["app", "dmg"],
+    "category": "Productivity",
+    "publisher": "intergalactisch",
+    "shortDescription": "AI-powered note-taking app",
+    "longDescription": "Void is an AI-powered note-taking app built for human-AI collaboration around local Markdown notes.",
+    "copyright": "Copyright © 2026 intergalactisch. All rights reserved.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "bundleName": "Void",
+      "entitlements": "./Entitlements.plist",
+      "hardenedRuntime": true,
+      "minimumSystemVersion": "12.0",
+      "signingIdentity": "-",
+      "infoPlist": "./Info.plist",
+      "dmg": {
+        "appPosition": { "x": 180, "y": 170 },
+        "applicationFolderPosition": { "x": 480, "y": 170 },
+        "windowSize": { "width": 660, "height": 400 }
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "endpoints": ["https://github.com/intergalactisch/void/releases/latest/download/latest.json"],
+      "dialog": false,
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEMxQzBGN0Q3MDEzNDg1RUMKUldUc2hUUUIxL2ZBd1Z1eXFxWlhMNXpsZTc1cS9LZmxhdTJvVlZydnZYRnU3eHh5MFNaZEZ4M2MK"
+    }
+  }
+}
