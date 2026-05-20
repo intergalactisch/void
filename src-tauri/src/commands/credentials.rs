@@ -41,7 +41,7 @@ pub async fn delete_credential(key: String) -> Result<(), VoidError> {
         let entry = keyring::Entry::new(SERVICE_NAME, &key)
             .map_err(|e| VoidError::Keychain(e.to_string()))?;
 
-        match entry.delete_password() {
+        match entry.delete_credential() {
             Ok(()) => Ok(()),
             Err(keyring::Error::NoEntry) => Ok(()), // Already deleted, that's fine
             Err(e) => Err(VoidError::Keychain(e.to_string())),
