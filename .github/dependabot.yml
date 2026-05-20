@@ -1,20 +1,18 @@
 version: 2
 
-# Weekly version-update PRs across the three ecosystems Void depends on.
+# Monthly version-update PRs across the three ecosystems Void depends on.
 # Security updates are handled separately (and always-on) by Dependabot itself
-# regardless of this config.
+# regardless of this config — its cadence cannot be throttled here.
 #
-# Groupings keep PR noise low — a typical week is one PR per ecosystem instead
-# of one per package. Limits cap the total open PRs so the inbox can't blow up
-# during a week with many releases.
+# Groupings keep PR noise low — a typical month is one PR per ecosystem instead
+# of one per package. Limits cap the total open PRs so the inbox can't blow up.
 
 updates:
   - package-ecosystem: npm
     directory: "/"
     schedule:
-      interval: weekly
-      day: monday
-    open-pull-requests-limit: 5
+      interval: monthly
+    open-pull-requests-limit: 2
     commit-message:
       prefix: "chore(deps)"
       include: scope
@@ -47,9 +45,8 @@ updates:
   - package-ecosystem: cargo
     directory: "/src-tauri"
     schedule:
-      interval: weekly
-      day: monday
-    open-pull-requests-limit: 3
+      interval: monthly
+    open-pull-requests-limit: 2
     commit-message:
       prefix: "chore(deps)"
       include: scope
@@ -63,7 +60,7 @@ updates:
     directory: "/"
     schedule:
       interval: monthly
-    open-pull-requests-limit: 2
+    open-pull-requests-limit: 1
     commit-message:
       prefix: "chore(ci)"
       include: scope
