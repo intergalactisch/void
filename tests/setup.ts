@@ -32,6 +32,18 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({
   confirm: vi.fn(),
 }));
 
+// Stub browser dialog APIs that happy-dom / vitest don't always initialize as functions.
+// Tests use vi.spyOn(window, 'prompt') which requires the property to exist as a function.
+if (typeof window.prompt !== 'function') {
+  window.prompt = () => null;
+}
+if (typeof window.alert !== 'function') {
+  window.alert = () => undefined;
+}
+if (typeof window.confirm !== 'function') {
+  window.confirm = () => true;
+}
+
 // Reset all mocks before each test
 beforeEach(() => {
   vi.clearAllMocks();
