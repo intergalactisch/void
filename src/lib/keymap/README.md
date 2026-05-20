@@ -34,7 +34,7 @@ This means:
 - **Editor-internal shortcuts** (bold, italic, undo, slash, AI inline,
   block-selection escalation, etc.) live in the ProseMirror keymap and never
   enter the global keymap. They are NOT registered with `KeymapService`.
-- **Global app shortcuts** (`Cmd+P`, `Cmd+Shift+K`, `Cmd+,`, `Cmd+S`, …) live
+- **Global app shortcuts** (`Cmd+P`, `Cmd+Shift+O`, `Cmd+,`, `Cmd+S`, …) live
   in `KeymapService` and dispatch through the global binder.
 - **Conflicts** like `Cmd+B` (bold inside editor, toggle sidebar outside) work
   because the editor's keymap consumes it when focused; outside the editor,

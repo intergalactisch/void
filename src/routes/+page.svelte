@@ -13,7 +13,7 @@
   import CreateFolderModal from '$lib/components/navigation/CreateFolderModal.svelte';
   import DeleteFolderModal from '$lib/components/navigation/DeleteFolderModal.svelte';
   import { ConflictBanner, EditorShell, EditorTabs } from '$lib/components/editor';
-  import { StatusBar, SettingsPanel, LogPanel, ToastContainer, PulseInbox, ClipboardHistoryPicker } from '$lib/components/shared';
+  import { StatusBar, SettingsPanel, LogPanel, ToastContainer, PulseInbox, ClipboardHistoryPicker, SyncConflictWorkspace } from '$lib/components/shared';
   import { logStore } from '$lib/stores';
   import { AICommandCenter } from '$lib/components/ai-command';
   import { TodoWorkspace } from '$lib/components/todo';
@@ -1020,7 +1020,7 @@
             class="header-btn header-btn-ai"
             class:header-btn-active={aiSidebarVisible}
             onclick={() => { uiStore.toggleAISidebar(); }}
-            title="Ask Void (⌘⇧K)"
+            title="Ask Void (⌘⇧O)"
             aria-label="Toggle AI assistant"
           >
             <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.6">
@@ -1104,7 +1104,7 @@
                 <circle cx="12" cy="12" r="3" />
               </svg>
               Ask
-              <kbd>⌘⇧K</kbd>
+              <kbd>⌘⇧O</kbd>
             </button>
           </div>
         </div>
@@ -1166,6 +1166,9 @@
 
   <!-- Clipboard History (Cmd+Shift+V) -->
   <ClipboardHistoryPicker />
+
+  <!-- GitHub sync conflict workspace -->
+  <SyncConflictWorkspace />
 
   {#if pendingNoteDelete}
     <!-- svelte-ignore a11y_no_static_element_interactions -->

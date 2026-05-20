@@ -189,6 +189,8 @@ export const TOKENS = {
   MediaSource: Symbol.for('void:MediaSource'),
   WebFetch: Symbol.for('void:WebFetch'),
   ApplicationNavigation: Symbol.for('void:ApplicationNavigation'),
+  GitRepository: Symbol.for('void:GitRepository'),
+  GitHub: Symbol.for('void:GitHub'),
 
   // Markdown serializer port
   MarkdownSerializer: Symbol.for('void:MarkdownSerializer'),
@@ -200,6 +202,7 @@ export const TOKENS = {
 
   // Inbound ports (application services)
   SettingsService: Symbol.for('void:SettingsService'),
+  WorkspaceService: Symbol.for('void:WorkspaceService'),
   FileService: Symbol.for('void:FileService'),
   CredentialService: Symbol.for('void:CredentialService'),
   EditorService: Symbol.for('void:EditorService'),
@@ -301,6 +304,7 @@ export const TOKENS = {
   // Auto-updater
   Updater: Symbol.for('void:Updater'),
   UpdaterService: Symbol.for('void:UpdaterService'),
+  SyncService: Symbol.for('void:SyncService'),
 } as const;
 
 /**

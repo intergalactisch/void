@@ -62,7 +62,11 @@ pub enum VoidError {
         source: std::io::Error,
     },
 
-    #[error("Failed to rename {} to {}: {source}", redact_path(from), redact_path(to))]
+    #[error(
+        "Failed to rename {} to {}: {source}",
+        redact_path(from),
+        redact_path(to)
+    )]
     PathRename {
         from: String,
         to: String,
@@ -93,6 +97,12 @@ pub enum VoidError {
 
     #[error("File watcher error: {0}")]
     Watcher(String),
+
+    #[error("Git operation failed: {0}")]
+    Git(String),
+
+    #[error("GitHub request failed: {0}")]
+    GitHub(String),
 }
 
 // Implement Serialize for Tauri command error handling

@@ -20,6 +20,8 @@
 export { TauriFileSystemAdapter } from './TauriFileSystemAdapter';
 export { TauriSettingsAdapter } from './TauriSettingsAdapter';
 export { TauriCredentialAdapter } from './TauriCredentialAdapter';
+export { TauriGitRepositoryAdapter } from './TauriGitRepositoryAdapter';
+export { TauriGitHubAdapter } from './TauriGitHubAdapter';
 export { TauriUpdaterAdapter } from './TauriUpdaterAdapter';
 export { TauriConversationAdapter, createTauriConversationAdapter } from './TauriConversationAdapter';
 export { TauriLoggerAdapter } from './TauriLoggerAdapter';
@@ -35,4 +37,4 @@ export {
 } from './TauriClipboardAdapter';
 
 // Commands (for direct Tauri access when needed)
-export { commands, fileCommands, settingsCommands, credentialCommands } from './commands';
+export { commands, fileCommands, settingsCommands, credentialCommands, gitCommands, githubCommands } from './commands';

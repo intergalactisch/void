@@ -67,6 +67,15 @@ jobs:
           - x86_64-apple-darwin
 
     steps:
+      - name: Verify Tauri signing secrets are configured
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY secret is not set. Forks: see CONTRIBUTING.md#release-signing-keys to generate your own keypair and configure secrets."
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@v6
 

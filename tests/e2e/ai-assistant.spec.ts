@@ -67,7 +67,7 @@ test.describe('AI Assistant', () => {
       });
     });
 
-    await page.keyboard.press('Meta+Shift+K');
+    await page.keyboard.press('Meta+Shift+O');
     if (!await page.getByRole('region', { name: /ai command center/i }).isVisible({ timeout: 1000 }).catch(() => false)) {
       const aiButton = page.locator('button').filter({ hasText: /Ask/ }).first();
       await expect(aiButton).toBeVisible({ timeout: 5000 });
@@ -87,7 +87,7 @@ test.describe('AI Assistant', () => {
   });
 
   test('shows an empty Command Center conversation state without a run inspector', async ({ page }) => {
-    await page.keyboard.press('Meta+Shift+K');
+    await page.keyboard.press('Meta+Shift+O');
     if (!await page.getByRole('region', { name: /ai command center/i }).isVisible({ timeout: 1000 }).catch(() => false)) {
       const aiButton = page.locator('button').filter({ hasText: /Ask/ }).first();
       await expect(aiButton).toBeVisible({ timeout: 5000 });
@@ -101,7 +101,7 @@ test.describe('AI Assistant', () => {
   });
 
   test('shows global active swarms while an idle command thread is open', async ({ page }) => {
-    await page.keyboard.press('Meta+Shift+K');
+    await page.keyboard.press('Meta+Shift+O');
     if (!await page.getByRole('region', { name: /ai command center/i }).isVisible({ timeout: 1000 }).catch(() => false)) {
       const aiButton = page.locator('button').filter({ hasText: /Ask/ }).first();
       await expect(aiButton).toBeVisible({ timeout: 5000 });
@@ -161,7 +161,7 @@ test.describe('AI Assistant', () => {
   });
 
   test('keeps repair and close actions from overlapping', async ({ page }) => {
-    await page.keyboard.press('Meta+Shift+K');
+    await page.keyboard.press('Meta+Shift+O');
     if (!await page.getByRole('region', { name: /ai command center/i }).isVisible({ timeout: 1000 }).catch(() => false)) {
       const aiButton = page.locator('button').filter({ hasText: /Ask/ }).first();
       await expect(aiButton).toBeVisible({ timeout: 5000 });
@@ -291,7 +291,7 @@ test.describe('AI Assistant', () => {
   });
 
   test('routes a durable research prompt into mocked swarm work end to end', async ({ page }) => {
-    await page.keyboard.press('Meta+Shift+K');
+    await page.keyboard.press('Meta+Shift+O');
     if (!await page.getByRole('region', { name: /ai command center/i }).isVisible({ timeout: 1000 }).catch(() => false)) {
       const aiButton = page.locator('button').filter({ hasText: /Ask/ }).first();
       await expect(aiButton).toBeVisible({ timeout: 5000 });

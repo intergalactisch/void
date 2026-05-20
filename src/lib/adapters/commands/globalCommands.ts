@@ -23,6 +23,7 @@ import {
   aiStore,
   logStore,
   toastStore,
+  syncStore,
 } from '$lib/stores';
 import { TOKENS } from '$lib/core';
 import { getAppContext } from '$lib/bootstrap';
@@ -259,6 +260,83 @@ export function createGlobalCommands(): RegisteredCommand[] {
         uiStore.toggleSettings();
       },
     },
+    {
+      id: 'sync.now',
+      label: 'Sync Now',
+      keywords: ['sync', 'github', 'cloud', 'push', 'pull'],
+      category: 'system',
+      icon: 'refreshCw',
+      description: 'Sync notes with GitHub',
+      scope: ['global'],
+      execute: async () => {
+        const ok = await syncStore.syncNow();
+        if (!ok && syncStore.error) {
+          toastStore.error(`Sync failed: ${syncStore.error.message}`);
+        }
+      },
+    },
+    {
+      id: 'sync.refreshStatus',
+      label: 'Refresh Sync Status',
+      keywords: ['sync', 'github', 'status', 'refresh'],
+      category: 'system',
+      icon: 'activity',
+      description: 'Refresh GitHub sync status',
+      scope: ['global'],
+      execute: () => {
+        void syncStore.refreshStatus();
+      },
+    },
+    {
+      id: 'sync.openSettings',
+      label: 'Open GitHub Sync',
+      keywords: ['sync', 'github', 'settings', 'cloud'],
+      category: 'settings',
+      icon: 'cloud',
+      description: 'Open GitHub sync settings',
+      scope: ['global'],
+      execute: () => {
+        uiStore.openSettings();
+      },
+    },
+    {
+      id: 'sync.createRepo',
+      label: 'Create GitHub Repo',
+      keywords: ['sync', 'github', 'create', 'repo'],
+      category: 'settings',
+      icon: 'folderPlus',
+      description: 'Create a GitHub repository for notes',
+      scope: ['global'],
+      execute: () => {
+        uiStore.openSettings();
+      },
+    },
+    {
+      id: 'sync.attachRepo',
+      label: 'Attach GitHub Repo',
+      keywords: ['sync', 'github', 'attach', 'repo', 'remote'],
+      category: 'settings',
+      icon: 'link',
+      description: 'Attach an existing GitHub repository',
+      scope: ['global'],
+      execute: () => {
+        uiStore.openSettings();
+      },
+    },
+    {
+      id: 'sync.detach',
+      label: 'Detach GitHub Repo',
+      keywords: ['sync', 'github', 'detach', 'disconnect'],
+      category: 'settings',
+      icon: 'unlink',
+      description: 'Detach GitHub sync from this notes folder',
+      scope: ['global'],
+      execute: async () => {
+        const detached = await syncStore.detach();
+        if (detached) toastStore.success('GitHub repository detached');
+      },
+      runWhen: () => syncStore.isAttached,
+    },
 
     // ─── Action history (global undo) ───
     {
@@ -328,6 +406,24 @@ export function createGlobalCommands(): RegisteredCommand[] {
         toastStore.success('Document saved');
       },
       runWhen: () => editorStore.activePath !== null,
+    },
+    {
+      id: 'note.refreshFromGitHub',
+      label: 'Refresh Note from GitHub',
+      keywords: ['note', 'sync', 'github', 'remote', 'refresh'],
+      category: 'note',
+      icon: 'cloudDownload',
+      description: 'Accept the remote GitHub version of the active note',
+      scope: ['global'],
+      execute: async () => {
+        const path = editorStore.activePath ?? notesStore.selectedPath;
+        if (!path) return;
+        const preview = await syncStore.refreshNoteFromRemote(path);
+        if (preview) {
+          toastStore.success(`Refreshed ${path} from GitHub`);
+        }
+      },
+      runWhen: () => syncStore.isAttached && (editorStore.activePath !== null || notesStore.selectedPath !== null),
     },
     {
       id: 'tab.next',

@@ -6,7 +6,7 @@
    * Spans full app width below both sidebar and content area.
    */
 
-  import { pulseStore, uiStore } from '$lib/stores';
+  import { pulseStore, syncStore, uiStore } from '$lib/stores';
 
   interface Props {
     /** Whether a document is currently open */
@@ -42,6 +42,21 @@
   }: Props = $props();
 
   let pulseCount = $derived(pulseStore.count);
+  let syncTitle = $derived.by(() => {
+    const pieces = [syncStore.label];
+    if (syncStore.status.ahead > 0) pieces.push(`${syncStore.status.ahead} ahead`);
+    if (syncStore.status.behind > 0) pieces.push(`${syncStore.status.behind} behind`);
+    if (syncStore.status.changedFiles > 0) pieces.push(`${syncStore.status.changedFiles} changed`);
+    return pieces.join(' · ');
+  });
+
+  function openSyncSurface(): void {
+    if (syncStore.status.kind === 'conflicted' || syncStore.status.conflicts.length > 0) {
+      uiStore.openSyncConflictWorkspace();
+      return;
+    }
+    uiStore.openSettings();
+  }
 
   /** Format number with locale thousands separator */
   function formatNumber(n: number): string {
@@ -87,6 +102,23 @@
       </span>
       <span class="statusbar-separator" aria-hidden="true">&middot;</span>
     {/if}
+    <button
+      type="button"
+      class="statusbar-sync-btn"
+      class:statusbar-sync-active={syncStore.status.kind === 'ready'}
+      class:statusbar-sync-warn={syncStore.status.kind === 'pending' || syncStore.status.kind === 'auth-required' || syncStore.status.kind === 'paused'}
+      class:statusbar-sync-error={syncStore.status.kind === 'error' || syncStore.status.kind === 'conflicted'}
+      onclick={openSyncSurface}
+      title={syncTitle}
+      aria-label={syncTitle}
+    >
+      <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.6">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M16 16l-4 4m0 0l-4-4m4 4V4" />
+        <path stroke-linecap="round" stroke-linejoin="round" d="M20 10.5A5.5 5.5 0 0010.2 7 4 4 0 004 10.75 4.25 4.25 0 008.25 15H10" />
+      </svg>
+      <span class="statusbar-sync-label">{syncStore.label}</span>
+    </button>
+    <span class="statusbar-separator" aria-hidden="true">&middot;</span>
     {#if onToggleOperations}
       <button
         type="button"
@@ -138,7 +170,7 @@
     {/if}
     <kbd class="statusbar-kbd" aria-hidden="true">Cmd+P</kbd>
     <span class="statusbar-separator" aria-hidden="true">&middot;</span>
-    <kbd class="statusbar-kbd" aria-hidden="true">Cmd+Shift+K</kbd>
+    <kbd class="statusbar-kbd" aria-hidden="true">Cmd+Shift+O</kbd>
   </div>
 </footer>
 
@@ -231,6 +263,47 @@
     font-size: var(--text-micro);
     font-family: inherit;
     transition: background var(--transition-fast), color var(--transition-fast);
+  }
+
+  .statusbar-sync-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 18px;
+    border: none;
+    background: transparent;
+    color: var(--text-tertiary);
+    border-radius: var(--radius-xs);
+    cursor: pointer;
+    padding: 0 5px;
+    font-family: inherit;
+    font-size: var(--text-micro);
+    transition: background var(--transition-fast), color var(--transition-fast);
+  }
+
+  .statusbar-sync-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .statusbar-sync-active {
+    color: var(--color-success);
+  }
+
+  .statusbar-sync-warn {
+    color: var(--color-warning);
+  }
+
+  .statusbar-sync-error {
+    color: var(--color-error);
+  }
+
+  .statusbar-sync-label {
+    max-width: 100px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 500;
   }
 
   .statusbar-ops-btn:hover {

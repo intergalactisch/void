@@ -28,6 +28,16 @@ export {
 } from './Settings';
 
 export {
+  DEFAULT_WORKSPACE_NAME,
+  activeWorkspaceFrom,
+  cloneWorkspace,
+  createWorkspace,
+  createWorkspaceId,
+  validateWorkspace,
+} from './Workspace';
+export type { Workspace, GitHubAccountRef, CreateWorkspaceInput } from './Workspace';
+
+export {
   generateBlockId,
   createBlock,
   createEmptyParagraph,

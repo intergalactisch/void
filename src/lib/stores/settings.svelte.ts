@@ -60,7 +60,7 @@ class SettingsStore {
     if (!this.#service || !this.settings) return false;
     const result = await this.#service.set(key, value);
     if (!result.ok) return false;
-    this.settings = { ...this.settings, [key]: value };
+    this.settings = this.#service.current();
     return true;
   }
 

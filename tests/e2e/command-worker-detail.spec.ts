@@ -4,7 +4,7 @@ test('opens worker detail with prompt traces and interaction targets', async ({ 
   await page.goto('/');
   await expect(page.locator('main')).toBeVisible();
 
-  await page.keyboard.press('Meta+Shift+K');
+  await page.keyboard.press('Meta+Shift+O');
   if (!await page.getByRole('region', { name: /ai command center/i }).isVisible({ timeout: 1000 }).catch(() => false)) {
     const aiButton = page.locator('button').filter({ hasText: /Ask/ }).first();
     await expect(aiButton).toBeVisible({ timeout: 5000 });

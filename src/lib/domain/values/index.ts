@@ -332,3 +332,56 @@ export type { BranchStatus } from './BranchStatus';
 // Pulse system (Artifact system)
 export { INSIGHT_TYPES, INSIGHT_TYPE_LABELS, isValidInsightType } from './InsightType';
 export type { InsightType } from './InsightType';
+
+// Cloud sync
+export {
+  DEFAULT_SYNC_ARTIFACT_POLICY,
+  DEFAULT_SYNC_SETTINGS,
+  EMPTY_SYNC_STATUS,
+  VOID_REPO_ARTIFACT_POLICY_VERSION,
+  VOID_REPO_MANIFEST_PATH,
+  VOID_REPO_SCHEMA_VERSION,
+  VOID_GITHUB_SCOPE,
+  cloneDefaultSyncSettings,
+  createVoidRepoManifest,
+  parseGitHubRemote,
+  syncStatusFromRepo,
+  validateSyncSettings,
+  validateVoidRepoManifest,
+} from './Sync';
+export type {
+  GitBranchInfo,
+  GitFileChange,
+  GitHubBranchSummary,
+  GitHubCreatedRepository,
+  GitHubDeviceAuthRequest,
+  GitHubDeviceAuthStart,
+  GitHubNameAvailability,
+  GitHubRepoSummary,
+  GitHubUser,
+  GitHubVoidReadyProbe,
+  GitRepositoryState,
+  SyncArtifactPolicy,
+  SyncAuthMode,
+  SyncAuthState,
+  SyncConflict,
+  SyncConflictHunk,
+  SyncConflictKind,
+  SyncConflictMergeStatus,
+  SyncConflictPreview,
+  SyncConflictResolution,
+  SyncConflictSession,
+  SyncConflictSessionStatus,
+  SyncConfig,
+  SyncOperation,
+  SyncProvider,
+  SyncRepositoryRef,
+  SyncRepoKind,
+  SyncSettings,
+  SyncStatus,
+  SyncStatusKind,
+  VoidRepoManifest,
+} from './Sync';
+
+export { mergeText3 } from './Diff3';
+export type { Diff3MergeResult } from './Diff3';

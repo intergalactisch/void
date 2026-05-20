@@ -21,6 +21,8 @@
 export { MemoryFileSystemAdapter } from './MemoryFileSystemAdapter';
 export { MemorySettingsAdapter } from './MemorySettingsAdapter';
 export { MemoryCredentialAdapter } from './MemoryCredentialAdapter';
+export { MemoryGitRepositoryAdapter } from './MemoryGitRepositoryAdapter';
+export { MemoryGitHubAdapter } from './MemoryGitHubAdapter';
 export { MemoryUpdaterAdapter } from './MemoryUpdaterAdapter';
 export { MemoryConversationAdapter, createMemoryConversationAdapter } from './MemoryConversationAdapter';
 export { MemoryLoggerAdapter } from './MemoryLoggerAdapter';

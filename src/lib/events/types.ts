@@ -14,22 +14,17 @@ import type { Todo } from '$lib/domain/entities/Todo';
 import type { OperationId } from '$lib/domain/values/OperationId';
 import type { ProvenanceEvent } from '$lib/domain/values/ProvenanceEvent';
 import type { BlockType } from '$lib/domain/values/BlockType';
-import type { TodoView } from '$lib/domain/values/TodoView';
 import type { AgentRunEvent } from '$lib/domain/entities/AgentRun';
+import type { Settings } from '$lib/domain/entities/Settings';
 import type { ResourceLockSnapshot } from './queue/ResourceLock';
+import type {
+  SyncAuthState,
+  SyncConflict,
+  SyncOperation,
+  SyncStatus,
+} from '$lib/domain/values/Sync';
 
-// Placeholder for Settings type until domain layer is created
-// TODO: Replace with import from '$lib/domain' in Phase 4
-export interface Settings {
-  notesPath: string;
-  theme: 'light' | 'dark' | 'system';
-  autoSave: boolean;
-  autoSaveDelay: number;
-  aiProvider: 'claude' | 'openai' | 'local' | null;
-  cliProvider: 'codex' | 'claude-code';
-  aiReasoningEffort: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
-  taskDefaultView: TodoView;
-}
+export type { Settings };
 
 export type EventMap = {
   // Application lifecycle
@@ -48,6 +43,7 @@ export type EventMap = {
 
   // Settings events
   'settings:changed': { key: string; value: unknown };
+  'workspace:changed': { workspaceId: string; activeWorkspaceId: string };
   'settings:loaded': Settings;
 
   // Editor events
@@ -96,6 +92,14 @@ export type EventMap = {
   // a way the user should see (load, save, create, delete). The toast
   // bridge in bootstrap subscribes once.
   'error:user-facing': { source: string; error: Error };
+
+  // GitHub cloud sync events
+  'sync:started': { operation: SyncOperation };
+  'sync:status-changed': { status: SyncStatus };
+  'sync:completed': { status: SyncStatus };
+  'sync:failed': { error: Error };
+  'sync:conflict': { conflicts: SyncConflict[] };
+  'sync:auth-changed': { auth: SyncAuthState };
 
   // Filesystem watcher events. The Rust file watcher emits void://file-changed
   // events; the TS bridge translates them into these typed events so any

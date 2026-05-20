@@ -16,6 +16,8 @@ import type { Result } from '$lib/core';
 export const CREDENTIAL_KEYS = {
   CLAUDE_API_KEY: 'void.claude.api_key',
   OPENAI_API_KEY: 'void.openai.api_key',
+  GITHUB_ACCESS_TOKEN: 'void.github.access_token',
+  GITHUB_REFRESH_TOKEN: 'void.github.refresh_token',
 } as const;
 
 export type CredentialKey = (typeof CREDENTIAL_KEYS)[keyof typeof CREDENTIAL_KEYS];

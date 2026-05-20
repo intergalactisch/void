@@ -6,7 +6,8 @@
    * that slides in from the right edge. Keeps the user in their writing flow.
    */
 
-  import { settingsStore, keymapStore } from '$lib/stores';
+  import { settingsStore, keymapStore, workspaceStore, toastStore } from '$lib/stores';
+  import GitHubSyncSection from './GitHubSyncSection.svelte';
   import {
     AI_REASONING_EFFORT_OPTIONS,
     CLI_PROVIDER_OPTIONS,
@@ -51,6 +52,8 @@
   let contentWidthInput = $state(720);
   let saveStatus = $state<'idle' | 'saving' | 'saved' | 'error'>('idle');
   let saveError = $state<string | null>(null);
+  let newWorkspaceName = $state('');
+  let newWorkspacePath = $state('');
 
   // Sync form inputs with loaded settings
   $effect(() => {
@@ -111,6 +114,14 @@
   }
 
   async function handleNotesPathUpdate() {
+    const active = workspaceStore.activeWorkspace;
+    if (active) {
+      const updated = await workspaceStore.updateNotesPath(active.id, notesPathInput);
+      if (updated) {
+        toastStore.info('Workspace path updated. Restart or switch away and back to reload this workspace.');
+      }
+      return;
+    }
     await updateSetting('notesPath', notesPathInput);
   }
 
@@ -123,7 +134,7 @@
       });
       if (selected && typeof selected === 'string') {
         notesPathInput = selected;
-        await updateSetting('notesPath', selected);
+        await handleNotesPathUpdate();
       }
     } catch (e) {
       console.error('Failed to open folder dialog:', e);
@@ -139,6 +150,46 @@
 
   function handleClose() {
     onClose?.();
+  }
+
+  async function createWorkspaceFromSettings() {
+    const name = newWorkspaceName.trim();
+    const notesPath = newWorkspacePath.trim();
+    if (!name || !notesPath) return;
+    const created = await workspaceStore.create(name, notesPath);
+    if (created) {
+      newWorkspaceName = '';
+      newWorkspacePath = '';
+      toastStore.success(`Created workspace ${created.name}`);
+    }
+  }
+
+  async function browseNewWorkspaceFolder() {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: 'Select Workspace Folder',
+      });
+      if (selected && typeof selected === 'string') {
+        newWorkspacePath = selected;
+      }
+    } catch (e) {
+      console.error('Failed to open folder dialog:', e);
+    }
+  }
+
+  async function switchWorkspace(workspaceId: string) {
+    await workspaceStore.switchTo(workspaceId);
+  }
+
+  async function removeWorkspace(workspaceId: string) {
+    const workspace = workspaceStore.workspaces.find((item) => item.id === workspaceId);
+    if (!workspace) return;
+    if (!confirm(`Remove workspace "${workspace.name}" from Void? This does not delete files from disk or GitHub.`)) {
+      return;
+    }
+    await workspaceStore.remove(workspaceId);
   }
 
   function handleBackdropClick(event: MouseEvent) {
@@ -315,6 +366,75 @@
             <p>Loading settings...</p>
           </div>
         {:else if settingsStore.settings}
+          <!-- Workspaces -->
+          <div class="setting-group">
+            <span class="group-label">WORKSPACES</span>
+            <div class="workspace-list">
+              {#each workspaceStore.workspaces as workspace (workspace.id)}
+                <div class="workspace-row" class:workspace-row-active={workspace.id === workspaceStore.activeWorkspace?.id}>
+                  <div class="workspace-row-main">
+                    <span class="workspace-row-name">{workspace.name}</span>
+                    <span class="workspace-row-path">{workspace.notesPath}</span>
+                  </div>
+                  <div class="workspace-row-actions">
+                    {#if workspace.id !== workspaceStore.activeWorkspace?.id}
+                      <button
+                        type="button"
+                        class="btn btn-secondary btn-compact"
+                        onclick={() => switchWorkspace(workspace.id)}
+                        disabled={workspaceStore.loading}
+                      >Switch</button>
+                      <button
+                        type="button"
+                        class="btn btn-secondary btn-compact danger"
+                        onclick={() => removeWorkspace(workspace.id)}
+                        disabled={workspaceStore.loading}
+                      >Remove</button>
+                    {:else}
+                      <span class="workspace-active-pill">Active</span>
+                    {/if}
+                  </div>
+                </div>
+              {/each}
+            </div>
+
+            {#if workspaceStore.switchBlockers.length > 0}
+              <div class="workspace-blockers">
+                {workspaceStore.switchBlockers[0]?.message}
+              </div>
+            {/if}
+
+            <div class="workspace-create">
+              <input
+                type="text"
+                class="input"
+                placeholder="Workspace name"
+                bind:value={newWorkspaceName}
+                disabled={workspaceStore.loading}
+              />
+              <div class="input-row">
+                <input
+                  type="text"
+                  class="input flex-1"
+                  placeholder="Notes folder path"
+                  bind:value={newWorkspacePath}
+                  disabled={workspaceStore.loading}
+                />
+                <button type="button" onclick={browseNewWorkspaceFolder} class="btn btn-secondary" title="Browse">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                  </svg>
+                </button>
+              </div>
+              <button
+                type="button"
+                class="btn btn-primary"
+                onclick={createWorkspaceFromSettings}
+                disabled={workspaceStore.loading || !newWorkspaceName.trim() || !newWorkspacePath.trim()}
+              >Create workspace</button>
+            </div>
+          </div>
+
           <!-- Notes Path -->
           <div class="setting-group">
             <label class="group-label" for="sp-notesPath">NOTES PATH</label>
@@ -333,6 +453,9 @@
               </button>
             </div>
           </div>
+
+          <!-- GitHub Sync -->
+          <GitHubSyncSection />
 
           <!-- Auto Save -->
           <div class="setting-group">
@@ -878,6 +1001,85 @@
   .toggle-label {
     font-size: 13px;
     color: var(--text-secondary);
+  }
+
+  .workspace-list,
+  .workspace-create {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .workspace-list {
+    margin-bottom: 10px;
+  }
+
+  .workspace-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    border: 1px solid var(--border-faint);
+    border-radius: var(--radius-md);
+    padding: 8px 10px;
+    background: var(--bg-card);
+  }
+
+  .workspace-row-active {
+    border-color: var(--accent-primary);
+  }
+
+  .workspace-row-main {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .workspace-row-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .workspace-row-path {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11.5px;
+    color: var(--text-tertiary);
+  }
+
+  .workspace-row-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+
+  .workspace-active-pill {
+    border: 1px solid var(--accent-primary);
+    border-radius: 999px;
+    color: var(--accent-primary);
+    font-size: 11px;
+    padding: 2px 8px;
+  }
+
+  .workspace-blockers {
+    border: 1px solid var(--color-warning, #c08400);
+    border-radius: var(--radius-md);
+    color: var(--color-warning, #c08400);
+    font-size: 12px;
+    padding: 7px 9px;
+    margin-bottom: 10px;
+  }
+
+  .btn-compact {
+    padding: 3px 7px;
+    font-size: 11.5px;
+  }
+
+  .danger {
+    color: var(--color-danger, #b42318);
   }
 
   /* Typography controls */

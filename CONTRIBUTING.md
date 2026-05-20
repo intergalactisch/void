@@ -96,6 +96,61 @@ A green `npm run test:all` plus `cd src-tauri && cargo test` is the minimum bar 
 
 CI runs `npm run check`, `npm run test:run`, `cargo check`, and `cargo clippy -- -D warnings`. Anything red blocks merge.
 
+## Release signing keys
+
+Void's auto-updater verifies update bundles against a minisign public key embedded in the app at build time (`src-tauri/tauri.conf.json` → `plugins.updater.pubkey`). Building a release locally (`npm run tauri:install`) or via the `Release` workflow requires the matching private key in environment variables.
+
+### Maintainers (publishing official releases)
+
+Tauri's `TAURI_SIGNING_PRIVATE_KEY` env var accepts the key in one of two forms — both work:
+
+- **Raw multi-line file contents** (what `tauri signer generate` writes):
+  ```
+  untrusted comment: rsign encrypted secret key
+  RWRTY0Iy…==
+  ```
+- **Single-line base64 encoding** of those contents (what most secrets managers store cleanly).
+
+Store the key + password in a secrets manager — never in the repo, never as plaintext on disk, never in shell history. Then on each new machine:
+
+```bash
+npm run setup:signing
+```
+
+The script asks where the key lives (1Password CLI, paste, or manual), detects which form the value is in, and writes an idempotent block to your shell rc that exports the right env var. Re-running detects the existing block and prompts to replace it.
+
+Source the rc (or open a new shell), then `npm run tauri:install` and the `Release` workflow both sign with the key.
+
+**CI** publishes via tagged push (`.github/workflows/release.yml`) using GitHub Actions secrets `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. CI takes either form too — store whichever you have, no encoding dance needed:
+
+```bash
+# Whatever's in 1Password (raw or base64), push it through verbatim:
+op read 'op://Private/Void Tauri Signing/key'      | gh secret set TAURI_SIGNING_PRIVATE_KEY
+op read 'op://Private/Void Tauri Signing/password' | gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+
+# Or from a file on disk:
+gh secret set TAURI_SIGNING_PRIVATE_KEY < ~/.tauri/void.key
+gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD --body '<password>'
+```
+
+Rotating the key permanently breaks auto-update for already-installed builds (their embedded pubkey no longer matches new signatures). Reserve rotation for genuine compromise or when the key is truly unrecoverable.
+
+### Forks (publishing your own builds)
+
+GitHub does not pass parent-repo secrets to forks. To run the `Release` workflow on your fork, either:
+
+1. **Sign with your own keypair** — generate one, point your fork at it:
+   ```bash
+   npm run tauri -- signer generate -w ~/.tauri/<your-fork>.key
+   base64 -i ~/.tauri/<your-fork>.key | gh secret set TAURI_SIGNING_PRIVATE_KEY
+   gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD --body '<password you set>'
+   ```
+   Then update `src-tauri/tauri.conf.json` → `plugins.updater.pubkey` with **your** public key (`cat ~/.tauri/<your-fork>.key.pub`). Push a tag.
+
+2. **Disable auto-update entirely** — if your fork doesn't need the in-app updater, set `plugins.updater.active: false` in `tauri.conf.json` and the signing requirement disappears.
+
+Without one of the above, the `Release` workflow fails fast with a clear error.
+
 ## Good first issues
 
 Browse open issues with the [`good first issue`](https://github.com/intergalactisch/void/issues?q=is:open+label:%22good+first+issue%22) label. If a topic interests you and there's no issue yet, open one before sinking time into a PR — it saves churn.

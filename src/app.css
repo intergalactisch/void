@@ -1140,25 +1140,35 @@ li.void-block > .void-todo-wrapper {
   pointer-events: none;
 }
 
-/* Todo items */
-.void-editor .void-todo {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.5em;
-  margin: 0.25em 0;
-  padding: 2px 0;
+/* Todo items — best-in-class alignment + interaction.
+ *
+ * The checkbox is vertically centered with the first line of text via a
+ * precise margin-top derived from --todo-line-height. The content span
+ * uses a tighter line-height than body text so the caret (which spans
+ * the full line-box) sits flush with the checkbox row instead of trailing
+ * below it. box-sizing: border-box keeps the 18×18 box honest. */
+.void-block[data-block-type="todoItem"] {
+  --todo-checkbox-size: 18px;
+  --todo-line-height: 1.45;
 }
 
 .void-editor .void-todo-checkbox {
-  width: 18px;
-  height: 18px;
-  border: 2px solid var(--border-dark);
-  border-radius: 4px;
-  cursor: pointer;
+  box-sizing: border-box;
+  width: var(--todo-checkbox-size);
+  height: var(--todo-checkbox-size);
   flex-shrink: 0;
-  margin-top: 3px;
+  align-self: flex-start;
+  margin-top: calc((1em * var(--todo-line-height) - var(--todo-checkbox-size)) / 2);
+
+  border: 1.5px solid var(--border-dark);
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
   position: relative;
-  transition: all 0.15s ease;
+  transition: border-color 120ms ease,
+              background-color 120ms ease,
+              box-shadow 120ms ease,
+              transform 90ms ease;
 }
 
 .void-editor .void-todo-checkbox:hover {
@@ -1166,39 +1176,69 @@ li.void-block > .void-todo-wrapper {
   background: var(--accent-light);
 }
 
+.void-editor .void-todo-checkbox:focus-visible {
+  outline: none;
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 2px var(--bg-editor, #fff),
+              0 0 0 3.5px var(--accent-primary);
+}
+
+.void-editor .void-todo-checkbox:active {
+  transform: scale(0.92);
+}
+
 .void-editor .void-todo-checkbox.is-checked {
   background: var(--accent-primary);
   border-color: var(--accent-primary);
 }
 
+.void-editor .void-todo-checkbox.is-checked:hover {
+  background: var(--accent-primary);
+  border-color: var(--accent-primary);
+  filter: brightness(1.08);
+}
+
+/* Crisp check — centred on the 18×18 box. */
 .void-editor .void-todo-checkbox.is-checked::after {
   content: '';
   position: absolute;
-  left: 4px;
+  left: 4.5px;
   top: 1px;
-  width: 6px;
-  height: 10px;
+  width: 5px;
+  height: 9.5px;
   border: solid white;
-  border-width: 0 2px 2px 0;
+  border-width: 0 1.75px 1.75px 0;
   transform: rotate(45deg);
-  animation: check-appear 200ms ease-out;
+  animation: check-appear 180ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 @keyframes check-appear {
-  from { opacity: 0; transform: rotate(45deg) scale(0.5); }
-  to { opacity: 1; transform: rotate(45deg) scale(1); }
+  from {
+    opacity: 0;
+    transform: rotate(45deg) scale(0.4);
+  }
+  to {
+    opacity: 1;
+    transform: rotate(45deg) scale(1);
+  }
 }
 
+/* Content span — tighter line-height for visual harmony with checkbox.
+ * The caret inherits this line-height, so the cursor now matches the
+ * checkbox row height instead of trailing below it. */
 .void-editor .void-todo-content {
   flex: 1;
   min-width: 0;
+  line-height: var(--todo-line-height);
+  caret-color: var(--accent-primary);
 }
 
 .void-editor .void-todo-checked .void-todo-content {
   color: var(--text-muted);
   text-decoration: line-through;
   text-decoration-color: var(--border-medium);
-  transition: color 200ms ease, text-decoration-color 200ms ease;
+  text-decoration-thickness: 1.5px;
+  transition: color 220ms ease, text-decoration-color 220ms ease;
 }
 
 /* Callouts */
@@ -1880,13 +1920,16 @@ li.void-block {
   padding: 4px 0;
 }
 
-/* Todo wrapper (checkbox + content) */
+/* Todo wrapper (checkbox + content). align-items: flex-start keeps the
+ * checkbox anchored to the first line when content wraps to multiple lines.
+ * Padding matches paragraph rhythm so todos sit on the same vertical grid. */
 .void-block > .void-todo-wrapper {
   flex: 1;
   min-width: 0;
   display: flex;
   align-items: flex-start;
   gap: 8px;
+  padding: 4px 0;
 }
 
 /* ── Sticky gutter for tall blocks ── */

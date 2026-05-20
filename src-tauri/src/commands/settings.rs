@@ -1,4 +1,5 @@
 use crate::error::VoidError;
+use chrono::Utc;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 
@@ -18,6 +19,12 @@ fn expand_tilde(path: &str) -> String {
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     pub notes_path: String,
+    #[serde(default)]
+    pub workspaces: Vec<Workspace>,
+    #[serde(default)]
+    pub active_workspace_id: Option<String>,
+    #[serde(default)]
+    pub github_account: Option<GitHubAccountRef>,
     pub theme: Theme,
     pub auto_save: bool,
     pub auto_save_delay: u32,
@@ -42,6 +49,29 @@ pub struct Settings {
     pub capture_shortcut: String,
     #[serde(default = "default_capture_target")]
     pub capture_target_default: CaptureTarget,
+    #[serde(default = "default_sync_settings")]
+    pub sync: SyncSettings,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Workspace {
+    pub id: String,
+    pub name: String,
+    pub notes_path: String,
+    pub created_at: String,
+    pub last_opened_at: String,
+    #[serde(default = "default_sync_settings")]
+    pub sync: SyncSettings,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubAccountRef {
+    pub provider: String,
+    pub login: String,
+    pub name: Option<String>,
+    pub last_authenticated_at: Option<String>,
 }
 
 fn default_font_size() -> u32 {
@@ -70,6 +100,82 @@ fn default_capture_shortcut() -> String {
 }
 fn default_capture_target() -> CaptureTarget {
     CaptureTarget::Inbox
+}
+fn default_sync_settings() -> SyncSettings {
+    SyncSettings::default()
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncSettings {
+    pub enabled: bool,
+    pub auto_sync: bool,
+    pub auth_mode: String,
+    pub repository: Option<SyncRepositoryRef>,
+    pub artifact_policy: SyncArtifactPolicy,
+    pub last_sync_at: Option<String>,
+    pub paused: bool,
+}
+
+impl Default for SyncSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            auto_sync: true,
+            auth_mode: "github-app".to_string(),
+            repository: None,
+            artifact_policy: SyncArtifactPolicy::default(),
+            last_sync_at: None,
+            paused: false,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncRepositoryRef {
+    pub provider: String,
+    pub owner: String,
+    pub name: String,
+    pub full_name: String,
+    pub remote_url: String,
+    pub branch: String,
+    pub html_url: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncArtifactPolicy {
+    pub include_markdown: bool,
+    pub include_void_history: bool,
+    pub include_patterns: Vec<String>,
+    pub exclude_patterns: Vec<String>,
+}
+
+impl Default for SyncArtifactPolicy {
+    fn default() -> Self {
+        Self {
+            include_markdown: true,
+            include_void_history: true,
+            include_patterns: vec![
+                "*.md".to_string(),
+                "**/*.md".to_string(),
+                ".void/provenance/**".to_string(),
+                ".void/lineage/**".to_string(),
+                ".void/conversations/**".to_string(),
+                ".void/branches/**".to_string(),
+                ".void/sessions/**".to_string(),
+                ".void/agents/**".to_string(),
+                ".void/repo.json".to_string(),
+            ],
+            exclude_patterns: vec![
+                ".void/index/**".to_string(),
+                ".void/insights/pending.json".to_string(),
+                ".void/sync/**".to_string(),
+                ".DS_Store".to_string(),
+            ],
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -222,9 +328,14 @@ impl Default for Settings {
             .unwrap_or_else(|| std::path::PathBuf::from("~/Documents/void"))
             .to_string_lossy()
             .to_string();
+        let sync = default_sync_settings();
+        let workspace = default_workspace(&notes_path, sync.clone());
 
         Self {
-            notes_path,
+            notes_path: workspace.notes_path.clone(),
+            workspaces: vec![workspace.clone()],
+            active_workspace_id: Some(workspace.id.clone()),
+            github_account: None,
             theme: Theme::System,
             auto_save: true,
             auto_save_delay: 1000,
@@ -239,6 +350,77 @@ impl Default for Settings {
             density: default_density(),
             capture_shortcut: default_capture_shortcut(),
             capture_target_default: default_capture_target(),
+            sync: workspace.sync.clone(),
+        }
+    }
+}
+
+fn default_workspace(notes_path: &str, sync: SyncSettings) -> Workspace {
+    let now = Utc::now().to_rfc3339();
+    Workspace {
+        id: format!("workspace-{}", stable_id_suffix(notes_path)),
+        name: notes_path
+            .replace('\\', "/")
+            .split('/')
+            .filter(|part| !part.is_empty())
+            .last()
+            .unwrap_or("Void")
+            .to_string(),
+        notes_path: notes_path.to_string(),
+        created_at: now.clone(),
+        last_opened_at: now,
+        sync,
+    }
+}
+
+fn stable_id_suffix(value: &str) -> String {
+    let mut hash: u32 = 2166136261;
+    for byte in value.as_bytes() {
+        hash ^= *byte as u32;
+        hash = hash.wrapping_mul(16777619);
+    }
+    format!("{hash:x}")
+}
+
+fn normalize_settings(settings: &mut Settings) {
+    settings.notes_path = expand_tilde(&settings.notes_path);
+    if settings.workspaces.is_empty() {
+        settings
+            .workspaces
+            .push(default_workspace(&settings.notes_path, settings.sync.clone()));
+    }
+    for workspace in &mut settings.workspaces {
+        workspace.notes_path = expand_tilde(&workspace.notes_path);
+        if workspace.id.trim().is_empty() {
+            workspace.id = format!("workspace-{}", stable_id_suffix(&workspace.notes_path));
+        }
+        if workspace.name.trim().is_empty() {
+            workspace.name = workspace
+                .notes_path
+                .replace('\\', "/")
+                .split('/')
+                .filter(|part| !part.is_empty())
+                .last()
+                .unwrap_or("Void")
+                .to_string();
+        }
+    }
+    let active_id = settings
+        .active_workspace_id
+        .as_deref()
+        .filter(|id| settings.workspaces.iter().any(|workspace| workspace.id == *id))
+        .map(ToString::to_string)
+        .or_else(|| settings.workspaces.first().map(|workspace| workspace.id.clone()));
+    settings.active_workspace_id = active_id.clone();
+    if let Some(active_id) = active_id {
+        if let Some(active) = settings
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == active_id)
+            .cloned()
+        {
+            settings.notes_path = active.notes_path;
+            settings.sync = active.sync;
         }
     }
 }
@@ -274,17 +456,16 @@ pub async fn get_settings() -> Result<Settings, VoidError> {
         })?;
 
     let mut settings: Settings = serde_json::from_str(&content).map_err(VoidError::from)?;
-
-    // Expand ~ in notes_path to absolute path
-    settings.notes_path = expand_tilde(&settings.notes_path);
+    normalize_settings(&mut settings);
 
     Ok(settings)
 }
 
 /// Save settings to disk
 #[tauri::command]
-pub async fn save_settings(settings: Settings) -> Result<(), VoidError> {
+pub async fn save_settings(mut settings: Settings) -> Result<(), VoidError> {
     let path = settings_path()?;
+    normalize_settings(&mut settings);
 
     // Ensure parent directory exists (use async metadata check)
     if let Some(parent) = path.parent() {
@@ -360,6 +541,51 @@ mod tests {
         let settings = Settings::default();
         assert_eq!(settings.cli_provider, CliProvider::Codex);
         assert_eq!(settings.ai_reasoning_effort, AiReasoningEffort::Medium);
+        assert!(!settings.sync.enabled);
+        assert_eq!(settings.sync.auth_mode, "github-app");
+        assert_eq!(settings.workspaces.len(), 1);
+        assert_eq!(
+            settings.active_workspace_id.as_deref(),
+            settings.workspaces.first().map(|workspace| workspace.id.as_str())
+        );
+    }
+
+    #[test]
+    fn test_legacy_settings_migrate_to_workspace() {
+        let json = r#"{
+            "notesPath": "/notes",
+            "theme": "system",
+            "autoSave": true,
+            "autoSaveDelay": 1000,
+            "aiProvider": null,
+            "taskDefaultView": "all",
+            "sync": {
+                "enabled": true,
+                "autoSync": false,
+                "authMode": "token",
+                "repository": null,
+                "artifactPolicy": {
+                    "includeMarkdown": true,
+                    "includeVoidHistory": true,
+                    "includePatterns": ["*.md"],
+                    "excludePatterns": [".void/sync/**"]
+                },
+                "lastSyncAt": null,
+                "paused": true
+            }
+        }"#;
+
+        let mut settings: Settings = serde_json::from_str(json).expect("settings should parse");
+        normalize_settings(&mut settings);
+
+        assert_eq!(settings.workspaces.len(), 1);
+        assert_eq!(settings.workspaces[0].notes_path, "/notes");
+        assert!(settings.workspaces[0].sync.enabled);
+        assert!(settings.sync.paused);
+        assert_eq!(
+            settings.active_workspace_id.as_deref(),
+            Some(settings.workspaces[0].id.as_str())
+        );
     }
 
     #[test]

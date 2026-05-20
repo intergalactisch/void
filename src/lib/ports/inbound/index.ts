@@ -10,6 +10,12 @@
  */
 
 export type { SettingsService } from './SettingsService';
+export type {
+  WorkspaceService,
+  WorkspaceSwitchBlocker,
+  WorkspaceSwitchResult,
+  CreateWorkspaceParams,
+} from './WorkspaceService';
 export type { FileService } from './FileService';
 export { CREDENTIAL_KEYS, PROVIDER_CREDENTIAL_MAP, getCredentialKeyForProvider, type CredentialKey, type CredentialService } from './CredentialService';
 
@@ -34,6 +40,13 @@ export type { ActionHistoryService, RecordedAction } from './ActionHistoryServic
 export type { ClipboardService, ClipboardEntry } from './ClipboardService';
 export type { AIRewriteService, AIRewriteState } from './AIRewriteService';
 export type { UpdaterService, UpdateInfo } from './UpdaterService';
+export type {
+  SyncService,
+  CreateAndAttachRepositoryParams,
+  AttachRepositoryParams,
+  RemoteNotePreview,
+  DeviceAuthPollResult,
+} from './SyncService';
 
 // AI Assistant services
 export type {

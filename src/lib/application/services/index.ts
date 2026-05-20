@@ -9,8 +9,10 @@
  */
 
 export { SettingsServiceImpl } from './SettingsServiceImpl';
+export { WorkspaceServiceImpl } from './WorkspaceServiceImpl';
 export { FileServiceImpl } from './FileServiceImpl';
 export { CredentialServiceImpl } from './CredentialServiceImpl';
+export { SyncServiceImpl } from './SyncServiceImpl';
 export { UpdaterServiceImpl } from './UpdaterServiceImpl';
 export { AIRewriteServiceImpl } from './AIRewriteServiceImpl';
 export { EditorServiceImpl } from './EditorServiceImpl';

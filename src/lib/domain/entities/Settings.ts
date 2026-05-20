@@ -10,6 +10,19 @@ import {
   isValidTodoView,
   type TodoView,
 } from '../values/TodoView';
+import {
+  cloneDefaultSyncSettings,
+  validateSyncSettings,
+  type SyncSettings,
+} from '../values/Sync';
+import {
+  cloneWorkspace,
+  createWorkspaceId,
+  DEFAULT_WORKSPACE_NAME,
+  validateWorkspace,
+  type GitHubAccountRef,
+  type Workspace,
+} from './Workspace';
 
 /** Known local CLI provider identifiers */
 export type CLIProviderId = 'claude-code' | 'codex';
@@ -42,7 +55,16 @@ export const UI_DENSITY_OPTIONS: UIDensity[] = ['compact', 'comfortable', 'spaci
 export const DEFAULT_UI_DENSITY: UIDensity = 'comfortable';
 
 export interface Settings {
+  /**
+   * Legacy mirror of the active workspace notes path.
+   * New code should prefer `activeWorkspaceId` + `workspaces`, but this keeps
+   * existing workspace-scoped services compatible during the migration.
+   */
   notesPath: string;
+  workspaces: Workspace[];
+  activeWorkspaceId: string;
+  /** Non-secret GitHub account metadata. Raw tokens live in Keychain only. */
+  githubAccount: GitHubAccountRef | null;
   theme: 'light' | 'dark' | 'system';
   autoSave: boolean;
   autoSaveDelay: number;
@@ -77,10 +99,27 @@ export interface Settings {
   captureShortcut: string;
   /** Default save target selected when the capture window opens. */
   captureTargetDefault: CaptureTarget;
+  /**
+   * Legacy mirror of the active workspace sync configuration.
+   * Updating this field updates the active workspace during validation.
+   */
+  sync: SyncSettings;
 }
+
+const DEFAULT_WORKSPACE: Workspace = {
+  id: createWorkspaceId(DEFAULT_WORKSPACE_NAME, '~/Documents/void', 'default'),
+  name: DEFAULT_WORKSPACE_NAME,
+  notesPath: '~/Documents/void',
+  createdAt: '2026-01-01T00:00:00.000Z',
+  lastOpenedAt: '2026-01-01T00:00:00.000Z',
+  sync: cloneDefaultSyncSettings(),
+};
 
 export const DEFAULT_SETTINGS: Settings = {
   notesPath: '~/Documents/void',
+  workspaces: [cloneWorkspace(DEFAULT_WORKSPACE)],
+  activeWorkspaceId: DEFAULT_WORKSPACE.id,
+  githubAccount: null,
   theme: 'system',
   autoSave: true,
   autoSaveDelay: 1000,
@@ -95,6 +134,7 @@ export const DEFAULT_SETTINGS: Settings = {
   density: DEFAULT_UI_DENSITY,
   captureShortcut: DEFAULT_CAPTURE_SHORTCUT,
   captureTargetDefault: DEFAULT_CAPTURE_TARGET,
+  sync: cloneDefaultSyncSettings(),
 };
 
 /** Allowed editor font sizes in pixels. */
@@ -129,7 +169,35 @@ function normalizeAIReasoningEffort(value: unknown): AIReasoningEffort {
 export function validateSettings(input: Partial<Settings>): Settings {
   const clamp = (n: number, min: number, max: number): number =>
     Math.min(Math.max(n, min), max);
-  const merged: Settings = { ...DEFAULT_SETTINGS, ...input };
+  const legacyNotesPath = typeof input.notesPath === 'string' && input.notesPath.trim()
+    ? input.notesPath
+    : DEFAULT_SETTINGS.notesPath;
+  const legacySync = validateSyncSettings(input.sync ?? DEFAULT_SETTINGS.sync);
+  const normalizedWorkspaces = normalizeWorkspaces(input.workspaces, legacyNotesPath, legacySync);
+  const activeWorkspaceId = normalizedWorkspaces.some((workspace) => workspace.id === input.activeWorkspaceId)
+    ? input.activeWorkspaceId as string
+    : normalizedWorkspaces[0]?.id ?? DEFAULT_SETTINGS.activeWorkspaceId;
+  const activeIndex = Math.max(
+    0,
+    normalizedWorkspaces.findIndex((workspace) => workspace.id === activeWorkspaceId)
+  );
+  const activeWorkspace = normalizedWorkspaces[activeIndex] ?? cloneWorkspace(DEFAULT_WORKSPACE);
+  const syncedActiveWorkspace: Workspace = {
+    ...activeWorkspace,
+    notesPath: legacyNotesPath,
+    sync: legacySync,
+  };
+  normalizedWorkspaces[activeIndex] = syncedActiveWorkspace;
+
+  const merged: Settings = {
+    ...DEFAULT_SETTINGS,
+    ...input,
+    notesPath: syncedActiveWorkspace.notesPath,
+    workspaces: normalizedWorkspaces.map(cloneWorkspace),
+    activeWorkspaceId: syncedActiveWorkspace.id,
+    githubAccount: normalizeGitHubAccount(input.githubAccount),
+    sync: syncedActiveWorkspace.sync,
+  };
 
   return {
     ...merged,
@@ -152,6 +220,54 @@ export function validateSettings(input: Partial<Settings>): Settings {
     captureTargetDefault: CAPTURE_TARGET_OPTIONS.includes(merged.captureTargetDefault as CaptureTarget)
       ? merged.captureTargetDefault
       : DEFAULT_CAPTURE_TARGET,
+    workspaces: merged.workspaces.map(cloneWorkspace),
+    activeWorkspaceId: merged.activeWorkspaceId,
+    githubAccount: merged.githubAccount,
+    sync: validateSyncSettings(merged.sync),
+  };
+}
+
+function normalizeWorkspaces(
+  value: unknown,
+  legacyNotesPath: string,
+  legacySync: SyncSettings,
+): Workspace[] {
+  const fallback: Workspace = {
+    ...cloneWorkspace(DEFAULT_WORKSPACE),
+    id: createWorkspaceId(DEFAULT_WORKSPACE_NAME, legacyNotesPath, 'legacy'),
+    notesPath: legacyNotesPath,
+    sync: legacySync,
+  };
+  if (!Array.isArray(value) || value.length === 0) return [fallback];
+  const seen = new Set<string>();
+  const workspaces: Workspace[] = [];
+  for (const item of value) {
+    const workspace = validateWorkspace(item, fallback);
+    let id = workspace.id;
+    let counter = 2;
+    while (seen.has(id)) {
+      id = `${workspace.id}-${counter}`;
+      counter += 1;
+    }
+    seen.add(id);
+    workspaces.push({ ...workspace, id });
+  }
+  return workspaces.length > 0 ? workspaces : [fallback];
+}
+
+function normalizeGitHubAccount(value: unknown): GitHubAccountRef | null {
+  if (!value || typeof value !== 'object') return null;
+  const account = value as Partial<GitHubAccountRef>;
+  if (account.provider !== 'github' || typeof account.login !== 'string' || !account.login.trim()) {
+    return null;
+  }
+  return {
+    provider: 'github',
+    login: account.login.trim(),
+    name: typeof account.name === 'string' ? account.name : null,
+    lastAuthenticatedAt: typeof account.lastAuthenticatedAt === 'string'
+      ? account.lastAuthenticatedAt
+      : null,
   };
 }
 

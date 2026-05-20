@@ -13,7 +13,7 @@
    * - Collapsible with smooth animation
    */
 
-  import { notesStore, todoStore, uiStore } from '$lib/stores';
+  import { notesStore, todoStore, uiStore, workspaceStore } from '$lib/stores';
   import type { NotesListItem, TagGroup } from '$lib/ports/inbound';
   import { createSortableState, type SortableState } from '$lib/components/dnd/sortable';
   import FolderTree from './FolderTree.svelte';
@@ -350,6 +350,12 @@
       sidebarElement.style.width = `${DEFAULT_WIDTH}px`;
     }
   }
+
+  function handleWorkspaceSelect(event: Event) {
+    const target = event.currentTarget as HTMLSelectElement;
+    if (!target.value || target.value === workspaceStore.activeWorkspace?.id) return;
+    void workspaceStore.switchTo(target.value);
+  }
 </script>
 
 <nav
@@ -364,19 +370,45 @@
   <div class="workspace-identity">
     <div class="workspace-left">
       <span class="workspace-icon" aria-hidden="true">V</span>
-      <span class="workspace-name">Void</span>
+      {#if workspaceStore.workspaces.length > 1}
+        <select
+          class="workspace-select"
+          aria-label="Switch workspace"
+          value={workspaceStore.activeWorkspace?.id ?? ''}
+          onchange={handleWorkspaceSelect}
+          disabled={workspaceStore.loading}
+        >
+          {#each workspaceStore.workspaces as workspace (workspace.id)}
+            <option value={workspace.id}>{workspace.name}</option>
+          {/each}
+        </select>
+      {:else}
+        <span class="workspace-name">{workspaceStore.activeWorkspace?.name ?? 'Void'}</span>
+      {/if}
     </div>
-    <button
-      type="button"
-      class="new-note-btn"
-      onclick={() => onCreateNote?.()}
-      title="New note (Cmd+N)"
-      aria-label="Create new note"
-    >
-      <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-      </svg>
-    </button>
+    <div class="workspace-actions">
+      <button
+        type="button"
+        class="workspace-action-btn"
+        class:active={notesStore.selectedPath === null && notesStore.activeTagView === null && notesStore.activeFolderPath === null}
+        onclick={handleOpenHome}
+        title="Home"
+        aria-label="Go to home screen"
+      >
+        <Home size={14} strokeWidth={1.8} aria-hidden="true" />
+      </button>
+      <button
+        type="button"
+        class="workspace-action-btn"
+        onclick={() => onCreateNote?.()}
+        title="New note (Cmd+N)"
+        aria-label="Create new note"
+      >
+        <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+        </svg>
+      </button>
+    </div>
   </div>
 
   <!-- Search row (opens Quick Switcher) -->
@@ -392,21 +424,6 @@
       </svg>
       <span class="search-text">Search</span>
       <kbd class="search-kbd" aria-hidden="true">Cmd+P</kbd>
-    </button>
-  </div>
-
-  <!-- Home navigation -->
-  <div class="section-items primary-nav">
-    <button
-      type="button"
-      class="sidebar-item home-item"
-      class:selected={notesStore.selectedPath === null && notesStore.activeTagView === null && notesStore.activeFolderPath === null}
-      onclick={handleOpenHome}
-      title="Home"
-      aria-label="Go to home screen"
-    >
-      <Home class="item-icon" size={15} strokeWidth={1.7} aria-hidden="true" />
-      <span class="item-text">Home</span>
     </button>
   </div>
 
@@ -907,7 +924,33 @@
     letter-spacing: -0.01em;
   }
 
-  .new-note-btn {
+  .workspace-select {
+    max-width: 142px;
+    min-width: 0;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-primary);
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.2;
+    padding: 2px 18px 2px 2px;
+    outline: none;
+  }
+
+  .workspace-select:hover,
+  .workspace-select:focus-visible {
+    border-color: var(--border-subtle);
+    background: var(--surface-hover);
+  }
+
+  .workspace-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .workspace-action-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -921,7 +964,17 @@
     transition: background var(--transition-fast), color var(--transition-fast);
   }
 
-  .new-note-btn:hover {
+  .workspace-action-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .workspace-action-btn:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: -2px;
+  }
+
+  .workspace-action-btn.active {
     background: var(--bg-hover);
     color: var(--text-primary);
   }
@@ -1054,10 +1107,6 @@
   /* Section items */
   .section-items {
     padding: 0 8px 2px;
-  }
-
-  .primary-nav {
-    padding-bottom: 6px;
   }
 
   .file-tree {

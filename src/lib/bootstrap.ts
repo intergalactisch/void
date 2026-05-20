@@ -32,6 +32,8 @@ import {
   TauriFileSystemAdapter,
   TauriSettingsAdapter,
   TauriCredentialAdapter,
+  TauriGitRepositoryAdapter,
+  TauriGitHubAdapter,
   TauriLoggerAdapter,
   TauriOperationStorageAdapter,
   TauriVoidStorageAdapter,
@@ -48,6 +50,8 @@ import {
   MemoryFileSystemAdapter,
   MemorySettingsAdapter,
   MemoryCredentialAdapter,
+  MemoryGitRepositoryAdapter,
+  MemoryGitHubAdapter,
   MemoryLoggerAdapter,
   MemoryOperationStorageAdapter,
   MemoryVoidStorageAdapter,
@@ -118,8 +122,10 @@ import {
 // Services (application) - use case implementations
 import {
   SettingsServiceImpl,
+  WorkspaceServiceImpl,
   FileServiceImpl,
   CredentialServiceImpl,
+  SyncServiceImpl,
   EditorServiceImpl,
   CommandServiceImpl,
   KeymapServiceImpl,
@@ -171,6 +177,7 @@ import { addToolInvocation, updateToolInvocation } from './domain/entities/Messa
 // Stores (UI primary adapters)
 import {
   settingsStore,
+  workspaceStore,
   aiStore,
   toolStore,
   todoStore,
@@ -191,6 +198,7 @@ import {
   branchesStore,
   clipboardStore,
   sessionsStore,
+  syncStore,
 } from './stores';
 
 // Logging
@@ -200,6 +208,7 @@ import type { LoggerPort } from './ports/outbound/LoggerPort';
 // Types
 import type {
   SettingsService,
+  WorkspaceService,
   FileService,
   CredentialService,
   EditorService,
@@ -230,6 +239,7 @@ import type {
   ActionHistoryService,
   ClipboardService,
   UpdaterService,
+  SyncService,
 } from './ports/inbound';
 import type {
   FileSystemPort,
@@ -258,6 +268,8 @@ import type {
   ApplicationNavigationPort,
   KeymapStoragePort,
   ContentSearchPort,
+  GitRepositoryPort,
+  GitHubPort,
   LineageStoragePort,
   UpdaterPort,
 } from './ports/outbound';
@@ -280,6 +292,8 @@ export interface AppContext {
   container: Container;
   /** Settings management service */
   settings: SettingsService;
+  /** Multi-workspace management service */
+  workspaces: WorkspaceService;
   /** File system operations service */
   files: FileService;
   /** Credential storage service */
@@ -328,6 +342,8 @@ export interface AppContext {
   captureManager: CaptureWindowManager;
   /** Auto-update checker (Tauri updater plugin). */
   updater: UpdaterService;
+  /** GitHub-backed local-first note sync. */
+  sync: SyncService;
 }
 
 /**
@@ -358,6 +374,8 @@ let appContext: AppContext | null = null;
 let captureDisposers:
   | { manager: CaptureWindowManager; bridge: CaptureMessageBridge | null }
   | null = null;
+
+let autoSyncTimer: ReturnType<typeof setTimeout> | null = null;
 
 function normalizeCLIProvider(value: unknown): CLIProviderId {
   return value === 'claude-code' ? 'claude-code' : 'codex';
@@ -488,6 +506,13 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
   container.register(TOKENS.ExternalNavigation, () =>
     useMocks ? new MemoryExternalNavigationAdapter() : new TauriExternalNavigationAdapter()
   );
+  if (useMocks) {
+    container.register(TOKENS.GitRepository, () => new MemoryGitRepositoryAdapter());
+    container.register(TOKENS.GitHub, () => new MemoryGitHubAdapter());
+  } else {
+    container.register(TOKENS.GitRepository, () => new TauriGitRepositoryAdapter());
+    container.register(TOKENS.GitHub, () => new TauriGitHubAdapter());
+  }
 
   // Register AI provider adapter (mock for now — inline rewrite uses AIProviderPort)
   container.register(TOKENS.AIProvider, () => new MockAIAdapter({ delay: 500 }));
@@ -808,6 +833,29 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
     )
   );
 
+  // Register GitHub sync service. Secrets remain behind CredentialService;
+  // settings store only the non-secret repo/account configuration.
+  container.register(TOKENS.SyncService, () =>
+    new SyncServiceImpl(
+      container.resolve<GitRepositoryPort>(TOKENS.GitRepository),
+      container.resolve<GitHubPort>(TOKENS.GitHub),
+      container.resolve<SettingsService>(TOKENS.SettingsService),
+      container.resolve<CredentialService>(TOKENS.CredentialService),
+      notesPath,
+      container.resolve<NotesService>(TOKENS.NotesService),
+      container.resolve<EditorService>(TOKENS.EditorService),
+      container.resolve<DocumentService>(TOKENS.DocumentService),
+      container.resolve<VoidStoragePort>(TOKENS.VoidStorage),
+    )
+  );
+  container.register(TOKENS.WorkspaceService, () =>
+    new WorkspaceServiceImpl(
+      container.resolve<SettingsService>(TOKENS.SettingsService),
+      container.resolve<EditorService>(TOKENS.EditorService),
+      container.resolve<SyncService>(TOKENS.SyncService),
+    )
+  );
+
   container.register(TOKENS.ReferenceService, () =>
     new ReferenceServiceImpl(
       container.resolve<NotesService>(TOKENS.NotesService),
@@ -1057,6 +1105,7 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
   // 5. Resolve services
   // Note: settingsService was resolved earlier to load settings
   const settings = settingsService;
+  const workspaces = container.resolve<WorkspaceService>(TOKENS.WorkspaceService);
   const files = container.resolve<FileService>(TOKENS.FileService);
   const credentials = container.resolve<CredentialService>(TOKENS.CredentialService);
   const editor = container.resolve<EditorService>(TOKENS.EditorService);
@@ -1081,6 +1130,8 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
   const clipboard = container.resolve<ClipboardService>(TOKENS.ClipboardService);
   const capture = container.resolve<CaptureService>(TOKENS.CaptureService);
   const updater = container.resolve<UpdaterService>(TOKENS.UpdaterService);
+  const sync = container.resolve<SyncService>(TOKENS.SyncService);
+  const gitRepository = container.resolve<GitRepositoryPort>(TOKENS.GitRepository);
 
   // Wire the global capture window + OS-level shortcut. In `useMocks` mode
   // (browser dev) we install a noop so the rest of the bootstrap is happy.
@@ -1134,6 +1185,77 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
   events.on('error:user-facing', ({ source, error }) => {
     toastStore.error(`${source}: ${error.message}`, { duration: 6000 });
   });
+  events.on('sync:completed', () => {
+    toastStore.success('Synced with GitHub', { duration: 4000 });
+  });
+  events.on('sync:failed', ({ error }) => {
+    toastStore.error(`GitHub sync failed: ${error.message}`, { duration: 8000 });
+  });
+  events.on('sync:conflict', ({ conflicts }) => {
+    toastStore.warning(`${conflicts.length} sync conflict${conflicts.length === 1 ? '' : 's'} need review`, {
+      duration: 8000,
+      onClick: () => uiStore.openSyncConflictWorkspace(),
+    });
+  });
+
+  const clearAutoSyncTimer = () => {
+    if (autoSyncTimer) clearTimeout(autoSyncTimer);
+    autoSyncTimer = null;
+  };
+
+  const canAutoSync = (): boolean => {
+    const syncSettings = settings.current().sync;
+    if (!syncSettings.enabled || !syncSettings.autoSync || syncSettings.paused || !syncSettings.repository) {
+      return false;
+    }
+    if (syncStore.status.operation !== 'idle' || syncStore.status.kind === 'syncing') {
+      return false;
+    }
+    const editorState = editor.getState();
+    return !editorState.isSaving
+      && !editorState.aiProcessing
+      && editorState.tabs.every((tab) => !tab.isDirty && !tab.isSaving);
+  };
+
+  const scheduleAutoSync = (delayMs = 30_000) => {
+    const syncSettings = settings.current().sync;
+    if (!syncSettings.enabled || !syncSettings.autoSync || syncSettings.paused || !syncSettings.repository) {
+      clearAutoSyncTimer();
+      return;
+    }
+    clearAutoSyncTimer();
+    autoSyncTimer = setTimeout(async () => {
+      autoSyncTimer = null;
+      if (!canAutoSync()) {
+        scheduleAutoSync(30_000);
+        return;
+      }
+      const detected = await gitRepository.detect(notesPath);
+      if (!detected.ok) {
+        log.warn('Skipped background GitHub sync because Git status failed', {
+          error: detected.error.message,
+        });
+        return;
+      }
+      const repo = detected.value;
+      const hasChanges =
+        repo.changedFiles.length > 0 ||
+        repo.ahead > 0 ||
+        repo.behind > 0 ||
+        repo.conflicts.length > 0;
+      if (!hasChanges) {
+        log.debug('Skipped background GitHub sync; no Git changes');
+        return;
+      }
+      const result = await sync.syncNow();
+      if (!result.ok) {
+        log.warn('Background GitHub sync failed', { error: result.error.message });
+      }
+    }, delayMs);
+  };
+
+  events.on('document:saved', () => scheduleAutoSync());
+  events.on('file:changed', () => scheduleAutoSync(60_000));
 
   events.on('settings:changed', ({ key }) => {
     if (key === 'cliProvider' || key === 'aiReasoningEffort') {
@@ -1150,6 +1272,7 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
 
   // 6. Initialize stores (UI primary adapters)
   settingsStore.init(settings);
+  workspaceStore.init(workspaces);
   aiStore.init(aiAssistant);
   aiStore.initAgent(container.resolve<AgentLoopService>(TOKENS.AgentLoopService));
   aiStore.initAgentOrchestration(agentOrchestration);
@@ -1179,6 +1302,7 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
   operationsStore.init(operationService);
   filesStore.init(files);
   credentialsStore.init(credentials);
+  syncStore.init(sync);
   aiStore.initOperations(operationService);
   commandCenterStore.reset();
   await operationsStore.load();
@@ -1265,6 +1389,7 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
   void pulseStore.refresh();
   branchesStore.init(container.resolve<import('./ports/inbound/BranchService').BranchService>(TOKENS.BranchService));
   clipboardStore.init(clipboard);
+  void syncStore.refreshStatus();
 
   // Start tracking command + note interactions.
   events.on('note:opened', ({ path }) => frecency.record('note', path));
@@ -1321,6 +1446,7 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
   appContext = {
     container,
     settings,
+    workspaces,
     files,
     credentials,
     editor,
@@ -1345,6 +1471,7 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
     capture,
     captureManager,
     updater,
+    sync,
   };
 
   // Track capture-related disposers so shutdown() can tear them down.
@@ -1418,6 +1545,10 @@ export async function shutdown(): Promise<void> {
   // see a half-disposed graph.
   appContext = null;
   bootstrapped = false;
+  if (autoSyncTimer) {
+    clearTimeout(autoSyncTimer);
+    autoSyncTimer = null;
+  }
   if (captureDisposers) {
     try {
       await captureDisposers.bridge?.dispose();

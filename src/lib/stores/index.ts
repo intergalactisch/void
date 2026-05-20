@@ -6,6 +6,7 @@
  */
 
 export { settingsStore } from './settings.svelte';
+export { workspaceStore } from './workspace.svelte';
 export { editorStore } from './editor.svelte';
 export { commandsStore } from './commands.svelte';
 export { uiStore } from './ui.svelte';
@@ -18,6 +19,7 @@ export { pulseStore } from './pulse.svelte';
 export { branchesStore } from './branches.svelte';
 export { clipboardStore } from './clipboard.svelte';
 export { sessionsStore } from './sessions.svelte';
+export { syncStore } from './sync.svelte';
 
 // AI Assistant stores
 export { aiStore } from './ai.svelte';

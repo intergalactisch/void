@@ -44,6 +44,22 @@ export type {
 } from './CommandRegistryPort';
 export type { KeymapStoragePort, KeymapOverrides } from './KeymapStoragePort';
 export type { ContentSearchPort, ContentSearchOptions, RawHit } from './ContentSearchPort';
+export type {
+  GitRepositoryPort,
+  GitCommitResult,
+  GitMergeConflictFile,
+  GitMergeFile,
+  GitMergeStartResult,
+  GitRemoteFile,
+  GitAuthOptions,
+  CreateBranchOptions,
+} from './GitRepositoryPort';
+export type {
+  GitHubPort,
+  GitHubCreateRepositoryParams,
+  GitHubDeviceAuthCompleteParams,
+  GitHubTokenResult,
+} from './GitHubPort';
 
 // AI Assistant ports
 export type {

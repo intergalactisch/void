@@ -23,6 +23,7 @@ class UIStore {
   relationsPanelVisible = $state(false);
   provenancePanelVisible = $state(false);
   lineageWorkspaceOpen = $state(false);
+  syncConflictWorkspaceOpen = $state(false);
   graphViewOpen = $state(false);
   pulseInboxOpen = $state(false);
   branchPickerOpen = $state(false);
@@ -140,6 +141,19 @@ class UIStore {
   toggleLineageWorkspace() {
     this.lineageWorkspaceOpen = !this.lineageWorkspaceOpen;
     if (this.lineageWorkspaceOpen) this.provenancePanelVisible = false;
+  }
+
+  // ---------- GitHub sync conflict workspace ----------
+  openSyncConflictWorkspace() {
+    this.syncConflictWorkspaceOpen = true;
+    this.settingsOpen = false;
+  }
+  closeSyncConflictWorkspace() {
+    this.syncConflictWorkspaceOpen = false;
+  }
+  toggleSyncConflictWorkspace() {
+    this.syncConflictWorkspaceOpen = !this.syncConflictWorkspaceOpen;
+    if (this.syncConflictWorkspaceOpen) this.settingsOpen = false;
   }
 
   // ---------- Graph view ----------

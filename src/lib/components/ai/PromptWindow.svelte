@@ -2,7 +2,7 @@
   /**
    * PromptWindow - Modal overlay for AI prompt interactions
    *
-   * A modal-style overlay activated by Cmd+Shift+K that provides:
+   * A modal-style overlay activated by Cmd+Shift+O that provides:
    * - Text input for prompts
    * - Streaming response display
    * - Tool execution status indicators
