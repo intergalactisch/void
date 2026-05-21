@@ -21,6 +21,7 @@ export { MockAIAdapter, type MockAIAdapterOptions } from './MockAIAdapter';
 export { MockAIAssistantAdapter, type MockAIAssistantAdapterOptions } from './MockAIAssistantAdapter';
 export { ClaudeAdapter, type ClaudeAdapterOptions } from './ClaudeAdapter';
 export { CLIAIAdapter, type CLIAIAdapterOptions } from './CLIAIAdapter';
+export { CLITextTransformAdapter } from './CLITextTransformAdapter';
 
 // Prompt utilities
 export {

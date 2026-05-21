@@ -10,10 +10,13 @@
  * local state.
  */
 
+export type SettingsSection = 'updates';
+
 class UIStore {
   // Modals / sheets
   shortcutSheetOpen = $state(false);
   settingsOpen = $state(false);
+  settingsSection = $state<SettingsSection | null>(null);
   quickSwitcherOpen = $state(false);
   searchPanelOpen = $state(false);
 
@@ -57,16 +60,21 @@ class UIStore {
   }
 
   // ---------- Settings ----------
-  openSettings() {
+  openSettings(section: SettingsSection | null = null) {
+    this.settingsSection = section;
     this.settingsOpen = true;
   }
 
   closeSettings() {
     this.settingsOpen = false;
+    this.settingsSection = null;
   }
 
   toggleSettings() {
     this.settingsOpen = !this.settingsOpen;
+    if (!this.settingsOpen) {
+      this.settingsSection = null;
+    }
   }
 
   // ---------- Quick switcher / command palette ----------

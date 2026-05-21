@@ -12,6 +12,7 @@ import { createUserMessage, createAssistantMessage } from '$lib/domain/entities/
 import { createTool } from '$lib/domain/entities/Tool';
 import type { ToolId } from '$lib/domain/values/ToolId';
 import type { AIAssistantRequest } from '$lib/ports/outbound';
+import { KEYLESS_CODEX_UNSUPPORTED_MESSAGE } from '$lib/core';
 
 const mockInvoke = vi.mocked(invoke);
 const mockListen = vi.mocked(listen);
@@ -232,5 +233,57 @@ describe('CLIAIAdapter live progress', () => {
 
     const result = await adapter.prompt(req);
     expect(result.ok).toBe(true);
+  });
+
+  it('sanitizes Codex API-key stderr before returning errors', async () => {
+    mockInvoke.mockImplementation(async (command) => {
+      if (command === 'check_cli_available') {
+        return { codex: true, claude: false, codex_flavor: 'exec' };
+      }
+
+      if (command === 'run_cli_prompt') {
+        return {
+          stdout: '',
+          stderr:
+            'Missing openai API key. Set the environment variable OPENAI_API_KEY and visit https://platform.openai.com/account/api-keys',
+          exit_code: 1,
+          timed_out: false,
+        };
+      }
+
+      throw new Error(`Unexpected command ${command}`);
+    });
+
+    const adapter = new CLIAIAdapter({ preferredCli: 'codex' });
+    const result = await adapter.prompt(request());
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toBe(KEYLESS_CODEX_UNSUPPORTED_MESSAGE);
+      expect(result.error.message).not.toContain('OPENAI_API_KEY');
+      expect(result.error.message).not.toContain('platform.openai.com');
+    }
+  });
+
+  it('fails fast for api-key-only Codex before invoking a prompt', async () => {
+    mockInvoke.mockImplementation(async (command) => {
+      if (command === 'check_cli_available') {
+        return { codex: true, claude: false, codex_flavor: 'api-key-only' };
+      }
+
+      if (command === 'run_cli_prompt') {
+        throw new Error('run_cli_prompt should not be called');
+      }
+
+      throw new Error(`Unexpected command ${command}`);
+    });
+
+    const adapter = new CLIAIAdapter({ preferredCli: 'codex' });
+    const result = await adapter.prompt(request());
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toBe(KEYLESS_CODEX_UNSUPPORTED_MESSAGE);
+    }
   });
 });

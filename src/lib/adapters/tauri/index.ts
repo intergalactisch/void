@@ -37,4 +37,12 @@ export {
 } from './TauriClipboardAdapter';
 
 // Commands (for direct Tauri access when needed)
-export { commands, fileCommands, settingsCommands, credentialCommands, gitCommands, githubCommands } from './commands';
+export {
+  commands,
+  fileCommands,
+  settingsCommands,
+  updaterCommands,
+  credentialCommands,
+  gitCommands,
+  githubCommands,
+} from './commands';

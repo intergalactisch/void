@@ -11,6 +11,7 @@ describe('Settings entity', () => {
       expect(DEFAULT_SETTINGS).toHaveProperty('theme');
       expect(DEFAULT_SETTINGS).toHaveProperty('autoSave');
       expect(DEFAULT_SETTINGS).toHaveProperty('autoSaveDelay');
+      expect(DEFAULT_SETTINGS).toHaveProperty('automaticUpdateChecks');
       expect(DEFAULT_SETTINGS).toHaveProperty('aiProvider');
       expect(DEFAULT_SETTINGS).toHaveProperty('cliProvider');
       expect(DEFAULT_SETTINGS).toHaveProperty('aiReasoningEffort');
@@ -31,6 +32,10 @@ describe('Settings entity', () => {
 
     it('has correct autoSaveDelay default', () => {
       expect(DEFAULT_SETTINGS.autoSaveDelay).toBe(1000);
+    });
+
+    it('has automatic update checks enabled by default', () => {
+      expect(DEFAULT_SETTINGS.automaticUpdateChecks).toBe(true);
     });
 
     it('has correct aiProvider default', () => {
@@ -85,6 +90,33 @@ describe('Settings entity', () => {
       const settings = validateSettings({ aiReasoningEffort: 'xhigh' });
 
       expect(settings.aiReasoningEffort).toBe('xhigh');
+    });
+
+    it('preserves automatic update opt-out', () => {
+      const settings = validateSettings({ automaticUpdateChecks: false });
+
+      expect(settings.automaticUpdateChecks).toBe(false);
+    });
+
+    it('falls back to automatic update checks enabled for invalid values', () => {
+      const settings = validateSettings({
+        automaticUpdateChecks: 'no' as unknown as Settings['automaticUpdateChecks'],
+      });
+
+      expect(settings.automaticUpdateChecks).toBe(true);
+    });
+
+    it('defaults automatic update checks for legacy JSON without the field', () => {
+      const legacy = JSON.parse(JSON.stringify({
+        notesPath: '~/Documents/void',
+        theme: 'system',
+        autoSave: true,
+        autoSaveDelay: 1000,
+      })) as Partial<Settings>;
+
+      const settings = validateSettings(legacy);
+
+      expect(settings.automaticUpdateChecks).toBe(true);
     });
   });
 
@@ -191,6 +223,14 @@ describe('Settings entity', () => {
         autoSave: false,
       };
       expect(settings.autoSave).toBe(false);
+    });
+
+    it('accepts automaticUpdateChecks as false', () => {
+      const settings: Settings = {
+        ...DEFAULT_SETTINGS,
+        automaticUpdateChecks: false,
+      };
+      expect(settings.automaticUpdateChecks).toBe(false);
     });
   });
 });

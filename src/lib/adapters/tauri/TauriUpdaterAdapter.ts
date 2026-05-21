@@ -1,47 +1,46 @@
 /**
- * TauriUpdaterAdapter - Secondary adapter for the Tauri updater plugin.
+ * TauriUpdaterAdapter - Secondary adapter for Void updater commands.
  *
- * Implements UpdaterPort by delegating to `@tauri-apps/plugin-updater`.
- * Caches the last `check()` result so a subsequent `downloadAndInstall()`
- * does not need to re-query the endpoint.
+ * Implements UpdaterPort by delegating to narrow Void-owned Tauri commands.
+ * The Rust side owns the pending update and the updater configuration.
  *
  * Part of Hexagonal Architecture - bridges UpdaterPort to Tauri infrastructure.
  */
 
 import { ok, err, toError, type Result } from '$lib/core';
 import type { UpdaterPort } from '$lib/ports/outbound';
-import type { UpdateInfo } from '$lib/ports/inbound/UpdaterService';
-import type { Update } from '@tauri-apps/plugin-updater';
+import type { UpdateInfo, UpdateInstallEvent } from '$lib/ports/inbound/UpdaterService';
+import { updaterCommands } from './commands';
 
 export class TauriUpdaterAdapter implements UpdaterPort {
-  private pending: Update | null = null;
-
-  async check(): Promise<Result<UpdateInfo | null, Error>> {
+  async currentVersion(): Promise<Result<string, Error>> {
     try {
-      const { check } = await import('@tauri-apps/plugin-updater');
-      const update = await check();
-      if (!update) {
-        this.pending = null;
-        return ok(null);
-      }
-      this.pending = update;
-      return ok({
-        version: update.version,
-        notes: update.body ?? '',
-        pubDate: update.date ?? '',
-      });
+      return ok(await updaterCommands.currentVersion());
     } catch (e) {
       return err(toError(e));
     }
   }
 
-  async downloadAndInstall(): Promise<Result<void, Error>> {
-    const update = this.pending;
-    if (!update) {
-      return err(new Error('No pending update — call check() first.'));
-    }
+  async check(): Promise<Result<UpdateInfo | null, Error>> {
     try {
-      await update.downloadAndInstall();
+      return ok(await updaterCommands.check());
+    } catch (e) {
+      return err(toError(e));
+    }
+  }
+
+  async downloadAndInstall(onEvent?: (event: UpdateInstallEvent) => void): Promise<Result<void, Error>> {
+    try {
+      await updaterCommands.install(onEvent);
+      return ok(undefined);
+    } catch (e) {
+      return err(toError(e));
+    }
+  }
+
+  async restart(): Promise<Result<void, Error>> {
+    try {
+      await updaterCommands.restart();
       return ok(undefined);
     } catch (e) {
       return err(toError(e));

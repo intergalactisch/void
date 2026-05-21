@@ -92,13 +92,13 @@ import {
   wireCommandKeybindings,
 } from './keymap';
 import {
-  MockAIAdapter,
   CLIAIAdapter,
+  CLITextTransformAdapter,
   CLISessionManagerAdapter,
   MemoryCLISessionManagerAdapter,
   ResultParserAdapter,
 } from './adapters/ai';
-import { ConfigurableCLIProvider } from './adapters/cli';
+import { ConfigurableCLIProvider, normalizeCodexCliFlavor } from './adapters/cli';
 
 // AI Assistant adapters
 import {
@@ -199,6 +199,7 @@ import {
   clipboardStore,
   sessionsStore,
   syncStore,
+  updaterStore,
 } from './stores';
 
 // Logging
@@ -377,6 +378,13 @@ let captureDisposers:
 
 let autoSyncTimer: ReturnType<typeof setTimeout> | null = null;
 
+export function shouldRunAutomaticUpdateCheck(
+  useMocks: boolean,
+  automaticUpdateChecks: boolean,
+): boolean {
+  return !useMocks && automaticUpdateChecks;
+}
+
 function normalizeCLIProvider(value: unknown): CLIProviderId {
   return value === 'claude-code' ? 'claude-code' : 'codex';
 }
@@ -514,9 +522,6 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
     container.register(TOKENS.GitHub, () => new TauriGitHubAdapter());
   }
 
-  // Register AI provider adapter (mock for now — inline rewrite uses AIProviderPort)
-  container.register(TOKENS.AIProvider, () => new MockAIAdapter({ delay: 500 }));
-
   // Register document storage (markdown adapter) with user's configured path
   container.register(TOKENS.DocumentStorage, () =>
     new MarkdownAdapter(
@@ -568,6 +573,11 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
     cliProviderSetting,
     aiReasoningEffort,
   });
+  container.register(TOKENS.AIProvider, () =>
+    new CLITextTransformAdapter(
+      container.resolve<AIAssistantProviderPort>(TOKENS.AIAssistantProvider)
+    )
+  );
 
   // Register TODO adapters
   container.register(TOKENS.TodoParser, () => new MarkdownTodoParser());
@@ -1274,6 +1284,8 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
 
   // 6. Initialize stores (UI primary adapters)
   settingsStore.init(settings);
+  updaterStore.init(updater);
+  void updaterStore.loadCurrentVersion();
   workspaceStore.init(workspaces);
   aiStore.init(aiAssistant);
   aiStore.initAgent(container.resolve<AgentLoopService>(TOKENS.AgentLoopService));
@@ -1415,12 +1427,15 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
   // 14. Emit ready event
   events.emit('app:ready');
 
-  // Fire-and-forget silent update check. On success with a payload, surface
-  // a toast with a click handler that downloads + installs. Errors during
-  // the background check are logged but never raised — offline launches
-  // and unreachable endpoints must not block app startup.
-  if (!useMocks) {
-    void updater.checkForUpdates({ silent: true }).then((result) => {
+  // Fire-and-forget silent update check. Opting out disables this automatic
+  // network call only; manual checks remain available from Settings and the
+  // native menu. Errors during the background check are logged but never
+  // raised — offline launches and unreachable endpoints must not block startup.
+  const automaticUpdateChecks = settingsResult.ok
+    ? settingsResult.value.automaticUpdateChecks
+    : true;
+  if (shouldRunAutomaticUpdateCheck(useMocks, automaticUpdateChecks)) {
+    void updaterStore.checkForUpdates({ silent: true }).then((result) => {
       if (!result.ok) {
         log.info('Background update check failed', { error: String(result.error) });
         return;
@@ -1429,16 +1444,7 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
       if (!update) return;
       toastStore.info(`Void v${update.version} available`, {
         duration: 10000,
-        onClick: () => {
-          void updater.installUpdate().then((installResult) => {
-            if (!installResult.ok) {
-              toastStore.error(
-                `Update failed: ${installResult.error.message}`,
-                { duration: 8000 },
-              );
-            }
-          });
-        },
+        onClick: () => uiStore.openSettings('updates'),
       });
     });
   }
@@ -1512,18 +1518,30 @@ export async function reinitializeAI(): Promise<void> {
   const preferredCli = cliProvider === 'claude-code' ? 'claude' : 'codex';
 
   const provider = appContext.container.resolve<AIAssistantProviderPort>(TOKENS.AIAssistantProvider);
+  let codexFlavor: ReturnType<typeof normalizeCodexCliFlavor> = 'exec';
+  let codexBinaryPath = '';
   if (provider instanceof CLIAIAdapter) {
     provider.setPreferredCli(preferredCli);
     provider.setReasoningEffort(aiReasoningEffort);
+    await provider.refreshAvailability();
+    codexFlavor = normalizeCodexCliFlavor(provider.getCodexFlavor());
+    codexBinaryPath = provider.getCodexPath() ?? '';
   }
 
   const cliProviderAdapter = appContext.container.resolve<CLIProviderPort>(TOKENS.CLIProvider);
   if (cliProviderAdapter instanceof ConfigurableCLIProvider) {
-    cliProviderAdapter.configure({ cliProvider, aiReasoningEffort });
+    cliProviderAdapter.configure({
+      cliProvider,
+      aiReasoningEffort,
+      codexFlavor,
+      codexBinaryPath,
+    });
   }
 
   getLogger('Bootstrap').info('Local AI CLI reconfigured', {
     cliProvider,
+    codexFlavor,
+    codexPath: codexBinaryPath,
     aiReasoningEffort,
   });
 }

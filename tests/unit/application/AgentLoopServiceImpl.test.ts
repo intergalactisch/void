@@ -35,7 +35,7 @@ describe('AgentLoopServiceImpl resource scheduling', () => {
     expect(order).toEqual(['start:first', 'end:first', 'start:second', 'end:second']);
   });
 
-  it('treats unscoped write tools as sequential barriers', async () => {
+  it('treats ambient-scope write tools as sequential barriers', async () => {
     const { service, order } = createLoop([
       toolCall('note:update', 'note-a', { noteId: 'Research/a.md', content: 'A' }),
       toolCall('editor:replace', 'active-editor', { text: 'Replace selected text' }),

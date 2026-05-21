@@ -27,6 +27,7 @@ export default defineTool<FormatArgs>({
   ],
   estimatedDuration: 50,
   accessMode: 'write',
+  resourceId: () => '@ambient:editor',
 
   async execute(args, { services, progress }) {
     progress(50, `Applying ${args.format} formatting...`);

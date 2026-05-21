@@ -28,6 +28,8 @@ pub struct Settings {
     pub theme: Theme,
     pub auto_save: bool,
     pub auto_save_delay: u32,
+    #[serde(default = "default_automatic_update_checks")]
+    pub automatic_update_checks: bool,
     pub ai_provider: Option<AiProvider>,
     #[serde(default = "default_cli_provider")]
     pub cli_provider: CliProvider,
@@ -100,6 +102,9 @@ fn default_capture_shortcut() -> String {
 }
 fn default_capture_target() -> CaptureTarget {
     CaptureTarget::Inbox
+}
+fn default_automatic_update_checks() -> bool {
+    true
 }
 fn default_sync_settings() -> SyncSettings {
     SyncSettings::default()
@@ -339,6 +344,7 @@ impl Default for Settings {
             theme: Theme::System,
             auto_save: true,
             auto_save_delay: 1000,
+            automatic_update_checks: default_automatic_update_checks(),
             ai_provider: None,
             cli_provider: default_cli_provider(),
             ai_reasoning_effort: default_ai_reasoning_effort(),
@@ -384,9 +390,10 @@ fn stable_id_suffix(value: &str) -> String {
 fn normalize_settings(settings: &mut Settings) {
     settings.notes_path = expand_tilde(&settings.notes_path);
     if settings.workspaces.is_empty() {
-        settings
-            .workspaces
-            .push(default_workspace(&settings.notes_path, settings.sync.clone()));
+        settings.workspaces.push(default_workspace(
+            &settings.notes_path,
+            settings.sync.clone(),
+        ));
     }
     for workspace in &mut settings.workspaces {
         workspace.notes_path = expand_tilde(&workspace.notes_path);
@@ -406,9 +413,19 @@ fn normalize_settings(settings: &mut Settings) {
     let active_id = settings
         .active_workspace_id
         .as_deref()
-        .filter(|id| settings.workspaces.iter().any(|workspace| workspace.id == *id))
+        .filter(|id| {
+            settings
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.id == *id)
+        })
         .map(ToString::to_string)
-        .or_else(|| settings.workspaces.first().map(|workspace| workspace.id.clone()));
+        .or_else(|| {
+            settings
+                .workspaces
+                .first()
+                .map(|workspace| workspace.id.clone())
+        });
     settings.active_workspace_id = active_id.clone();
     if let Some(active_id) = active_id {
         if let Some(active) = settings
@@ -539,12 +556,16 @@ mod tests {
         let settings = Settings::default();
         assert_eq!(settings.cli_provider, CliProvider::Codex);
         assert_eq!(settings.ai_reasoning_effort, AiReasoningEffort::Medium);
+        assert!(settings.automatic_update_checks);
         assert!(!settings.sync.enabled);
         assert_eq!(settings.sync.auth_mode, "github-app");
         assert_eq!(settings.workspaces.len(), 1);
         assert_eq!(
             settings.active_workspace_id.as_deref(),
-            settings.workspaces.first().map(|workspace| workspace.id.as_str())
+            settings
+                .workspaces
+                .first()
+                .map(|workspace| workspace.id.as_str())
         );
     }
 
@@ -599,8 +620,25 @@ mod tests {
 
         let settings: Settings = serde_json::from_str(json).expect("settings should parse");
         assert_eq!(settings.task_default_view, TaskDefaultView::All);
+        assert!(settings.automatic_update_checks);
         assert_eq!(settings.cli_provider, CliProvider::Codex);
         assert_eq!(settings.ai_reasoning_effort, AiReasoningEffort::Medium);
+    }
+
+    #[test]
+    fn test_automatic_update_checks_can_be_disabled() {
+        let json = r#"{
+            "notesPath": "/notes",
+            "theme": "system",
+            "autoSave": true,
+            "autoSaveDelay": 1000,
+            "automaticUpdateChecks": false,
+            "aiProvider": null,
+            "taskDefaultView": "all"
+        }"#;
+
+        let settings: Settings = serde_json::from_str(json).expect("settings should parse");
+        assert!(!settings.automatic_update_checks);
     }
 
     #[test]

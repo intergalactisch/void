@@ -1,5 +1,7 @@
 <script lang="ts">
   import { settingsStore, workspaceStore } from '$lib/stores';
+  import UpdateSettingsSection from '$lib/components/shared/UpdateSettingsSection.svelte';
+  import CLIProviderDetails from '$lib/components/shared/CLIProviderDetails.svelte';
   import {
     AI_REASONING_EFFORT_OPTIONS,
     CLI_PROVIDER_OPTIONS,
@@ -255,6 +257,8 @@
         </div>
       {/if}
 
+      <UpdateSettingsSection variant="page" />
+
       <!-- Settings Form -->
       <section class="settings-form">
         <!-- Notes Path -->
@@ -348,6 +352,7 @@
               </button>
             {/each}
           </div>
+          <CLIProviderDetails selectedProvider={settingsStore.settings.cliProvider} />
         </fieldset>
 
         <!-- Reasoning Effort -->

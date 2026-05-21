@@ -43,3 +43,9 @@ export {
   serializeMetadataFrontmatter,
   combineMarkdownWithFrontmatter,
 } from './markdownFrontmatter';
+
+export {
+  KEYLESS_CODEX_UNSUPPORTED_MESSAGE,
+  containsApiKeyGuidance,
+  sanitizeCLIErrorMessage,
+} from './cliErrors';

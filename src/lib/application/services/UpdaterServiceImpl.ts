@@ -8,11 +8,15 @@
  */
 
 import type { Result } from '$lib/core';
-import type { UpdaterService, UpdateInfo } from '$lib/ports/inbound';
+import type { UpdaterService, UpdateInfo, UpdateInstallEvent } from '$lib/ports/inbound';
 import type { UpdaterPort } from '$lib/ports/outbound';
 
 export class UpdaterServiceImpl implements UpdaterService {
   constructor(private updater: UpdaterPort) {}
+
+  async getCurrentVersion(): Promise<Result<string, Error>> {
+    return this.updater.currentVersion();
+  }
 
   async checkForUpdates(
     _options?: { silent?: boolean }
@@ -20,7 +24,11 @@ export class UpdaterServiceImpl implements UpdaterService {
     return this.updater.check();
   }
 
-  async installUpdate(): Promise<Result<void, Error>> {
-    return this.updater.downloadAndInstall();
+  async installUpdate(onEvent?: (event: UpdateInstallEvent) => void): Promise<Result<void, Error>> {
+    return this.updater.downloadAndInstall(onEvent);
+  }
+
+  async restartApp(): Promise<Result<void, Error>> {
+    return this.updater.restart();
   }
 }

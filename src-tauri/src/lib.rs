@@ -8,16 +8,17 @@ use commands::{
     get_settings_path, git_abort_merge, git_begin_merge, git_build_divergence_conflict,
     git_commit_all, git_commit_merge, git_create_branch, git_create_recovery_branch, git_detect,
     git_ensure_artifact_policy, git_fetch, git_init, git_is_merge_in_progress,
-    git_list_local_branches, git_list_merge_conflicts, git_pull_ff, git_push, git_push_dry_run, git_read_merge_file,
-    git_read_remote_file, git_set_remote, git_stage_paths, git_switch_branch,
+    git_list_local_branches, git_list_merge_conflicts, git_pull_ff, git_push, git_push_dry_run,
+    git_read_merge_file, git_read_remote_file, git_set_remote, git_stage_paths, git_switch_branch,
     git_write_working_file, github_begin_device_auth, github_check_repo_name,
     github_complete_device_auth, github_create_repo, github_get_repository, github_get_void_ready,
-    github_list_branches, github_list_repositories, github_revoke_token, github_validate_token, has_credential,
-    list_directory, move_to_trash, read_file, remove_directory, rename_path, run_cli_prompt, save_settings,
-    spawn_cli_process, start_clipboard_watcher, store_credential, unwatch_all, unwatch_directory,
-    void_append_jsonl, void_append_provenance, void_ensure_dir, void_list_dir, void_read_json,
-    void_read_jsonl, void_read_provenance, void_write_json, watch_directory, web_fetch, write_file,
-    ProcessRegistry, WatcherRegistry,
+    github_list_branches, github_list_repositories, github_revoke_token, github_validate_token,
+    has_credential, list_directory, move_to_trash, read_file, remove_directory, rename_path,
+    run_cli_prompt, save_settings, spawn_cli_process, start_clipboard_watcher, store_credential,
+    unwatch_all, unwatch_directory, void_append_jsonl, void_append_provenance, void_ensure_dir,
+    void_list_dir, void_read_json, void_read_jsonl, void_read_provenance, void_updater_check,
+    void_updater_current_version, void_updater_install, void_updater_restart, void_write_json,
+    watch_directory, web_fetch, write_file, PendingUpdate, ProcessRegistry, WatcherRegistry,
 };
 use serde::Serialize;
 use std::time::{Duration, Instant};
@@ -119,9 +120,7 @@ fn setup_menu_bar(app: &mut tauri::App) -> tauri::Result<()> {
             handle_menu_event(app, event.id().as_ref());
         });
 
-    if let Ok(icon) =
-        tauri::image::Image::from_bytes(include_bytes!("../icons/menu-bar.png"))
-    {
+    if let Ok(icon) = tauri::image::Image::from_bytes(include_bytes!("../icons/menu-bar.png")) {
         tray = tray.icon(icon);
     }
 
@@ -142,6 +141,7 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(ProcessRegistry::default())
+        .manage(PendingUpdate::default())
         .manage(WatcherRegistry::default())
         .setup(|app| {
             setup_menu_bar(app)?;
@@ -168,6 +168,11 @@ pub fn run() {
             get_settings,
             save_settings,
             get_settings_path,
+            // App updater commands
+            void_updater_current_version,
+            void_updater_check,
+            void_updater_install,
+            void_updater_restart,
             // GitHub sync commands
             git_detect,
             git_init,

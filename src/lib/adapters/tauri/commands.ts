@@ -8,9 +8,10 @@
  * These commands map directly to Rust commands defined in src-tauri/src/commands/
  */
 
-import { invoke } from '@tauri-apps/api/core';
+import { Channel, invoke } from '@tauri-apps/api/core';
 import type { FileEntry } from '$lib/core';
 import type { Settings } from '$lib/domain';
+import type { UpdateInfo, UpdateInstallEvent } from '$lib/ports/inbound';
 import type {
   GitBranchInfo,
   GitHubBranchSummary,
@@ -147,6 +148,30 @@ export const settingsCommands = {
    * Get path to settings file
    */
   getSettingsPath: (): Promise<string> => invoke<string>('get_settings_path'),
+};
+
+/**
+ * App updater commands.
+ *
+ * These wrap narrow Void-owned Rust commands instead of exposing the generic
+ * updater plugin surface to the webview. The endpoint, public key, target,
+ * headers, proxy, timeout, and downgrade behavior stay owned by Rust/Tauri
+ * configuration.
+ */
+export const updaterCommands = {
+  currentVersion: (): Promise<string> => invoke<string>('void_updater_current_version'),
+
+  check: (): Promise<UpdateInfo | null> => invoke<UpdateInfo | null>('void_updater_check'),
+
+  install: (onEvent?: (event: UpdateInstallEvent) => void): Promise<void> => {
+    const channel = new Channel<UpdateInstallEvent>();
+    if (onEvent) {
+      channel.onmessage = onEvent;
+    }
+    return invoke<void>('void_updater_install', { onEvent: channel });
+  },
+
+  restart: (): Promise<void> => invoke<void>('void_updater_restart'),
 };
 
 /**
@@ -384,6 +409,7 @@ export const githubCommands = {
 export const commands = {
   files: fileCommands,
   settings: settingsCommands,
+  updater: updaterCommands,
   credentials: credentialCommands,
   git: gitCommands,
   github: githubCommands,

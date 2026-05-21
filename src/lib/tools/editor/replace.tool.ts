@@ -43,7 +43,7 @@ export default defineTool<ReplaceArgs, ReplaceResult>({
   ],
   estimatedDuration: 50,
   accessMode: 'write',
-  resourceId: () => 'active-editor',
+  resourceId: () => '@ambient:editor',
 
   async execute(args, { services, progress, invocation }) {
     progress(20, 'Resolving selection...');

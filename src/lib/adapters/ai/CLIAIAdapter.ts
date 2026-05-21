@@ -6,14 +6,18 @@
  *
  * Supports:
  * - Claude CLI (`claude --print -p "prompt" file`)
- * - Codex CLI (`codex exec -c model_reasoning_effort="..." "prompt"`)
+ * - Codex CLI (`codex exec ... "prompt"` on newer builds, `codex -q "prompt"` on legacy builds)
  *
  * Part of the Hexagonal Architecture adapter layer.
  */
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import type { Result } from '$lib/core';
+import {
+  KEYLESS_CODEX_UNSUPPORTED_MESSAGE,
+  sanitizeCLIErrorMessage,
+  type Result,
+} from '$lib/core';
 import type { AIResponse, AIResponseChunk, AIStatusUpdate } from '$lib/domain/values/AIResponse';
 import { getLogger } from '$lib/logging';
 import { createEmptyResponse, parseToolCalls, extractChatContent } from '$lib/domain/values/AIResponse';
@@ -33,6 +37,12 @@ import type {
 interface CLIAvailability {
   claude: boolean;
   codex: boolean;
+  codex_flavor?: 'exec' | 'legacy' | 'api-key-only' | string;
+  codexFlavor?: 'exec' | 'legacy' | 'api-key-only' | string;
+  codex_version?: string;
+  codexVersion?: string;
+  codex_path?: string;
+  codexPath?: string;
 }
 
 interface CLIAIResult {
@@ -63,6 +73,22 @@ export interface CLIAIAdapterOptions {
 
 const log = getLogger('CLIAdapter');
 const STATUS_THROTTLE_MS = 1_000;
+
+function getCodexFlavor(availability: CLIAvailability): string | undefined {
+  return availability.codex_flavor ?? availability.codexFlavor;
+}
+
+function getCodexVersion(availability: CLIAvailability): string | undefined {
+  return availability.codex_version ?? availability.codexVersion;
+}
+
+function getCodexPath(availability: CLIAvailability): string | undefined {
+  return availability.codex_path ?? availability.codexPath;
+}
+
+function isCodexApiKeyOnly(availability: CLIAvailability | null): boolean {
+  return availability ? getCodexFlavor(availability) === 'api-key-only' : false;
+}
 
 function parseJsonLine(line: string): Record<string, unknown> | null {
   const trimmed = line.trim();
@@ -352,7 +378,8 @@ export class CLIAIAdapter implements AIAssistantProviderPort {
   /** Update the selected local CLI when Settings changes. */
   setPreferredCli(cli: 'claude' | 'codex'): void {
     this.preferredCli = cli;
-    this.selectActiveCli();
+    this.availability = null;
+    this.activeCli = null;
   }
 
   /** Update Codex reasoning effort when Settings changes. */
@@ -410,6 +437,14 @@ export class CLIAIAdapter implements AIAssistantProviderPort {
       return { ok: false, error: new Error(`${selected} CLI not found. Install it or choose another local CLI in Settings.`) };
     }
 
+    if (this.activeCli === 'codex' && isCodexApiKeyOnly(this.availability)) {
+      await this.detectCLI(true);
+    }
+
+    if (this.activeCli === 'codex' && isCodexApiKeyOnly(this.availability)) {
+      return { ok: false, error: new Error(KEYLESS_CODEX_UNSUPPORTED_MESSAGE) };
+    }
+
     // Get the file path from context and resolve to absolute (optional — AI works without a note)
     const relativePath = request.context.currentNote?.path;
     const filePath = relativePath
@@ -451,13 +486,28 @@ export class CLIAIAdapter implements AIAssistantProviderPort {
         return { ok: false, error: new Error('CLI timed out after 5 minutes') };
       }
 
-      if (result.exit_code !== 0 && !result.stdout) {
-        log.error('CLI exited with error', { cli: this.activeCli, exitCode: result.exit_code, stderr: result.stderr });
-        onChunk?.(status('cli-finish', 'Local agent failed', 'failed'));
-        return {
-          ok: false,
-          error: new Error(result.stderr || `CLI exited with code ${result.exit_code}`),
-        };
+      if (result.exit_code !== 0) {
+        const rawError = result.stderr || result.stdout || `CLI exited with code ${result.exit_code}`;
+        const sanitizedError = sanitizeCLIErrorMessage(rawError);
+        const hasSensitiveGuidance = sanitizedError !== rawError;
+        if (result.stdout.trim() && !hasSensitiveGuidance) {
+          log.warn('CLI exited non-zero with stdout; attempting to parse output', {
+            cli: this.activeCli,
+            exitCode: result.exit_code,
+            stderr: sanitizeCLIErrorMessage(result.stderr),
+          });
+        } else {
+          log.error('CLI exited with error', {
+            cli: this.activeCli,
+            exitCode: result.exit_code,
+            stderr: sanitizedError,
+          });
+          onChunk?.(status('cli-finish', 'Local agent failed', 'failed'));
+          return {
+            ok: false,
+            error: new Error(sanitizedError),
+          };
+        }
       }
 
       const finalMessage = result.final_message?.trim();
@@ -484,9 +534,10 @@ export class CLIAIAdapter implements AIAssistantProviderPort {
 
       return { ok: true, value: response };
     } catch (e) {
-      log.error('Prompt failed', { cli: this.activeCli, error: e instanceof Error ? e.message : String(e) });
+      const sanitizedError = sanitizeCLIErrorMessage(e);
+      log.error('Prompt failed', { cli: this.activeCli, error: sanitizedError });
       onChunk?.(status('cli-finish', 'Local agent failed', 'failed'));
-      return { ok: false, error: e instanceof Error ? e : new Error(String(e)) };
+      return { ok: false, error: new Error(sanitizedError) };
     } finally {
       unlisten?.();
     }
@@ -560,9 +611,21 @@ export class CLIAIAdapter implements AIAssistantProviderPort {
     return this.activeCli;
   }
 
+  getCodexFlavor(): string | undefined {
+    return this.availability ? getCodexFlavor(this.availability) : undefined;
+  }
+
+  getCodexPath(): string | undefined {
+    return this.availability ? getCodexPath(this.availability) : undefined;
+  }
+
+  async refreshAvailability(): Promise<void> {
+    await this.detectCLI(true);
+  }
+
   /** Detect available CLI tools */
-  private async detectCLI(): Promise<void> {
-    if (this.availability !== null) return;
+  private async detectCLI(force = false): Promise<void> {
+    if (!force && this.availability !== null) return;
 
     try {
       this.availability = await invoke<CLIAvailability>('check_cli_available');
@@ -572,7 +635,14 @@ export class CLIAIAdapter implements AIAssistantProviderPort {
 
     this.selectActiveCli();
 
-    log.info('CLI detection complete', { claude: this.availability.claude, codex: this.availability.codex, active: this.activeCli });
+    log.info('CLI detection complete', {
+      claude: this.availability.claude,
+      codex: this.availability.codex,
+      codexFlavor: getCodexFlavor(this.availability),
+      codexVersion: getCodexVersion(this.availability),
+      codexPath: getCodexPath(this.availability),
+      active: this.activeCli,
+    });
   }
 
   private selectActiveCli(): void {

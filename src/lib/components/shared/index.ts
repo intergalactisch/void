@@ -10,6 +10,8 @@ export { default as Toast } from './Toast.svelte';
 export { default as ToastContainer } from './ToastContainer.svelte';
 export { default as StatusBar } from './StatusBar.svelte';
 export { default as SettingsPanel } from './SettingsPanel.svelte';
+export { default as CLIProviderDetails } from './CLIProviderDetails.svelte';
+export { default as UpdateSettingsSection } from './UpdateSettingsSection.svelte';
 export { default as GitHubSyncSection } from './GitHubSyncSection.svelte';
 export { default as SyncConflictWorkspace } from './SyncConflictWorkspace.svelte';
 export { default as ShortcutSheet } from './ShortcutSheet.svelte';

@@ -6,7 +6,9 @@
    * that slides in from the right edge. Keeps the user in their writing flow.
    */
 
-  import { settingsStore, keymapStore } from '$lib/stores';
+  import { settingsStore, keymapStore, uiStore } from '$lib/stores';
+  import UpdateSettingsSection from './UpdateSettingsSection.svelte';
+  import CLIProviderDetails from './CLIProviderDetails.svelte';
   import { Layers } from '@lucide/svelte';
   import {
     AI_REASONING_EFFORT_OPTIONS,
@@ -41,6 +43,7 @@
   let { isOpen = false, onClose }: Props = $props();
 
   let panelRef: HTMLDivElement | null = $state(null);
+  let updateSectionRef: HTMLDivElement | null = $state(null);
   let focusTrapCleanup: (() => void) | null = null;
 
   // Local form state
@@ -71,6 +74,14 @@
     } else if (focusTrapCleanup) {
       focusTrapCleanup();
       focusTrapCleanup = null;
+    }
+  });
+
+  $effect(() => {
+    if (isOpen && uiStore.settingsSection === 'updates' && updateSectionRef) {
+      setTimeout(() => {
+        updateSectionRef?.scrollIntoView({ block: 'start' });
+      }, 0);
     }
   });
 
@@ -305,6 +316,10 @@
             <span class="workspaces-pointer-arrow" aria-hidden="true">→</span>
           </a>
 
+          <div bind:this={updateSectionRef}>
+            <UpdateSettingsSection />
+          </div>
+
           <!-- Auto Save -->
           <div class="setting-group">
             <span class="group-label" id="sp-autoSaveLabel">AUTO SAVE</span>
@@ -468,6 +483,7 @@
                 </button>
               {/each}
             </div>
+            <CLIProviderDetails selectedProvider={settingsStore.settings.cliProvider} />
           </fieldset>
 
           <!-- Reasoning Effort -->

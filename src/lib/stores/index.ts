@@ -20,6 +20,7 @@ export { branchesStore } from './branches.svelte';
 export { clipboardStore } from './clipboard.svelte';
 export { sessionsStore } from './sessions.svelte';
 export { syncStore } from './sync.svelte';
+export { updaterStore } from './updater.svelte';
 
 // AI Assistant stores
 export { aiStore } from './ai.svelte';

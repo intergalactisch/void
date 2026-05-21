@@ -6,6 +6,7 @@ pub mod files;
 pub mod process_manager;
 pub mod settings;
 pub mod sync;
+pub mod updater;
 pub mod void_storage;
 pub mod web_fetch;
 
@@ -17,5 +18,6 @@ pub use files::*;
 pub use process_manager::*;
 pub use settings::*;
 pub use sync::*;
+pub use updater::*;
 pub use void_storage::*;
 pub use web_fetch::*;

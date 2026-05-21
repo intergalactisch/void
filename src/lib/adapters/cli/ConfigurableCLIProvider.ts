@@ -17,11 +17,13 @@ import {
   type CLIProviderId,
 } from '$lib/domain';
 import { ClaudeCodeProvider } from './ClaudeCodeProvider';
-import { CodexProvider } from './CodexProvider';
+import { CodexProvider, type CodexCliFlavor } from './CodexProvider';
 
 export interface ConfigurableCLIProviderOptions {
   cliProvider: CLIProviderId;
   aiReasoningEffort?: AIReasoningEffort;
+  codexFlavor?: CodexCliFlavor;
+  codexBinaryPath?: string;
 }
 
 function createProvider(options: ConfigurableCLIProviderOptions): CLIProviderPort {
@@ -31,6 +33,8 @@ function createProvider(options: ConfigurableCLIProviderOptions): CLIProviderPor
 
   return new CodexProvider({
     reasoningEffort: options.aiReasoningEffort ?? DEFAULT_AI_REASONING_EFFORT,
+    flavor: options.codexFlavor ?? 'exec',
+    ...(options.codexBinaryPath ? { binaryPath: options.codexBinaryPath } : {}),
   });
 }
 
@@ -42,6 +46,8 @@ export class ConfigurableCLIProvider implements CLIProviderPort {
     this.options = {
       cliProvider: options.cliProvider,
       aiReasoningEffort: options.aiReasoningEffort ?? DEFAULT_AI_REASONING_EFFORT,
+      codexFlavor: options.codexFlavor ?? 'exec',
+      codexBinaryPath: options.codexBinaryPath ?? '',
     };
     this.provider = createProvider(this.options);
   }

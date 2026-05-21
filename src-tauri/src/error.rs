@@ -98,6 +98,9 @@ pub enum VoidError {
     #[error("Web fetch failed: {0}")]
     WebFetch(String),
 
+    #[error("Updater failed: {0}")]
+    Updater(String),
+
     #[error("File watcher error: {0}")]
     Watcher(String),
 

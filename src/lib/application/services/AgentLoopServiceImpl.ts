@@ -35,6 +35,20 @@ const DEFAULT_MAX_TURNS = 15;
 const DEFAULT_MAX_CONCURRENCY = 5;
 const AGENT_DENIED_TOOLS = new Set<string>(['note:delete']);
 
+/**
+ * Prefix marking an "ambient" resource — a shared, ambient mutable surface
+ * such as the active editor, active note selection, or navigation state.
+ * The scheduler treats any resource id with this prefix as a sequential
+ * barrier: it can't be parallelised against other writes because the
+ * concrete target isn't known at scheduling time (e.g. which note the
+ * active editor currently displays).
+ */
+const AMBIENT_RESOURCE_PREFIX = '@ambient:';
+
+function isAmbientResource(resource: string | null | undefined): boolean {
+  return !!resource && resource.startsWith(AMBIENT_RESOURCE_PREFIX);
+}
+
 /** Initial idle state */
 const IDLE_STATE: AgentState = {
   status: 'idle',
@@ -84,9 +98,11 @@ function groupToolCalls(toolCalls: ToolCall[]): ToolGroup {
       parallel.push(tc);
     } else {
       const resource = meta.resourceId(tc.args);
-      if (!resource) {
-        // Unscoped mutations are barriers because the loop cannot prove
-        // whether they touch the active editor, navigation, or a generated path.
+      if (!resource || isAmbientResource(resource)) {
+        // Unscoped or ambient-scoped mutations are barriers because the loop
+        // cannot prove whether they touch the active editor, navigation, or a
+        // generated path. Ambient resources (prefixed with '@ambient:') name a
+        // shared mutable surface whose concrete target isn't known here.
         flushWriteWave();
         writeWaves.push([tc]);
         continue;

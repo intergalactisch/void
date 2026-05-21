@@ -68,6 +68,8 @@ export interface Settings {
   theme: 'light' | 'dark' | 'system';
   autoSave: boolean;
   autoSaveDelay: number;
+  /** Whether Void may check for app updates automatically on launch. */
+  automaticUpdateChecks: boolean;
   /** Legacy cloud/API provider setting. Ignored by current AI wiring. */
   aiProvider: 'claude' | 'openai' | 'local' | null;
   /** Local CLI provider for AI operations. */
@@ -123,6 +125,7 @@ export const DEFAULT_SETTINGS: Settings = {
   theme: 'system',
   autoSave: true,
   autoSaveDelay: 1000,
+  automaticUpdateChecks: true,
   aiProvider: null,
   cliProvider: 'codex',
   aiReasoningEffort: DEFAULT_AI_REASONING_EFFORT,
@@ -207,6 +210,9 @@ export function validateSettings(input: Partial<Settings>): Settings {
     lineHeight: clamp(merged.lineHeight, LINE_HEIGHT_RANGE.min, LINE_HEIGHT_RANGE.max),
     contentWidth: clamp(Math.round(merged.contentWidth), CONTENT_WIDTH_RANGE.min, CONTENT_WIDTH_RANGE.max),
     autoSaveDelay: clamp(Math.round(merged.autoSaveDelay), AUTO_SAVE_DELAY_RANGE.min, AUTO_SAVE_DELAY_RANGE.max),
+    automaticUpdateChecks: typeof merged.automaticUpdateChecks === 'boolean'
+      ? merged.automaticUpdateChecks
+      : DEFAULT_SETTINGS.automaticUpdateChecks,
     taskDefaultView: isValidTodoView(merged.taskDefaultView)
       ? merged.taskDefaultView
       : DEFAULT_TODO_VIEW,

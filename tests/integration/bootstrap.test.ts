@@ -10,10 +10,18 @@
  * reaches a UI test.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { bootstrap, resetBootstrap, getAppContext, isBootstrapped, shutdown } from '$lib/bootstrap';
+import {
+  bootstrap,
+  resetBootstrap,
+  getAppContext,
+  isBootstrapped,
+  shutdown,
+  shouldRunAutomaticUpdateCheck,
+} from '$lib/bootstrap';
 import { TOKENS } from '$lib/core';
 import type { SettingsService, FileService, CredentialService } from '$lib/ports/inbound';
-import type { CLIProviderPort } from '$lib/ports/outbound';
+import type { AIProviderPort, CLIProviderPort } from '$lib/ports/outbound';
+import { CLITextTransformAdapter } from '$lib/adapters/ai';
 
 describe('Bootstrap', () => {
   beforeEach(() => {
@@ -25,6 +33,12 @@ describe('Bootstrap', () => {
   });
 
   describe('bootstrap()', () => {
+    it('only runs automatic update checks outside mocks when enabled', () => {
+      expect(shouldRunAutomaticUpdateCheck(false, true)).toBe(true);
+      expect(shouldRunAutomaticUpdateCheck(false, false)).toBe(false);
+      expect(shouldRunAutomaticUpdateCheck(true, true)).toBe(false);
+    });
+
     it('initializes with mock adapters', async () => {
       const context = await bootstrap({ useMocks: true });
 
@@ -78,6 +92,13 @@ describe('Bootstrap', () => {
       const provider = context.container.resolve<CLIProviderPort>(TOKENS.CLIProvider);
 
       expect(provider.id).toBe('codex');
+    });
+
+    it('wires selected-text rewrites through the local CLI transform bridge', async () => {
+      const context = await bootstrap({ useMocks: true });
+      const provider = context.container.resolve<AIProviderPort>(TOKENS.AIProvider);
+
+      expect(provider).toBeInstanceOf(CLITextTransformAdapter);
     });
 
     it('services can load and save data', async () => {

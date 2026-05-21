@@ -24,6 +24,7 @@ export default defineTool<InsertArgs>({
   ],
   estimatedDuration: 50,
   accessMode: 'write',
+  resourceId: () => '@ambient:editor',
 
   async execute(args, { services, progress }) {
     progress(50, 'Inserting text...');

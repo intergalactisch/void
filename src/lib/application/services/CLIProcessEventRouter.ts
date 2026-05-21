@@ -20,6 +20,7 @@
 
 import type { Disposable } from '$lib/core/container';
 import type { Result } from '$lib/core/result';
+import { sanitizeCLIErrorMessage } from '$lib/core';
 import type { CLISessionManagerPort, CLIProcessEvent } from '$lib/ports/outbound/CLISessionManagerPort';
 import type { CLIProviderPort } from '$lib/ports/outbound/CLIProviderPort';
 import type { ResultParserPort } from '$lib/ports/outbound/ResultParserPort';
@@ -166,6 +167,18 @@ export class CLIProcessEventRouter implements Disposable {
     const op = this.getOperation(opId);
     if (!op) return;
 
+    if (event.exitCode !== 0) {
+      this.handleFailed({
+        type: 'failed',
+        processId: event.processId,
+        operationId: event.operationId,
+        error: sanitizeCLIErrorMessage(
+          event.stderr || event.stdout || `CLI exited with code ${event.exitCode}`
+        ),
+      });
+      return;
+    }
+
     // Determine output format — provider knows its own capabilities.
     const outputFormat = this.provider.supportsJsonOutput ? 'json' : 'text';
     const isJson = outputFormat === 'json' && event.stdout.startsWith('{');
@@ -221,7 +234,7 @@ export class CLIProcessEventRouter implements Disposable {
     const op = this.getOperation(opId);
     if (!op) return;
 
-    const failed = failOperation(op, event.error);
+    const failed = failOperation(op, sanitizeCLIErrorMessage(event.error));
     this.updateOperation(opId, failed);
     this.processToOperation.delete(event.processId);
     this.notify();

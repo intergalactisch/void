@@ -11,6 +11,7 @@
  */
 
 import { ok, err, type Result } from '$lib/core/result';
+import { sanitizeCLIErrorMessage } from '$lib/core';
 import type {
   OperationService,
   OperationRequest,
@@ -608,14 +609,14 @@ export class OperationServiceImpl implements OperationService {
       if (result.ok) {
         this.#processEvents.bindProcess(result.value.processId, started.id);
       } else {
-        const failed = failOperation(started, result.error.message);
+        const failed = failOperation(started, sanitizeCLIErrorMessage(result.error));
         this.#operations.set(started.id, failed);
         this.#notify();
         this.#processQueue();
         await this.#persistOperation(failed);
       }
     } catch (e) {
-      const failed = failOperation(started, e instanceof Error ? e.message : String(e));
+      const failed = failOperation(started, sanitizeCLIErrorMessage(e));
       this.#operations.set(started.id, failed);
       this.#notify();
       this.#processQueue();

@@ -39,7 +39,7 @@ export type {
 export type { ActionHistoryService, RecordedAction } from './ActionHistoryService';
 export type { ClipboardService, ClipboardEntry } from './ClipboardService';
 export type { AIRewriteService, AIRewriteState } from './AIRewriteService';
-export type { UpdaterService, UpdateInfo } from './UpdaterService';
+export type { UpdaterService, UpdateInfo, UpdateInstallEvent } from './UpdaterService';
 export type {
   SyncService,
   CreateAndAttachRepositoryParams,

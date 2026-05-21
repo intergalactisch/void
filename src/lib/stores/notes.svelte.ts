@@ -1292,6 +1292,14 @@ class NotesStore {
     this.#frecency?.clear('note');
   }
 
+  /**
+   * Remove a single note from recent history without touching the note.
+   */
+  removeRecentNote(path: string): void {
+    this.recentNotes = this.recentNotes.filter((recent) => recent.path !== path);
+    this.#frecency?.forget('note', path);
+  }
+
   // =========================================================================
   // Folder operations
   // =========================================================================

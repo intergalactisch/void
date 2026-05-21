@@ -3,7 +3,11 @@
  */
 
 export { ClaudeCodeProvider } from './ClaudeCodeProvider';
-export { CodexProvider } from './CodexProvider';
+export {
+  CodexProvider,
+  normalizeCodexCliFlavor,
+  type CodexCliFlavor,
+} from './CodexProvider';
 export {
   ConfigurableCLIProvider,
   type ConfigurableCLIProviderOptions,

@@ -18,7 +18,7 @@
   import { createSortableState, type SortableState } from '$lib/components/dnd/sortable';
   import FolderTree from './FolderTree.svelte';
   import { createFolderReorderDnd } from './folderReorderDnd';
-  import { ChevronRight, Clock, FileText, Folder, FolderPlus, Hash, Home, Layers, Plus, RefreshCw, Star, Trash2 } from '@lucide/svelte';
+  import { ChevronRight, Clock, FileText, Folder, FolderPlus, Hash, Home, Layers, MoreHorizontal, Plus, RefreshCw, Star, X } from '@lucide/svelte';
 
   interface Props {
     /** Whether the sidebar is visible */
@@ -33,7 +33,7 @@
     onOpenQuickSwitcher?: () => void;
     /** Callback to open the Tasks workspace */
     onOpenTasks?: () => void;
-    /** Callback to request deletion of a note */
+    /** Legacy callback accepted by older callers; deletion now lives in the dropdown menu. */
     onRequestDeleteNote?: (path: string, title: string) => void;
     /** Callback when a note is right-clicked */
     onNoteContextMenu?: (path: string, title: string, position: { x: number; y: number }, isFolder?: boolean) => void;
@@ -48,7 +48,6 @@
     onOpenSettings,
     onOpenQuickSwitcher,
     onOpenTasks,
-    onRequestDeleteNote,
     onNoteContextMenu,
     onRequestCreateFolder,
   }: Props = $props();
@@ -197,11 +196,16 @@
     onOpenHome?.();
   }
 
-  /** Handle note deletion from a row action */
-  function handleDeleteNote(note: Pick<NotesListItem, 'path' | 'title'>, event: MouseEvent) {
+  /** Open the standard note/folder dropdown from an inline row action. */
+  function handleOpenItemMenu(item: Pick<NotesListItem, 'path' | 'title'> & { isFolder?: boolean }, event: MouseEvent) {
+    handleNoteContextMenu(item, event);
+  }
+
+  /** Remove a note from Recent without deleting it. */
+  function handleRemoveRecent(note: Pick<NotesListItem, 'path' | 'title'>, event: MouseEvent) {
     event.preventDefault();
     event.stopPropagation();
-    onRequestDeleteNote?.(note.path, note.title);
+    notesStore.removeRecentNote(note.path);
   }
 
   /** Handle tag group toggle */
@@ -487,12 +491,21 @@
               <span class="item-text">{recent.title}</span>
               <button
                 type="button"
-                class="action-button action-button-danger"
-                onclick={(event) => handleDeleteNote(recent, event)}
-                aria-label={`Delete ${recent.title}`}
-                title="Delete note"
+                class="action-button recent-remove-button"
+                onclick={(event) => handleRemoveRecent(recent, event)}
+                aria-label={`Remove ${recent.title} from Recent`}
+                title="Remove from Recent"
               >
-                <Trash2 size={14} strokeWidth={1.8} aria-hidden="true" />
+                <X size={14} strokeWidth={1.9} aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                class="action-button"
+                onclick={(event) => handleOpenItemMenu(recent, event)}
+                aria-label={`More options for ${recent.title}`}
+                title="More options"
+              >
+                <MoreHorizontal size={14} strokeWidth={1.8} aria-hidden="true" />
               </button>
             </div>
           {/each}
@@ -549,17 +562,15 @@
                 <FileText class="item-icon-sm" size={14} strokeWidth={1.5} aria-hidden="true" />
               {/if}
               <span class="item-text">{note.title}</span>
-              {#if !note.isFolder}
-                <button
-                  type="button"
-                  class="action-button action-button-danger"
-                  onclick={(event) => handleDeleteNote(note, event)}
-                  aria-label={`Delete ${note.title}`}
-                  title="Delete note"
-                >
-                  <Trash2 size={14} strokeWidth={1.8} aria-hidden="true" />
-                </button>
-              {/if}
+              <button
+                type="button"
+                class="action-button"
+                onclick={(event) => handleOpenItemMenu(note, event)}
+                aria-label={`More options for ${note.title}`}
+                title="More options"
+              >
+                <MoreHorizontal size={14} strokeWidth={1.8} aria-hidden="true" />
+              </button>
               <button
                 type="button"
                 class="action-button"
@@ -729,12 +740,12 @@
                   <span class="item-text">{note.title}</span>
                   <button
                     type="button"
-                    class="action-button action-button-danger"
-                    onclick={(event) => handleDeleteNote(note, event)}
-                    aria-label={`Delete ${note.title}`}
-                    title="Delete note"
+                    class="action-button"
+                    onclick={(event) => handleOpenItemMenu(note, event)}
+                    aria-label={`More options for ${note.title}`}
+                    title="More options"
                   >
-                    <Trash2 size={14} strokeWidth={1.8} aria-hidden="true" />
+                    <MoreHorizontal size={14} strokeWidth={1.8} aria-hidden="true" />
                   </button>
                 </div>
               {/each}
@@ -1531,9 +1542,13 @@
     color: var(--text-primary);
   }
 
-  .action-button-danger:hover {
-    background: var(--color-error-bg);
-    color: var(--color-error);
+  .recent-remove-button {
+    opacity: 1;
+  }
+
+  .recent-remove-button:hover {
+    background: var(--bg-active);
+    color: var(--text-primary);
   }
 
   /* Section divider */

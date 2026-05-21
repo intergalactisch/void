@@ -7,7 +7,7 @@
    */
 
   import { onMount, onDestroy, untrack } from 'svelte';
-  import { notesStore, toastStore, settingsStore, aiStore, operationsStore, filesStore, editorStore, todoStore, uiStore, lineageStore } from '$lib/stores';
+  import { notesStore, toastStore, settingsStore, aiStore, operationsStore, filesStore, editorStore, todoStore, uiStore, lineageStore, updaterStore } from '$lib/stores';
   import { Sidebar, Breadcrumbs, QuickSwitcher, TagDetailView, FolderOverview, SearchPanel, GraphView } from '$lib/components/navigation';
   import NoteContextMenu from '$lib/components/navigation/NoteContextMenu.svelte';
   import CreateFolderModal from '$lib/components/navigation/CreateFolderModal.svelte';
@@ -574,10 +574,8 @@
   }
 
   async function runManualUpdateCheck() {
-    const ctx = getAppContext();
-    if (!ctx) return;
     const checkingId = toastStore.info('Checking for updates…', { duration: 0 });
-    const result = await ctx.updater.checkForUpdates({ silent: false });
+    const result = await updaterStore.checkForUpdates({ silent: false });
     toastStore.remove(checkingId);
     if (!result.ok) {
       toastStore.error(`Update check failed: ${result.error.message}`, { duration: 6000 });
@@ -590,14 +588,9 @@
     }
     toastStore.info(`Void v${update.version} available`, {
       duration: 10000,
-      onClick: () => {
-        void ctx.updater.installUpdate().then((installResult) => {
-          if (!installResult.ok) {
-            toastStore.error(`Update failed: ${installResult.error.message}`, { duration: 8000 });
-          }
-        });
-      },
+      onClick: () => uiStore.openSettings('updates'),
     });
+    uiStore.openSettings('updates');
   }
 
   onDestroy(() => {

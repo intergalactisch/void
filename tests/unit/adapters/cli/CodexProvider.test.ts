@@ -71,6 +71,37 @@ describe('CodexProvider', () => {
       'Find the latest OpenAI news',
     ]);
   });
+
+  it('builds quiet prompt args for supported legacy codex', () => {
+    const provider = new CodexProvider({ flavor: 'legacy' });
+
+    expect(provider.supportsNativeWebSearch).toBe(false);
+    expect(provider.buildArgs({
+      prompt: 'Rewrite this',
+      systemPrompt: 'Return only text',
+      webAccess: 'native',
+    })).toEqual([
+      '-q',
+      'Return only text\n\n---\n\nRewrite this',
+    ]);
+  });
+
+  it('fails before spawning api-key-only codex', () => {
+    const provider = new CodexProvider({ flavor: 'api-key-only' });
+
+    expect(() => provider.buildArgs({ prompt: 'Rewrite this' })).toThrow(
+      /requires API-key authentication/
+    );
+  });
+
+  it('can target a resolved Codex binary path', () => {
+    const provider = new CodexProvider({
+      flavor: 'exec',
+      binaryPath: '/custom/bin/codex',
+    });
+
+    expect(provider.binary).toBe('/custom/bin/codex');
+  });
 });
 
 describe('ClaudeCodeProvider', () => {
