@@ -604,8 +604,14 @@ export class EditorServiceImpl implements EditorService {
     this.clearSaveTimer();
     this.updateState({ isSaving: true });
 
-    // Mark the session saving while the disk write is in flight.
+    // Mark the session saving while the disk write is in flight, and
+    // snapshot the edit counter so we can tell whether any editor:change
+    // events landed between now and the post-save writeback. Comparing the
+    // counter is robust to non-content noise in proseMirrorToDomain (e.g.
+    // fresh block ids for nodes whose PM attrs.id is null) that would
+    // otherwise make two derived snapshots look unequal.
     if (session) session.isSaving = true;
+    const editCounterAtStart = session?.editCounter ?? 0;
 
     const result = await this.documentPort.save(currentDocument);
     if (!result.ok) {
@@ -629,11 +635,12 @@ export class EditorServiceImpl implements EditorService {
     // in flight, keep that newer editor state dirty instead of stamping the
     // older saved snapshot back over it.
     const latestDocument = this.getCurrentDocumentForSave();
-    const changedDuringSave =
-      latestDocument !== null &&
-      latestDocument.path === currentDocument.path &&
-      !documentsEqualForSave(latestDocument, currentDocument);
-    const stateDocument = changedDuringSave ? latestDocument : currentDocument;
+    const editCounterAtEnd = session?.editCounter ?? editCounterAtStart;
+    const changedDuringSave = editCounterAtEnd !== editCounterAtStart;
+    const stateDocument =
+      changedDuringSave && latestDocument !== null && latestDocument.path === currentDocument.path
+        ? latestDocument
+        : currentDocument;
     const dirtyAfterSave = changedDuringSave;
 
     if (session) {
@@ -999,6 +1006,10 @@ export class EditorServiceImpl implements EditorService {
         events.emit('editor:ready');
       }),
       editorPort.on('editor:change', ({ document }) => {
+        const session = this.state.activePath
+          ? this.sessions.get(this.state.activePath)
+          : null;
+        if (session) session.editCounter += 1;
         this.updateState({ document: { ...document, isDirty: true }, isDirty: true });
         events.emit('editor:change', { document });
         this.syncTodoSnapshotFromEditor(document);
@@ -1758,22 +1769,3 @@ function inferEditorCaptureReason(lineage?: LineageRecordOptions): NonNullable<L
   return 'autosave';
 }
 
-function documentsEqualForSave(a: Document, b: Document): boolean {
-  return a.path === b.path &&
-    stableStringify(a.meta) === stableStringify(b.meta) &&
-    stableStringify(a.blocks) === stableStringify(b.blocks);
-}
-
-function stableStringify(value: unknown): string {
-  return JSON.stringify(value, (_key, item) => {
-    if (!item || typeof item !== 'object' || Array.isArray(item) || item instanceof Date) {
-      return item;
-    }
-    return Object.keys(item as Record<string, unknown>)
-      .sort()
-      .reduce<Record<string, unknown>>((acc, key) => {
-        acc[key] = (item as Record<string, unknown>)[key];
-        return acc;
-      }, {});
-  });
-}

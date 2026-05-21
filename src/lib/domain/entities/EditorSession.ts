@@ -34,6 +34,14 @@ export interface EditorSession {
   externalMtime: number | null;
   /** Hash of the file body at last load/save (used for conflict detection). */
   externalHash: string | null;
+  /**
+   * Monotonic counter of editor:change events observed for this session. The
+   * save flow snapshots this before/after the disk write to detect edits that
+   * landed during an in-flight save, instead of comparing two derived
+   * document snapshots (which is fragile to non-content noise like block-id
+   * regeneration in the PM-to-domain converter).
+   */
+  editCounter: number;
 }
 
 /** Build a fresh session for a newly-opened document. */
@@ -47,5 +55,6 @@ export function createEditorSession(document: Document): EditorSession {
     conflictState: 'clean',
     externalMtime: null,
     externalHash: null,
+    editCounter: 0,
   };
 }

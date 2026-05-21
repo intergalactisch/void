@@ -377,6 +377,12 @@ describe('EditorServiceImpl — multi-tab sessions', () => {
           },
           isDirty: true,
         });
+        // No editor port is mounted in this suite, so the editor:change
+        // subscriber that normally bumps editCounter never runs. Simulate
+        // that signal so the in-flight-edit detector sees the landing edit.
+        const activePath = editor.getState().activePath;
+        const session = activePath ? editor['sessions'].get(activePath) : null;
+        if (session) session.editCounter += 1;
       }
       return ok(undefined);
     });
