@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 ### Security
 
+## [0.1.2] - 2026-05-21
+
+### Fixed
+- Editor "Unsaved changes" indicator could stay lit after a successful save and only clear by switching tabs. The save flow now uses a per-session edit counter instead of comparing two derived document snapshots (which were prone to false-positive inequality from block-id regeneration in the PM-to-domain converter).
+
 ## [0.1.1] - 2026-05-20
 
 ### Added
@@ -52,5 +57,7 @@ Initial public alpha release.
 - URL scheme allowlist on `openUrl` (http, https, mailto only).
 - Concurrent-process cap on CLI spawns.
 
-[Unreleased]: https://github.com/intergalactisch/void/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/intergalactisch/void/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/intergalactisch/void/releases/tag/v0.1.2
+[0.1.1]: https://github.com/intergalactisch/void/releases/tag/v0.1.1
 [0.1.0]: https://github.com/intergalactisch/void/releases/tag/v0.1.0
