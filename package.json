@@ -1,6 +1,6 @@
 {
   "name": "void",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "AI-powered note-taking app built with Tauri v2 + Svelte 5",
   "keywords": [
