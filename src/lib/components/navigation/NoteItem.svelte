@@ -113,6 +113,28 @@
       <ChevronRight class="note-item-chevron" size={13} strokeWidth={1.8} aria-hidden="true" />
     </button>
 
+    <!-- Folder icon -->
+    <span class="flex size-4 shrink-0 items-center justify-center">
+      {#if isExpanded}
+        <FolderOpen class="note-item-icon" size={15} strokeWidth={1.5} aria-hidden="true" />
+      {:else}
+        <Folder class="note-item-icon" size={15} strokeWidth={1.5} aria-hidden="true" />
+      {/if}
+    </span>
+  {:else}
+    <!-- Chevron-column spacer keeps file icons aligned with folder icons. -->
+    <span class="note-item-toggle-spacer shrink-0" aria-hidden="true"></span>
+    <span class="flex size-4 shrink-0 items-center justify-center">
+      <FileText class="note-item-icon" size={15} strokeWidth={1.5} aria-hidden="true" />
+    </span>
+  {/if}
+
+  <!-- Title -->
+  <span class="flex-1 truncate">{item.title}</span>
+
+  {#if item.isFolder}
+    <!-- Drag handle (on hover) — moved to the right so the row's left edge
+         isn't padded out by an empty 16px column when the handle is hidden. -->
     <button
       type="button"
       class="note-item-drag-handle flex size-4 shrink-0 items-center justify-center rounded opacity-0 group-hover:opacity-100 focus:opacity-100"
@@ -123,26 +145,7 @@
     >
       <GripVertical size={13} strokeWidth={1.8} aria-hidden="true" />
     </button>
-
-    <!-- Folder icon -->
-    <span class="flex size-4 shrink-0 items-center justify-center">
-      {#if isExpanded}
-        <FolderOpen class="note-item-icon" size={15} strokeWidth={1.5} aria-hidden="true" />
-      {:else}
-        <Folder class="note-item-icon" size={15} strokeWidth={1.5} aria-hidden="true" />
-      {/if}
-    </span>
-  {:else}
-    <!-- Toggle spacer keeps notes aligned with folder labels. -->
-    <span class="note-item-toggle-spacer shrink-0" aria-hidden="true"></span>
-    <span class="note-item-drag-spacer shrink-0" aria-hidden="true"></span>
-    <span class="flex size-4 shrink-0 items-center justify-center">
-      <FileText class="note-item-icon" size={15} strokeWidth={1.5} aria-hidden="true" />
-    </span>
   {/if}
-
-  <!-- Title -->
-  <span class="flex-1 truncate">{item.title}</span>
 
   {#if item.isFolder && onCreateSubfolder}
     <!-- New subfolder button (on hover) -->
@@ -275,10 +278,6 @@
     color: var(--text-secondary);
   }
   .note-item-toggle-spacer {
-    width: 16px;
-    height: 16px;
-  }
-  .note-item-drag-spacer {
     width: 16px;
     height: 16px;
   }

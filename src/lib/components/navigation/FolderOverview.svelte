@@ -262,6 +262,7 @@
     gap: 24px;
     padding-bottom: 22px;
     border-bottom: 1px solid var(--border-light);
+    flex-wrap: wrap;
   }
 
   .title-row {
@@ -269,6 +270,7 @@
     align-items: flex-start;
     gap: 13px;
     min-width: 0;
+    flex: 1 1 240px;
   }
 
   .folder-mark {
@@ -294,7 +296,10 @@
     font-weight: 650;
     line-height: 1.2;
     letter-spacing: 0;
-    overflow-wrap: anywhere;
+    /* Break only at word boundaries by default; long unbroken strings
+       fall back to per-character so they still wrap instead of overflowing. */
+    word-break: break-word;
+    overflow-wrap: break-word;
   }
 
   .title-copy p {
@@ -302,7 +307,8 @@
     color: var(--text-tertiary);
     font-size: var(--text-small);
     line-height: 1.4;
-    overflow-wrap: anywhere;
+    word-break: break-word;
+    overflow-wrap: break-word;
   }
 
   .overview-actions {
@@ -311,6 +317,8 @@
     gap: 8px;
     flex-wrap: wrap;
     justify-content: flex-end;
+    /* Anchor to the right but never crush the title-row below 240px. */
+    flex: 0 1 auto;
   }
 
   .action {
@@ -607,22 +615,65 @@
     font-size: var(--text-small);
   }
 
-  @media (max-width: 760px) {
+  /* Tablet landscape & compact desktop: tighten outer padding,
+     allow the action row to wrap below the title naturally. */
+  @media (max-width: 879px) {
     .overview-inner {
-      padding: 28px 18px 48px;
+      padding: 32px 24px 56px;
     }
 
     .overview-header {
       flex-direction: column;
+      align-items: stretch;
       gap: 16px;
+    }
+
+    /* `flex: 1 1 240px` only makes sense in a horizontal header — in
+       column flow it would stretch the title block to fill all the
+       remaining height. Reset it. */
+    .title-row {
+      flex: 0 1 auto;
     }
 
     .overview-actions {
       justify-content: flex-start;
     }
+  }
 
+  /* Two-column grid → single-column at this point: the section list
+     becomes much more readable when each row spans full width. */
+  @media (max-width: 720px) {
     .overview-grid {
       grid-template-columns: 1fr;
+      gap: 24px;
+    }
+  }
+
+  /* Phone: stack actions full-width so they're easy to tap. */
+  @media (max-width: 479px) {
+    .overview-inner {
+      padding: 24px 16px 48px;
+    }
+
+    .title-copy h1 {
+      font-size: 22px;
+    }
+
+    .overview-actions {
+      width: 100%;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 6px;
+    }
+
+    .action {
+      width: 100%;
+      justify-content: center;
+    }
+
+    .stats {
+      gap: 10px 14px;
+      padding: 14px 0 18px;
     }
   }
 </style>

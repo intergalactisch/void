@@ -166,10 +166,10 @@
           <span class="statusbar-error-badge">{logErrorCount}</span>
         {/if}
       </button>
-      <span class="statusbar-separator" aria-hidden="true">&middot;</span>
+      <span class="statusbar-separator statusbar-kbd-divider" aria-hidden="true">&middot;</span>
     {/if}
     <kbd class="statusbar-kbd" aria-hidden="true">Cmd+P</kbd>
-    <span class="statusbar-separator" aria-hidden="true">&middot;</span>
+    <span class="statusbar-separator statusbar-kbd-divider" aria-hidden="true">&middot;</span>
     <kbd class="statusbar-kbd" aria-hidden="true">Cmd+Shift+O</kbd>
   </div>
 </footer>
@@ -380,5 +380,47 @@
     background: var(--color-error);
     border-radius: 7px;
     letter-spacing: 0;
+  }
+
+  /* Tablet (≤1099): drop the keyboard hint chips & their dividers — they
+     are the lowest-value items in a constrained bar. */
+  @media (max-width: 1099px) {
+    .statusbar-kbd,
+    .statusbar-kbd-divider {
+      display: none;
+    }
+  }
+
+  /* Smaller tablets (≤879): hide sync label, ops label, char count.
+     Icons and counts remain so functionality is preserved. */
+  @media (max-width: 879px) {
+    .statusbar {
+      padding: 0 10px;
+    }
+
+    .statusbar-sync-label,
+    .statusbar-ops-label {
+      display: none;
+    }
+
+    /* Drop the second left-side "chars" item — words is enough at this
+       width, and a trailing separator would dangle. */
+    .statusbar-left .statusbar-item:nth-of-type(2),
+    .statusbar-left .statusbar-separator {
+      display: none;
+    }
+  }
+
+  /* Phone (≤479): keep status text in left column readable, hide more
+     non-essential right-side controls. Save state still shows. */
+  @media (max-width: 479px) {
+    .statusbar {
+      font-size: 11px;
+      padding: 0 8px;
+    }
+
+    .statusbar-left .statusbar-item {
+      display: none;
+    }
   }
 </style>

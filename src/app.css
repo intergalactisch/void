@@ -155,6 +155,19 @@
   --settings-panel-width: 420px;
   --ai-sidebar-width: 380px;
 
+  /* ─── Breakpoints ─── */
+  /* xs : 0–479    — phones                                              */
+  /* sm : 480–639  — large phones                                        */
+  /* md : 640–879  — tablet portrait (sidebar transitions to overlay)    */
+  /* lg : 880–1099 — tablet landscape / compact desktop                  */
+  /* xl : 1100–1279 — standard desktop                                   */
+  /* 2xl: 1280+   — wide desktop                                         */
+  --bp-sm: 480px;
+  --bp-md: 640px;
+  --bp-lg: 880px;
+  --bp-xl: 1100px;
+  --bp-2xl: 1280px;
+
   /* ─── Z-index ─── */
   --z-base: 0;
   --z-dropdown: 100;
@@ -2939,43 +2952,79 @@ body.void-dragging-active * {
 
 /* =============================================================================
  * Responsive Breakpoints
- * 960px: compact layout (sidebar overlay, reduced margins)
- * 600px: mobile layout (gutter hidden, full-bleed editor)
+ * ≥1100px (xl): full desktop — sidebar persistent, all labels & kbd hints
+ * 880–1099 (lg): compact desktop — narrower sidebar, slimmer header
+ * 640–879 (md): tablet — sidebar overlay, header labels collapse
+ * 480–639 (sm): large phone — full-bleed, tight chrome
+ * <480 (xs): phone — minimal chrome
  * ============================================================================= */
 
-/* Compact: reduce editor padding and content max-width */
-@media (max-width: 960px) {
+/* Compact desktop: slimmer sidebar defaults, tighten editor padding */
+@media (max-width: 1099px) {
   :root {
+    --sidebar-width: 232px;
+    --sidebar-max-width: 320px;
     --content-max-width: 100%;
+  }
+
+  .void-editor {
+    padding-left: 56px;
+    padding-right: 32px;
+  }
+}
+
+/* Tablet (≤879): sidebar becomes overlay, header chrome tightens */
+@media (max-width: 879px) {
+  :root {
+    --sidebar-width: 280px;
+    --sidebar-min-width: 240px;
+    --sidebar-max-width: 320px;
+    --header-height: 44px;
   }
 
   .void-editor {
     padding-left: 40px;
     padding-right: 24px;
   }
-}
 
-/* Mobile: hide gutter entirely, full-bleed editor */
-@media (max-width: 600px) {
-  .void-editor {
-    padding-left: 16px;
-    padding-right: 16px;
-  }
-
-  /* Hide gutter on narrow viewports — blocks are still editable */
+  /* Editor gutter folds at this width since available room is tight. */
   .void-gutter {
     display: none;
   }
 
-  /* Remove hover zone since gutter is gone */
   .void-block::before {
     display: none;
   }
+}
 
-  /* Tighten heading sizes */
-  .void-editor h1 { font-size: 24px; }
-  .void-editor h2 { font-size: 20px; }
-  .void-editor h3 { font-size: 18px; }
+/* Large phone (≤639) — full-bleed editor, looser line-height */
+@media (max-width: 639px) {
+  :root {
+    --header-height: 48px;
+    --statusbar-height: 28px;
+  }
+
+  .void-editor {
+    padding-left: 20px;
+    padding-right: 20px;
+  }
+
+  /* Tighten heading sizes for narrow text columns */
+  .void-editor h1 { font-size: 22px; }
+  .void-editor h2 { font-size: 19px; }
+  .void-editor h3 { font-size: 17px; }
+}
+
+/* Phone (≤479) — minimal chrome */
+@media (max-width: 479px) {
+  :root {
+    --titlebar-height: 32px;
+  }
+
+  .void-editor {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
 }
 
 /* Respect user preference for reduced motion */

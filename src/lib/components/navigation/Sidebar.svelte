@@ -310,14 +310,45 @@
     handleOpenTagView(tag);
   }
 
-  // Sidebar resize
+  // Sidebar resize.
+  // Default width tracks viewport: on tablet/smaller the sidebar floats as
+  // an overlay drawer (handled in CSS via `position: absolute`), so we
+  // narrow the default at those sizes so the drawer doesn't dominate the
+  // screen when it opens.
   const MIN_WIDTH = 180;
   const MAX_WIDTH = 400;
   const DEFAULT_WIDTH = 260;
+  const OVERLAY_BREAKPOINT = 880;
 
-  let sidebarWidth = $state(DEFAULT_WIDTH);
+  function pickDefaultWidth() {
+    if (typeof window === 'undefined') return DEFAULT_WIDTH;
+    const vw = window.innerWidth;
+    if (vw < OVERLAY_BREAKPOINT) {
+      // Drawer mode — never wider than ~80% of viewport so the user can
+      // see what they're navigating to.
+      return Math.min(300, Math.max(MIN_WIDTH, Math.floor(vw * 0.8)));
+    }
+    if (vw < 1100) return 232;
+    return DEFAULT_WIDTH;
+  }
+
+  let sidebarWidth = $state(pickDefaultWidth());
   let isResizing = $state(false);
   let sidebarElement: HTMLElement | undefined = $state(undefined);
+
+  // Track viewport size so the inline width re-clamps automatically when
+  // crossing breakpoints. Without this the desktop width sticks around
+  // when the user shrinks the window below the overlay breakpoint and
+  // the drawer ends up covering ~75% of a phone screen.
+  $effect(() => {
+    if (typeof window === 'undefined') return;
+    const handle = () => {
+      if (isResizing) return;
+      sidebarWidth = pickDefaultWidth();
+    };
+    window.addEventListener('resize', handle);
+    return () => window.removeEventListener('resize', handle);
+  });
 
   function handleResizeStart(e: MouseEvent) {
     e.preventDefault();
@@ -349,9 +380,9 @@
   }
 
   function handleResizeDoubleClick() {
-    sidebarWidth = DEFAULT_WIDTH;
+    sidebarWidth = pickDefaultWidth();
     if (sidebarElement) {
-      sidebarElement.style.width = `${DEFAULT_WIDTH}px`;
+      sidebarElement.style.width = `${sidebarWidth}px`;
     }
   }
 

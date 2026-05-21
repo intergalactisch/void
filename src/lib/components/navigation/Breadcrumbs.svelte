@@ -80,7 +80,7 @@
   }
 </script>
 
-<nav class="flex items-center gap-1 text-sm" aria-label="Breadcrumb">
+<nav class="breadcrumbs" aria-label="Breadcrumb">
   <!-- Before truncation -->
   {#each displaySegments.before as segment, index}
     {#if segment.isClickable}
@@ -132,7 +132,7 @@
 
 <style>
   /* ─── Breadcrumbs ─── refined, restrained */
-  :global(.breadcrumbs) {
+  .breadcrumbs {
     display: flex;
     align-items: center;
     gap: 5px;
@@ -142,6 +142,8 @@
     margin-left: 4px;
     min-width: 0;
     flex: 1;
+    overflow: hidden;
+    flex-wrap: nowrap;
   }
 
   .breadcrumb-segment {
@@ -195,10 +197,38 @@
   .breadcrumb-current {
     color: var(--text-primary);
     font-weight: 500;
+    min-width: 0;
+    flex-shrink: 1;
     max-width: 320px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     letter-spacing: -0.005em;
+  }
+
+  /* Tablet: shrink parent segments to keep the current title legible. */
+  @media (max-width: 879px) {
+    .breadcrumb-segment,
+    .breadcrumb-segment-static {
+      max-width: 90px;
+    }
+
+    .breadcrumb-current {
+      max-width: 200px;
+    }
+  }
+
+  /* Phone: collapse parent context — only show current note title. */
+  @media (max-width: 479px) {
+    .breadcrumb-segment,
+    .breadcrumb-segment-static,
+    .breadcrumb-separator,
+    .breadcrumb-ellipsis {
+      display: none;
+    }
+
+    .breadcrumb-current {
+      max-width: 60vw;
+    }
   }
 </style>

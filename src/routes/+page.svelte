@@ -615,6 +615,33 @@
   onMount(() => {
     isMounted = true;
 
+    // ─── Responsive sidebar default ───
+    // The sidebar defaults to "open" in the store (good for desktop), but
+    // on narrow viewports an open drawer hides everything behind a
+    // backdrop. Sync the initial state to viewport width, and track
+    // crossings of the overlay breakpoint so the chrome stays sensible
+    // when the window is resized between sessions.
+    const OVERLAY_BREAKPOINT = 880;
+    const isOverlayViewport = () => window.innerWidth < OVERLAY_BREAKPOINT;
+    let wasOverlay = isOverlayViewport();
+    if (wasOverlay) {
+      notesStore.hideSidebar();
+    }
+    const handleViewportResize = () => {
+      const nowOverlay = isOverlayViewport();
+      if (nowOverlay === wasOverlay) return;
+      wasOverlay = nowOverlay;
+      // Crossing into overlay mode: tuck the drawer away so users see
+      // their content. Crossing back to desktop: reveal the sidebar so
+      // the persistent layout returns automatically.
+      if (nowOverlay) {
+        notesStore.hideSidebar();
+      } else {
+        notesStore.showSidebar();
+      }
+    };
+    window.addEventListener('resize', handleViewportResize);
+
     // Suppress default context menu outside editable areas (native feel)
     const contextMenuHandler = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
@@ -749,6 +776,7 @@
       menuBarDisposed = true;
       unlistenMenuBar?.();
       window.removeEventListener('keydown', escapeHandler);
+      window.removeEventListener('resize', handleViewportResize);
       keymapBinder?.dispose();
       keymapBinder = null;
       events.off('app:navigate', handleAppNavigate);
@@ -778,6 +806,11 @@
         if (restoreAISidebar) {
           uiStore.openAISidebar();
         }
+        // On overlay viewports the sidebar floats over content, so once
+        // the user has picked a note, tuck it away so they can read.
+        if (typeof window !== 'undefined' && window.innerWidth < 880) {
+          notesStore.hideSidebar();
+        }
         untrack(() => {
           loadSelectedDocument(selectedPath);
         });
@@ -795,7 +828,21 @@
 <!-- Skip link for keyboard users -->
 <a href="#main-content" class="skip-link">Skip to main content</a>
 
-<div class="app-shell" class:focus-mode={focusMode}>
+<div
+  class="app-shell"
+  class:focus-mode={focusMode}
+  class:sidebar-open={notesStore.sidebarVisible}
+>
+  <!-- Backdrop for sidebar overlay on narrow viewports.
+       Visible only when the sidebar is open AND viewport is below the lg
+       breakpoint — CSS handles that via :where(.sidebar-open) + media query. -->
+  <button
+    type="button"
+    class="sidebar-overlay-backdrop"
+    aria-label="Close sidebar"
+    onclick={() => notesStore.hideSidebar()}
+  ></button>
+
   <!-- Sidebar navigation -->
   <Sidebar
     visible={notesStore.sidebarVisible}
@@ -1277,8 +1324,11 @@
 <ToastContainer />
 
 <style>
-  /* App shell — full viewport grid */
+  /* App shell — full viewport grid.
+     `position: relative` so the sidebar can promote to an overlay layer
+     (position: absolute) on narrow viewports without escaping the shell. */
   .app-shell {
+    position: relative;
     display: grid;
     grid-template-columns: auto 1fr auto;
     grid-template-rows: 1fr auto;
@@ -1286,6 +1336,13 @@
     overflow: hidden;
     background: var(--bg-app);
     color: var(--text-primary);
+  }
+
+  /* Sidebar overlay backdrop — only visible when sidebar overlays the
+     main content (below the lg breakpoint). Hidden by default; the
+     media query at the bottom flips visibility based on .sidebar-open. */
+  .sidebar-overlay-backdrop {
+    display: none;
   }
 
   /* Focus/zen mode — hide chrome */
@@ -1851,5 +1908,118 @@
     color: var(--text-inverse);
     z-index: 1000;
     font-size: var(--text-small);
+  }
+
+  /* ─── Tablet & smaller: sidebar overlays content ─────────────────────
+     Below the lg breakpoint, the sidebar becomes an absolutely-positioned
+     overlay drawer. Once it's absolute it is no longer a grid item, so
+     we collapse the grid to a single column for the main content. The
+     status bar still spans the full width thanks to `grid-column: 1/-1`. */
+  @media (max-width: 879px) {
+    .app-shell {
+      grid-template-columns: 1fr;
+    }
+
+    .app-shell :global(.sidebar) {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      z-index: var(--z-overlay);
+      box-shadow: var(--shadow-lg);
+      transform: translateX(-100%);
+      transition:
+        transform 280ms var(--ease-out-soft),
+        opacity 220ms var(--ease-out-soft);
+    }
+
+    .app-shell.sidebar-open :global(.sidebar) {
+      transform: translateX(0);
+    }
+
+    /* Hide resize handle when sidebar is a drawer. */
+    .app-shell :global(.sidebar .resize-handle) {
+      display: none;
+    }
+
+    /* Main column should always get the full width at this size. */
+    .app-main {
+      border-left: none;
+      min-width: 0;
+    }
+
+    /* Backdrop appears when sidebar drawer is open. */
+    .app-shell.sidebar-open .sidebar-overlay-backdrop {
+      display: block;
+      position: absolute;
+      inset: 0;
+      z-index: calc(var(--z-overlay) - 1);
+      border: 0;
+      padding: 0;
+      background: var(--bg-overlay);
+      cursor: default;
+      animation: backdrop-in 200ms var(--ease-out-soft);
+    }
+  }
+
+  @keyframes backdrop-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  /* ─── Tablet: tighten header chrome and hide kbd hints ─── */
+  @media (max-width: 879px) {
+    .app-header {
+      padding: 0 8px;
+      gap: 4px;
+    }
+
+    .header-left {
+      gap: 2px;
+    }
+
+    .header-right {
+      gap: 4px;
+    }
+
+    /* Search button collapses to icon-only. */
+    .header-btn-search .header-btn-kbd {
+      display: none;
+    }
+
+    /* Ask button collapses to icon-only. */
+    .header-btn-ai .header-btn-label {
+      display: none;
+    }
+
+    /* Note actions menu can stay; it's only visible for documents. */
+    .tag-context-current {
+      max-width: 200px;
+    }
+  }
+
+  /* ─── Phone: hide back/forward and the breadcrumb root, lean on swipe */
+  @media (max-width: 479px) {
+    /* Hide the leading workspace label in breadcrumbs; keep current item. */
+    .tag-context-root,
+    .tag-context-sep {
+      display: none;
+    }
+
+    .tag-context-current {
+      max-width: 60vw;
+    }
+
+    /* Empty state: stack actions so they don't crowd. */
+    .empty-actions {
+      flex-direction: column;
+      align-items: stretch;
+      width: 100%;
+      max-width: 280px;
+    }
+
+    .empty-action {
+      justify-content: center;
+    }
   }
 </style>
