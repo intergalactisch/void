@@ -18,7 +18,7 @@
   import { createSortableState, type SortableState } from '$lib/components/dnd/sortable';
   import FolderTree from './FolderTree.svelte';
   import { createFolderReorderDnd } from './folderReorderDnd';
-  import { ChevronRight, Clock, FileText, Folder, FolderPlus, Hash, Home, Plus, RefreshCw, Star, Trash2 } from '@lucide/svelte';
+  import { ChevronRight, Clock, FileText, Folder, FolderPlus, Hash, Home, Layers, Plus, RefreshCw, Star, Trash2 } from '@lucide/svelte';
 
   interface Props {
     /** Whether the sidebar is visible */
@@ -369,8 +369,13 @@
   <!-- Workspace Identity -->
   <div class="workspace-identity">
     <div class="workspace-left">
-      <span class="workspace-icon" aria-hidden="true">V</span>
       {#if workspaceStore.workspaces.length > 1}
+        <a
+          href="/workspaces"
+          class="workspace-icon workspace-icon-link"
+          title="Manage workspaces"
+          aria-label="Manage workspaces"
+        >V</a>
         <select
           class="workspace-select"
           aria-label="Switch workspace"
@@ -383,7 +388,12 @@
           {/each}
         </select>
       {:else}
-        <span class="workspace-name">{workspaceStore.activeWorkspace?.name ?? 'Void'}</span>
+        <span class="workspace-icon" aria-hidden="true">V</span>
+        <a
+          href="/workspaces"
+          class="workspace-name workspace-name-link"
+          title="Manage workspaces"
+        >{workspaceStore.activeWorkspace?.name ?? 'Void'}</a>
       {/if}
     </div>
     <div class="workspace-actions">
@@ -428,6 +438,12 @@
   </div>
 
   <div class="divider"></div>
+
+  <!-- ─── Scrollable content area ──────────────────────────────────────
+       One scroll region for RECENT, FAVORITES, FOLDERS, and TAGS so the
+       scrollbar always sits at the sidebar's right edge instead of nested
+       half-way down. Bottom bar stays outside this wrapper. -->
+  <div class="sidebar-scroll scrollbar-thin">
 
   <!-- RECENT Section — always visible, collapsible, with empty state -->
   <div class="section-items">
@@ -562,8 +578,9 @@
     <div class="divider"></div>
   {/if}
 
-  <!-- Tag-first navigation -->
-  <div class="scrollbar-thin tree-container">
+  <!-- Tag-first navigation (folders + tags). The outer .sidebar-scroll
+       owns vertical overflow now — this wrapper is just a layout box. -->
+  <div class="tree-container">
     {#if notesStore.isLoading}
       <div class="loading-state">
         <div class="spinner"></div>
@@ -757,40 +774,57 @@
     {/if}
   </div>
 
-  <!-- Bottom bar: Tasks, Trash, and Settings -->
-  <div class="bottom-bar">
+  </div><!-- /.sidebar-scroll -->
+
+  <!-- Bottom bar: icon-only dock with tooltips. Keep this OUTSIDE the
+       scroll region so it stays pinned to the bottom of the sidebar. -->
+  <div class="bottom-bar" role="toolbar" aria-label="Sidebar actions">
     <button
       type="button"
-      class="sidebar-item bottom-item"
-      class:selected={uiStore.tasksWorkspaceOpen}
+      class="dock-item"
+      class:dock-item-active={uiStore.tasksWorkspaceOpen}
       onclick={() => onOpenTasks?.()}
-      title="Tasks (Cmd+Shift+T)"
+      title={`Tasks${todoStore.stats.open > 0 ? ` (${todoStore.stats.open} open)` : ''} — ⌘⇧T`}
       aria-label={`Tasks, ${todoStore.stats.open} open`}
     >
-      <svg class="item-icon" width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5">
+      <svg class="dock-icon" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5" aria-hidden="true">
         <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
       </svg>
-      <span>Tasks</span>
       {#if todoStore.stats.open > 0}
-        <span class="item-badge">{todoStore.stats.open}</span>
+        <span class="dock-badge" aria-hidden="true">
+          {todoStore.stats.open > 9 ? '9+' : todoStore.stats.open}
+        </span>
       {/if}
     </button>
-    <a href="/trash" class="sidebar-item bottom-item">
-      <svg class="item-icon" width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5">
+    <a
+      href="/trash"
+      class="dock-item"
+      title="Trash"
+      aria-label="Trash"
+    >
+      <svg class="dock-icon" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5" aria-hidden="true">
         <path stroke-linecap="round" stroke-linejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
       </svg>
-      <span>Trash</span>
+    </a>
+    <a
+      href="/workspaces"
+      class="dock-item"
+      title="Workspaces"
+      aria-label="Workspaces"
+    >
+      <Layers class="dock-icon" size={16} strokeWidth={1.5} aria-hidden="true" />
     </a>
     <button
       type="button"
-      class="sidebar-item bottom-item"
+      class="dock-item"
       onclick={() => onOpenSettings?.()}
+      title="Settings"
+      aria-label="Settings"
     >
-      <svg class="item-icon" width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5">
+      <svg class="dock-icon" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5" aria-hidden="true">
         <path stroke-linecap="round" stroke-linejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.241-.438.613-.43.992a7.723 7.723 0 0 1 0 .255c-.008.378.137.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.47 6.47 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.94-1.11.94h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.991a6.932 6.932 0 0 1 0-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.086.22-.128.332-.183.582-.495.644-.869l.214-1.28Z" />
         <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
       </svg>
-      <span>Settings</span>
     </button>
   </div>
 
@@ -922,6 +956,44 @@
     font-weight: 600;
     color: var(--text-primary);
     letter-spacing: -0.01em;
+  }
+
+  /* Anchored "V" badge — keeps the gradient styling, adds a subtle hover
+     so it reads as the canonical entry-point to /workspaces. */
+  .workspace-icon-link {
+    text-decoration: none;
+    cursor: pointer;
+    transition: filter var(--transition-fast), box-shadow var(--transition-fast);
+  }
+
+  .workspace-icon-link:hover {
+    filter: brightness(1.08);
+    box-shadow: 0 1px 3px rgba(20, 19, 16, 0.20), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  }
+
+  .workspace-icon-link:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 2px;
+  }
+
+  /* Anchored workspace name — single-workspace mode only. Inherits the
+     non-link typography so it doesn't look like a hyperlink. */
+  .workspace-name-link {
+    text-decoration: none;
+    cursor: pointer;
+    border-radius: 4px;
+    padding: 1px 4px;
+    margin: 0 -4px;
+    transition: background var(--transition-fast), color var(--transition-fast);
+  }
+
+  .workspace-name-link:hover {
+    background: var(--bg-hover);
+  }
+
+  .workspace-name-link:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 1px;
   }
 
   .workspace-select {
@@ -1382,15 +1454,14 @@
     height: 14px;
   }
 
-  /* Icons */
-  .item-icon,
+  /* Icons (item-icon-sm targets the inline span/spacer; the lucide-svelte
+     <Clock/Star/etc> icons inherit color from the parent .sidebar-item). */
   .item-icon-sm {
     flex-shrink: 0;
     color: var(--text-tertiary);
     transition: color var(--transition-fast);
   }
 
-  .sidebar-item:hover .item-icon,
   .sidebar-item:hover .item-icon-sm {
     color: var(--text-secondary);
   }
@@ -1475,10 +1546,22 @@
     margin: 8px 8px 5px;
   }
 
-  /* Tree container */
-  .tree-container {
+  /* ─── Single scroll region for all content ─────────────────────────
+     RECENT, FAVORITES, FOLDERS, and TAGS all live inside this wrapper so
+     the scrollbar sits at the sidebar's right edge — not nested half-way
+     down. The bottom dock stays outside this element. */
+  .sidebar-scroll {
     flex: 1;
+    min-height: 0;
     overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Tree container — now purely a layout box; the .sidebar-scroll parent
+     owns vertical overflow. */
+  .tree-container {
+    flex: 1 0 auto;
     padding: 0 4px 6px;
     min-height: 0;
   }
@@ -1541,22 +1624,76 @@
     gap: 14px;
   }
 
-  /* ─── Bottom bar ─── compact dock */
+  /* ─── Bottom dock ─── icon-only with tooltips ────────────────────── */
   .bottom-bar {
-    margin-top: auto;
+    flex-shrink: 0;
     border-top: 1px solid var(--border-light);
     padding: 6px 8px;
     display: flex;
-    gap: 2px;
+    justify-content: space-around;
+    align-items: center;
+    gap: 4px;
     background: var(--bg-sidebar);
   }
 
-  .bottom-item {
-    flex: 1;
+  .dock-item {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
     justify-content: center;
-    padding: 5px 6px;
-    font-size: var(--text-caption);
-    gap: 5px;
+    width: 30px;
+    height: 30px;
+    flex-shrink: 0;
+    border: none;
+    background: transparent;
+    color: var(--text-tertiary);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    text-decoration: none;
+    transition: background var(--transition-fast), color var(--transition-fast);
+  }
+
+  .dock-item:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .dock-item:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: -2px;
+    color: var(--text-primary);
+  }
+
+  .dock-item-active {
+    background: var(--bg-card);
+    color: var(--text-primary);
+    box-shadow: var(--shadow-xs), inset 0 0 0 1px var(--border-light);
+  }
+
+  .dock-icon {
+    color: inherit;
+    flex-shrink: 0;
+  }
+
+  /* Tasks count overlay — small pill at the dock item's top-right. */
+  .dock-badge {
+    position: absolute;
+    top: -3px;
+    right: -3px;
+    min-width: 15px;
+    height: 15px;
+    padding: 0 4px;
+    background: var(--accent-primary);
+    color: var(--text-inverse, #fff);
+    font-size: 9.5px;
+    font-weight: 600;
+    line-height: 15px;
+    text-align: center;
+    border-radius: 9999px;
+    box-shadow: 0 0 0 1.5px var(--bg-sidebar);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+    pointer-events: none;
   }
 
   /* ─── Selection bar (Wave 4.3) ─── */

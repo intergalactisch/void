@@ -96,6 +96,15 @@ export class TauriFileSystemAdapter implements FileSystemPort {
     }
   }
 
+  async moveToTrash(path: string): Promise<Result<void, Error>> {
+    try {
+      await fileCommands.moveToTrash(path);
+      return ok(undefined);
+    } catch (e) {
+      return err(toError(e));
+    }
+  }
+
   async renamePath(from: string, to: string): Promise<Result<void, Error>> {
     try {
       await fileCommands.renamePath(from, to);

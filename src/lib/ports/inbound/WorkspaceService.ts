@@ -18,16 +18,21 @@ export interface WorkspaceSwitchResult {
 
 export interface CreateWorkspaceParams {
   name: string;
-  notesPath: string;
+  notesPath?: string | null;
+  migrateLegacyDefault?: boolean;
 }
 
 export interface WorkspaceService {
   list(): Workspace[];
   active(): Workspace;
   create(params: CreateWorkspaceParams): Promise<Result<Workspace, Error>>;
+  createAndSwitch(params: CreateWorkspaceParams): Promise<Result<WorkspaceSwitchResult, Error>>;
+  migrateLegacyDefaultWorkspace(): Promise<Result<Workspace, Error>>;
   rename(workspaceId: string, name: string): Promise<Result<Workspace, Error>>;
   updateNotesPath(workspaceId: string, notesPath: string): Promise<Result<Workspace, Error>>;
+  moveFolder(workspaceId: string, destinationPath: string): Promise<Result<Workspace, Error>>;
   remove(workspaceId: string): Promise<Result<Workspace[], Error>>;
+  trash(workspaceId: string): Promise<Result<Workspace[], Error>>;
   canSwitch(workspaceId: string): Promise<Result<WorkspaceSwitchBlocker[], Error>>;
   switchTo(workspaceId: string): Promise<Result<WorkspaceSwitchResult, Error>>;
 }

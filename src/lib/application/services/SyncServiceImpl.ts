@@ -51,6 +51,32 @@ import { getLogger } from '$lib/logging';
 const log = getLogger('GitHubSync');
 const SYNC_CONFLICTS_PATH = 'sync/conflicts.json';
 
+const NEW_CLASSIC_PAT_URL =
+  'https://github.com/settings/tokens/new?scopes=repo&description=Void%20notes%20sync';
+
+/**
+ * Detect GitHub's "token cannot write to this repo" failure and replace the
+ * raw git stderr with a precise, actionable message. Returns the original
+ * error otherwise.
+ *
+ * Triggers on the two phrasings GitHub returns for write-permission denials:
+ * `remote: Write access to repository not granted` and the HTTPS-level
+ * `error: 403 ... The requested URL returned error: 403`.
+ */
+function translatePushPermissionError(error: Error, repoFullName: string): Error {
+  const text = error.message ?? String(error);
+  const matches =
+    /Write access to repository not granted/i.test(text) ||
+    /returned error:\s*403/i.test(text) ||
+    /HTTP\s*403/i.test(text);
+  if (!matches) return error;
+  return new Error(
+    `This token cannot write to ${repoFullName}. ` +
+      `If it's a fine-grained PAT, edit it on GitHub and add ${repoFullName} to its selected repositories with Contents: Read and write. ` +
+      `Or generate a classic PAT with the "repo" scope at ${NEW_CLASSIC_PAT_URL} and reconnect.`,
+  );
+}
+
 export class SyncServiceImpl implements SyncService {
   private status: SyncStatus = EMPTY_SYNC_STATUS;
   private subscribers = new Set<(status: SyncStatus) => void>();
@@ -359,8 +385,9 @@ export class SyncServiceImpl implements SyncService {
 
     const pushed = await this.git.push(this.notesPath, 'origin', branch, { token: token.value });
     if (!pushed.ok) {
-      await this.setFailureWithAttachedRepository(pushed.error);
-      return err(pushed.error);
+      const translated = translatePushPermissionError(pushed.error, ref.fullName);
+      await this.setFailureWithAttachedRepository(translated);
+      return err(translated);
     }
 
     const next = await this.updateSyncSettings({
@@ -393,6 +420,17 @@ export class SyncServiceImpl implements SyncService {
     if (!remote.ok) {
       this.setFailure(remote.error);
       return err(remote.error);
+    }
+
+    // Probe write permission with a dry-run push before persisting the attach.
+    // GitHub's repo-permissions metadata can report `push: true` for tokens
+    // (notably fine-grained PATs) that still cannot actually write — only the
+    // negotiation surfaces that. Bail loudly here rather than at first sync.
+    const probe = await this.git.pushDryRun(this.notesPath, 'origin', branch, { token: token.value });
+    if (!probe.ok) {
+      const translated = translatePushPermissionError(probe.error, repo.fullName);
+      this.setFailure(translated);
+      return err(translated);
     }
 
     const next = await this.updateSyncSettings({

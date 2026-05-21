@@ -60,6 +60,12 @@ export interface GitRepositoryPort {
   fetch(notesPath: string, remote: string, branch: string, auth?: GitAuthOptions): Promise<Result<void, Error>>;
   pullFastForward(notesPath: string, remote: string, branch: string, auth?: GitAuthOptions): Promise<Result<void, Error>>;
   push(notesPath: string, remote: string, branch: string, auth?: GitAuthOptions): Promise<Result<void, Error>>;
+  /**
+   * Negotiate a push with the remote without transferring objects. Surfaces
+   * server-side permission failures (e.g. token lacks write scope on a
+   * private repo) at attach time instead of on the first real sync.
+   */
+  pushDryRun(notesPath: string, remote: string, branch: string, auth?: GitAuthOptions): Promise<Result<void, Error>>;
   readRemoteFile(notesPath: string, remote: string, branch: string, path: string, auth?: GitAuthOptions): Promise<Result<GitRemoteFile, Error>>;
   buildDivergenceConflict(notesPath: string, branch: string): Promise<Result<SyncConflict, Error>>;
   createRecoveryBranch(notesPath: string, branch: string): Promise<Result<string, Error>>;

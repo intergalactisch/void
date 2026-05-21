@@ -10,14 +10,21 @@
 import { EditorState, TextSelection } from 'prosemirror-state';
 import type { Transaction, Plugin } from 'prosemirror-state';
 import { EditorView } from 'prosemirror-view';
-import { Fragment, type Node as PmNode } from 'prosemirror-model';
+import { Fragment, Slice, type Node as PmNode } from 'prosemirror-model';
 import { baseKeymap, chainCommands, exitCode, toggleMark } from 'prosemirror-commands';
 import { keymap } from 'prosemirror-keymap';
 import { splitListItem, liftListItem, sinkListItem } from 'prosemirror-schema-list';
 import { dropCursor } from 'prosemirror-dropcursor';
 import { gapCursor } from 'prosemirror-gapcursor';
 
-import type { EditorPort, EditorEvents, EditorCommands, EditorPageLinkNote } from '$lib/ports/outbound/EditorPort';
+import type {
+  EditorPort,
+  EditorEvents,
+  EditorCommands,
+  EditorInlineGenerateCallbacks,
+  EditorInlineGenerateRequest,
+  EditorPageLinkNote,
+} from '$lib/ports/outbound/EditorPort';
 import type { Document } from '$lib/domain/entities/Document';
 import type { Block, BlockAttrs } from '$lib/domain/entities/Block';
 import { generateBlockId, createBlock, createEmptyParagraph } from '$lib/domain/entities/Block';
@@ -143,10 +150,12 @@ export interface ProseMirrorAdapterOptions {
   /** Callback when line history button is clicked */
   onLineageClick?: (blockId: string, lineIndex: number, event: MouseEvent) => void;
   /** Callback when AI inline generation is triggered */
-  onAIInlineGenerate?: (prompt: string, selectionText: string | null, callbacks: {
-    onComplete: (markdown: string) => void;
-    onError: (msg: string) => void;
-  }) => void;
+  onAIInlineGenerate?: (
+    prompt: string,
+    selectionText: string | null,
+    callbacks: EditorInlineGenerateCallbacks,
+    request: EditorInlineGenerateRequest,
+  ) => void;
   /** Callback when AI inline state changes */
   onAIInlineStateChange?: (state: AIInlineState) => void;
   /** Callback when a page link or internal note link is clicked */
@@ -180,9 +189,16 @@ export class ProseMirrorAdapter implements EditorPort {
       onActiveTarget: (blockId) => {
         this.emit('editor:block-ai-active-target', { blockId });
       },
-      onGenerate: (prompt, selectionText, callbacks) => {
-        this.emit('editor:ai-inline-generate', { prompt, selectionText, callbacks });
-        options.onAIInlineGenerate?.(prompt, selectionText, callbacks);
+      onGenerate: (prompt, selectionText, callbacks, request) => {
+        const notePath = this.currentDocument?.path ?? null;
+        const enrichedRequest: EditorInlineGenerateRequest = { ...request, notePath };
+        this.emit('editor:ai-inline-generate', {
+          prompt,
+          selectionText,
+          callbacks,
+          request: enrichedRequest,
+        });
+        options.onAIInlineGenerate?.(prompt, selectionText, callbacks, enrichedRequest);
       },
     });
   }
@@ -386,6 +402,9 @@ export class ProseMirrorAdapter implements EditorPort {
         break;
       case 'insertContent':
         this.executeInsertContent(args[0] as string);
+        break;
+      case 'replaceRange':
+        this.executeReplaceRange(args[0] as number, args[1] as number, args[2] as string);
         break;
       case 'setLink':
         this.executeSetLink(args[0] as string, args[1] as string | undefined);
@@ -1439,6 +1458,60 @@ export class ProseMirrorAdapter implements EditorPort {
     const newSelection = TextSelection.near(tr.doc.resolve(blockEnd + 1));
     tr.setSelection(newSelection);
     this.view.dispatch(tr.scrollIntoView());
+  }
+
+  private executeReplaceRange(from: number, to: number, markdown: string): void {
+    if (!this.view) return;
+    if (!Number.isFinite(from) || !Number.isFinite(to) || from >= to) return;
+
+    const state = this.view.state;
+    const docSize = state.doc.content.size;
+    const safeFrom = Math.max(0, Math.min(from, docSize));
+    const safeTo = Math.max(0, Math.min(to, docSize));
+    if (safeFrom >= safeTo) return;
+
+    const $from = state.doc.resolve(safeFrom);
+    const $to = state.doc.resolve(safeTo);
+    const inlineOnly = $from.sameParent($to) && $from.parent.isTextblock;
+    const replacement = this.createReplacementSlice(markdown, inlineOnly);
+
+    let tr = state.tr;
+    if (replacement.content.size === 0) {
+      tr = tr.delete(safeFrom, safeTo);
+    } else {
+      tr = tr.replaceRange(safeFrom, safeTo, replacement);
+    }
+
+    const mappedFrom = tr.mapping.map(safeFrom);
+    const selectionPos = Math.min(mappedFrom + replacement.content.size, tr.doc.content.size);
+    tr = tr
+      .setSelection(TextSelection.near(tr.doc.resolve(selectionPos), -1))
+      .setMeta(AI_BYPASS, true);
+    this.view.dispatch(tr.scrollIntoView());
+  }
+
+  private createReplacementSlice(markdown: string, inlineOnly: boolean): Slice {
+    if (!markdown) return Slice.empty;
+
+    const pmDoc = parseMarkdown(markdown);
+    if (!pmDoc.content.childCount) return Slice.empty;
+
+    if (inlineOnly) {
+      const firstChild = pmDoc.content.firstChild;
+      if (firstChild?.isTextblock) {
+        return new Slice(firstChild.content, 0, 0);
+      }
+      return new Slice(Fragment.from(this.view!.state.schema.text(markdown)), 0, 0);
+    }
+
+    if (!markdown.includes('\n') && pmDoc.content.childCount === 1) {
+      const firstChild = pmDoc.content.firstChild;
+      if (firstChild?.isTextblock) {
+        return new Slice(firstChild.content, 0, 0);
+      }
+    }
+
+    return new Slice(pmDoc.content, 0, 0);
   }
 
   private executeDeleteBlock(blockId: string): void {

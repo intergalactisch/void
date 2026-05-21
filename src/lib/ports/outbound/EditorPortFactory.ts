@@ -7,6 +7,7 @@
 
 import type {
   EditorBlockMenuMode,
+  EditorInlineGenerateRequest,
   EditorPort,
   EditorInlineGenerateCallbacks,
   EditorMenuStatePayload,
@@ -45,7 +46,8 @@ export interface EditorPortFactoryOptions {
   onAIInlineGenerate?: (
     prompt: string,
     selectionText: string | null,
-    callbacks: EditorInlineGenerateCallbacks
+    callbacks: EditorInlineGenerateCallbacks,
+    request: EditorInlineGenerateRequest
   ) => void;
   enableDragDrop?: boolean;
   enableAIRewrite?: boolean;

@@ -117,6 +117,11 @@ export const fileCommands = {
   removeDirectory: (path: string): Promise<void> => invoke<void>('remove_directory', { path }),
 
   /**
+   * Move a file or directory to the operating system Trash
+   */
+  moveToTrash: (path: string): Promise<void> => invoke<void>('move_to_trash', { path }),
+
+  /**
    * Rename or move a file/directory
    */
   renamePath: (from: string, to: string): Promise<void> =>
@@ -219,6 +224,14 @@ export const gitCommands = {
     auth?: GitAuthOptions,
   ): Promise<void> =>
     invoke<void>('git_push', { notesPath, remote, branch, token: auth?.token ?? null }),
+
+  pushDryRun: (
+    notesPath: string,
+    remote: string,
+    branch: string,
+    auth?: GitAuthOptions,
+  ): Promise<void> =>
+    invoke<void>('git_push_dry_run', { notesPath, remote, branch, token: auth?.token ?? null }),
 
   readRemoteFile: (
     notesPath: string,

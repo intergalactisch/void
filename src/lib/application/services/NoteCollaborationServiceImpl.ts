@@ -203,6 +203,38 @@ export class NoteCollaborationServiceImpl implements NoteCollaborationService {
     }, lockOwnerFromLineage(lineage, label));
   }
 
+  async replaceRange(params: {
+    from: number;
+    to: number;
+    markdown: string;
+    label?: string;
+    lineage?: LineageRecordOptions;
+  }): Promise<Result<void, Error>> {
+    const label = params.label ?? 'AI replace selection';
+    const lineage = params.lineage ?? defaultBlockLineage('rewrite', label);
+
+    if (!Number.isFinite(params.from) || !Number.isFinite(params.to) || params.from >= params.to) {
+      return err(new Error('Invalid editor range for replacement'));
+    }
+
+    const active = this.editor.getState().document;
+    if (!active) return err(new Error('No active editor document'));
+
+    return await resourceLock.withLock(this.noteLockKey(active.path), async () => {
+      try {
+        const lockedActive = this.editor.getState().document;
+        if (!lockedActive) return err(new Error('No active editor document'));
+
+        this.editor.replaceRange(params.from, params.to, params.markdown);
+        const save = await this.saveActiveNote(lockedActive.path, lineage);
+        if (!save.ok) return err(save.error);
+        return ok(undefined);
+      } catch (error) {
+        return err(error instanceof Error ? error : new Error(String(error)));
+      }
+    }, lockOwnerFromLineage(lineage, label));
+  }
+
   async insertBlocksAfter(params: {
     blockId: string;
     markdown: string;

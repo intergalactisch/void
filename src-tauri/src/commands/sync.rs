@@ -960,6 +960,42 @@ pub async fn git_push(
     Ok(())
 }
 
+/// Negotiate a push with the remote without actually transferring objects.
+/// Used to detect token write-permission problems before the first real sync,
+/// so fine-grained PATs missing `Contents: Read and write` fail loudly at
+/// attach time instead of on the user's first edit.
+#[tauri::command]
+pub async fn git_push_dry_run(
+    notes_path: String,
+    remote: String,
+    branch: String,
+    token: Option<String>,
+) -> Result<(), VoidError> {
+    let dir = validate_sync_workspace_path(&notes_path).await?;
+    let remote = safe_remote_name(&remote)?;
+    let branch = safe_branch_name(&branch)?;
+    let target = format!("HEAD:{branch}");
+    let outcome = run_git_outcome(
+        &dir,
+        &args(&["push", "--dry-run", &remote, &target]),
+        token.as_deref(),
+    )
+    .await?;
+    if outcome.success {
+        return Ok(());
+    }
+    // A fresh repo with no commits cannot dry-run a HEAD push. Treat that as
+    // a non-failure — the real push will create the first commit pointer.
+    let stderr = outcome.stderr.to_lowercase();
+    if stderr.contains("does not appear to be a git repository")
+        || stderr.contains("src refspec head does not match any")
+        || stderr.contains("error: src refspec head does not match")
+    {
+        return Ok(());
+    }
+    Err(VoidError::Git(git_failure_message(&outcome)))
+}
+
 #[tauri::command]
 pub async fn git_read_remote_file(
     notes_path: String,
@@ -1260,7 +1296,7 @@ fn parse_github_repo(value: Value) -> Result<GitHubCreatedRepository, VoidError>
     let full_name = value
         .get("full_name")
         .and_then(Value::as_str)
-        .unwrap_or_else(|| "");
+        .unwrap_or("");
     let clone_url = value
         .get("clone_url")
         .and_then(Value::as_str)

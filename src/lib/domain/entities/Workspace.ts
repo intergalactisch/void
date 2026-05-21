@@ -33,6 +33,9 @@ export interface CreateWorkspaceInput {
 }
 
 export const DEFAULT_WORKSPACE_NAME = 'Void';
+export const MANAGED_WORKSPACE_ROOT = '~/Documents/Void';
+export const MANAGED_DEFAULT_WORKSPACE_NAME = 'Default';
+export const MANAGED_DEFAULT_WORKSPACE_PATH = `${MANAGED_WORKSPACE_ROOT}/${MANAGED_DEFAULT_WORKSPACE_NAME}`;
 
 export function createWorkspace(input: CreateWorkspaceInput): Workspace {
   const now = (input.now ?? new Date()).toISOString();
@@ -100,8 +103,84 @@ export function createWorkspaceId(name: string, notesPath: string, seed = ''): s
   return `workspace-${suffix}`;
 }
 
+export function sanitizeWorkspaceFolderName(name: string): string {
+  const normalized = name
+    .trim()
+    .replace(/[<>:"|?*\\/]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/^\.+/, '')
+    .replace(/[.\s]+$/, '')
+    .trim();
+  return normalized || 'Workspace';
+}
+
+export function isAbsoluteOrTildePath(path: string): boolean {
+  const trimmed = path.trim();
+  return trimmed.startsWith('~/')
+    || trimmed.startsWith('/')
+    || /^[A-Za-z]:[\\/]/.test(trimmed);
+}
+
+export function generateManagedWorkspacePath(name: string, existingPaths: string[] = []): string {
+  const folderName = sanitizeWorkspaceFolderName(name);
+  const taken = new Set(existingPaths.map(managedPathKey).filter(Boolean));
+  let candidate = folderName;
+  let suffix = 2;
+  while (taken.has(managedPathKey(`${MANAGED_WORKSPACE_ROOT}/${candidate}`))) {
+    candidate = `${folderName} ${suffix}`;
+    suffix += 1;
+  }
+  return `${MANAGED_WORKSPACE_ROOT}/${candidate}`;
+}
+
+export function isLegacyDefaultWorkspacePath(path: string): boolean {
+  const normalized = comparablePath(path);
+  return normalized === '~/documents/void'
+    || normalized.endsWith('/documents/void');
+}
+
+export function isManagedDefaultWorkspacePath(path: string): boolean {
+  const normalized = comparablePath(path);
+  return normalized === '~/documents/void/default'
+    || normalized.endsWith('/documents/void/default');
+}
+
+export function workspacePathEquals(a: string, b: string): boolean {
+  return comparablePath(a) === comparablePath(b)
+    || managedPathKey(a) === managedPathKey(b);
+}
+
+export function needsManagedDefaultWorkspaceMigration(workspaces: Workspace[], activeWorkspaceId: string | null): boolean {
+  const active = activeWorkspaceFrom(workspaces, activeWorkspaceId);
+  return isLegacyDefaultWorkspacePath(active.notesPath)
+    && !isManagedDefaultWorkspacePath(active.notesPath);
+}
+
 function normalizeWorkspaceName(value: unknown, notesPath: string): string {
   if (typeof value === 'string' && value.trim()) return value.trim();
   const parts = notesPath.replace(/\\/g, '/').split('/').filter(Boolean);
   return parts.at(-1) || DEFAULT_WORKSPACE_NAME;
+}
+
+function managedPathKey(path: string): string {
+  const normalized = comparablePath(path);
+  const tildePrefix = '~/documents/void/';
+  if (normalized.startsWith(tildePrefix)) {
+    return normalized.slice(tildePrefix.length);
+  }
+  const absoluteMarker = '/documents/void/';
+  const absoluteIndex = normalized.lastIndexOf(absoluteMarker);
+  if (absoluteIndex >= 0) {
+    return normalized.slice(absoluteIndex + absoluteMarker.length);
+  }
+  return normalized;
+}
+
+function comparablePath(path: string): string {
+  const normalized = path
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/\/+/g, '/')
+    .replace(/\/+$/, '');
+  return normalized.toLowerCase();
 }

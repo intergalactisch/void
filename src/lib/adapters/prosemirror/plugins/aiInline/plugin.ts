@@ -166,15 +166,6 @@ export function createAIInlinePlugin(options: AIInlinePluginOptions = {}): Plugi
 
         // Preview state keyboard shortcuts (work anywhere in the document)
         if (state.status === 'preview') {
-          // Cmd+Enter → Accept
-          if (isMod && event.key === 'Enter') {
-            event.preventDefault();
-            view.dispatch(
-              view.state.tr.setMeta(aiInlineKey, { type: 'ACCEPT' } satisfies AIInlineMeta)
-            );
-            return true;
-          }
-
           // Cmd+R → Retry
           if (isMod && event.key === 'r') {
             event.preventDefault();
@@ -276,6 +267,9 @@ function applyMeta(state: AIInlineState, meta: AIInlineMeta): AIInlineState {
           : state.blockPos,
         // Only mark as replaced if the adapter actually replaced the text
         textReplaced: (meta.from != null && meta.to != null) ? true : state.textReplaced,
+        didMutate: meta.didMutate ?? state.didMutate,
+        toolCount: meta.toolCount ?? state.toolCount,
+        conversationId: meta.conversationId ?? state.conversationId,
       };
 
     case 'ACCEPT':
@@ -292,6 +286,9 @@ function applyMeta(state: AIInlineState, meta: AIInlineMeta): AIInlineState {
         resultMarkdown: '',
         resultHtml: '',
         error: null,
+        didMutate: false,
+        toolCount: 0,
+        conversationId: null,
         // textReplaced stays true if it was already true (after preview)
       };
 
@@ -370,7 +367,8 @@ export function showAIInlinePreview(
   resultMarkdown: string,
   resultHtml: string,
   from?: number,
-  to?: number
+  to?: number,
+  options?: { didMutate?: boolean; toolCount?: number; conversationId?: string | null }
 ): void {
   const meta: AIInlineMeta = {
     type: 'PREVIEW',
@@ -380,6 +378,15 @@ export function showAIInlinePreview(
   if (from != null && to != null) {
     meta.from = from;
     meta.to = to;
+  }
+  if (options?.didMutate !== undefined) {
+    meta.didMutate = options.didMutate;
+  }
+  if (options?.toolCount !== undefined) {
+    meta.toolCount = options.toolCount;
+  }
+  if (options?.conversationId) {
+    meta.conversationId = options.conversationId;
   }
   view.dispatch(view.state.tr.setMeta(aiInlineKey, meta));
 }

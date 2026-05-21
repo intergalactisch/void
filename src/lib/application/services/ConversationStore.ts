@@ -102,10 +102,31 @@ export class ConversationStore {
    * create a fresh conversation. Mirrors the prior
    * `AIAssistantService.getConversation` semantics.
    */
-  async getOrCreate(id?: string): Promise<Conversation> {
+  async getOrCreate(id?: string, options?: { documentPath?: string | null }): Promise<Conversation> {
+    const documentPath = options?.documentPath ?? null;
     if (id) {
       const conv = this.conversations.get(id);
       if (conv) return conv;
+    }
+    if (!id && documentPath) {
+      if (this.currentConversationId) {
+        const current = this.conversations.get(this.currentConversationId);
+        if (current?.documentPath === documentPath) return current;
+      }
+
+      const existing = Array.from(this.conversations.values())
+        .filter((conv) => conv.documentPath === documentPath)
+        .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())[0];
+      if (existing) {
+        this.currentConversationId = existing.id;
+        this.notifyChanged();
+        return existing;
+      }
+
+      return this.create({ documentPath });
+    }
+    if (documentPath) {
+      return this.create({ documentPath });
     }
     if (!id && this.currentConversationId) {
       const current = this.conversations.get(this.currentConversationId);
@@ -149,16 +170,19 @@ export class ConversationStore {
   // Mutations
   // ─────────────────────────────────────────────────────────────────────
 
-  async create(): Promise<Conversation> {
+  async create(params?: { documentPath?: string | null }): Promise<Conversation> {
     if (this.conversations.size >= MAX_CONVERSATIONS) {
       this.evictOldest();
     }
 
     const context = await this.contextProvider.getContext();
-    const conversation = createConversation({ context });
+    const conversation = createConversation({
+      context,
+      documentPath: params?.documentPath ?? null,
+    });
     this.conversations.set(conversation.id, conversation);
 
-    if (!this.currentConversationId) {
+    if (!this.currentConversationId || params?.documentPath) {
       this.currentConversationId = conversation.id;
       this.notifyChanged();
     }

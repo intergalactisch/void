@@ -73,6 +73,15 @@ export interface NoteCollaborationService {
   /** Replace a single visible editor block by id. */
   replaceBlock(params: Required<Pick<BlockMutationParams, 'blockId' | 'markdown'>> & Pick<BlockMutationParams, 'label' | 'lineage'>): Promise<Result<void, Error>>;
 
+  /** Replace an exact active-editor range and save the note. */
+  replaceRange(params: {
+    from: number;
+    to: number;
+    markdown: string;
+    label?: string;
+    lineage?: LineageRecordOptions;
+  }): Promise<Result<void, Error>>;
+
   /** Insert markdown blocks after a visible editor block by id. */
   insertBlocksAfter(params: Required<Pick<BlockMutationParams, 'blockId' | 'markdown'>> & Pick<BlockMutationParams, 'label' | 'lineage'>): Promise<Result<void, Error>>;
 

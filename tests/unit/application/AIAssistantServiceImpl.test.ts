@@ -4,10 +4,13 @@ import { AIAssistantServiceImpl } from '$lib/application/services/AIAssistantSer
 import { ConversationStore } from '$lib/application/services/ConversationStore';
 import { ToolInvocationService } from '$lib/application/services/ToolInvocationService';
 import { MemoryConversationAdapter } from '$lib/adapters/memory/MemoryConversationAdapter';
+import { createTool } from '$lib/domain/entities/Tool';
 import { createEmptyResponse } from '$lib/domain/values/AIResponse';
 import { createEmptyContext } from '$lib/domain/values/PromptContext';
+import type { ToolId } from '$lib/domain/values/ToolId';
 import type {
   AIAssistantProviderPort,
+  AIAssistantRequest,
   ContextProviderPort,
   ToolExecutorPort,
 } from '$lib/ports/outbound';
@@ -265,6 +268,78 @@ describe('AIAssistantServiceImpl status chunks', () => {
       'Run completed',
     ]);
     expect(assistantMessages[0]?.activity?.[1]?.status).toBe('completed');
+
+    service.dispose();
+  });
+
+  it('supports custom system prompts, restricted tools, and note-bound conversations', async () => {
+    const provider: AIAssistantProviderPort = {
+      getProviderType: () => 'claude',
+      isAvailable: async () => true,
+      configure: async () => undefined,
+      prompt: vi.fn(async () => ok({
+        ...createEmptyResponse('claude', 'test'),
+        chat: 'Done.',
+      })),
+      stream: vi.fn(),
+      cancel: vi.fn(),
+      estimateTokens: (text: string) => text.length,
+      getMaxContextSize: () => Infinity,
+      getAvailableModels: async () => ['test'],
+      getRateLimitStatus: async () => null,
+    };
+
+    const registry = toolRegistry();
+    vi.mocked(registry.getAll).mockResolvedValue([
+      createTool({
+        id: 'editor:replace' as ToolId,
+        name: 'Replace',
+        description: 'Replace text',
+        category: 'editor',
+      }),
+      createTool({
+        id: 'note:create' as ToolId,
+        name: 'Create Note',
+        description: 'Create note',
+        category: 'note',
+      }),
+    ]);
+
+    const executor = toolExecutor();
+    const conversations = new ConversationStore({
+      contextProvider: contextProvider(),
+      conversationStorage: new MemoryConversationAdapter(),
+    });
+    const toolInvocations = new ToolInvocationService({
+      toolRegistry: registry,
+      toolExecutor: executor,
+      attachInvocation: vi.fn(),
+      updateInvocation: vi.fn(),
+      setExecutingTools: vi.fn(),
+    });
+    const service = new AIAssistantServiceImpl(
+      provider,
+      registry,
+      executor,
+      contextProvider(),
+      conversations,
+      toolInvocations
+    );
+
+    const result = await service.prompt('internal selected-text prompt', {
+      displayMessage: 'Rewrite this',
+      systemPrompt: 'Inline system',
+      allowedToolIds: ['editor:replace' as ToolId],
+      documentPath: 'Project/Note.md',
+    });
+
+    const request = vi.mocked(provider.prompt).mock.calls[0]?.[0] as AIAssistantRequest;
+    expect(result.ok).toBe(true);
+    expect(request.systemPrompt).toBe('Inline system');
+    expect(request.tools.map((tool) => tool.id)).toEqual(['editor:replace']);
+    expect(request.message).toBe('internal selected-text prompt');
+    expect(service.getCurrentConversation()?.documentPath).toBe('Project/Note.md');
+    expect(service.getCurrentConversation()?.messages[0]?.text).toBe('Rewrite this');
 
     service.dispose();
   });

@@ -23,6 +23,8 @@ export type {
   EditorBlockMenuRequest,
   EditorPageLinkNote,
   EditorInlineGenerateCallbacks,
+  EditorInlineGenerateRequest,
+  EditorInlineGenerateResult,
 } from './EditorPort';
 export type {
   EditorPortFactory,

@@ -160,6 +160,15 @@ export class MemoryGitRepositoryAdapter implements GitRepositoryPort {
     return ok(undefined);
   }
 
+  async pushDryRun(
+    _notesPath: string,
+    _remote: string,
+    _branch: string,
+    _auth?: GitAuthOptions,
+  ): Promise<Result<void, Error>> {
+    return ok(undefined);
+  }
+
   async readRemoteFile(
     notesPath: string,
     _remote: string,

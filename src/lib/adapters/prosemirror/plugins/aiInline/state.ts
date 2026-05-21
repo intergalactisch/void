@@ -41,6 +41,12 @@ export interface AIInlineState {
   selectionText: string;
   /** Whether the original document text was replaced with a placeholder */
   textReplaced: boolean;
+  /** Whether the final inline AI result applied editor changes. */
+  didMutate: boolean;
+  /** Number of tool calls the final inline AI result used. */
+  toolCount: number;
+  /** Conversation containing the persisted inline AI turn. */
+  conversationId: string | null;
 }
 
 /**
@@ -57,6 +63,9 @@ export const INITIAL_STATE: AIInlineState = {
   originalContent: '',
   selectionText: '',
   textReplaced: false,
+  didMutate: false,
+  toolCount: 0,
+  conversationId: null,
 };
 
 /**
@@ -72,7 +81,16 @@ export type AIInlineMeta =
   | { type: 'PROMPT_OPEN'; from: number; to: number; selectionText: string }
   | { type: 'PROMPT_SUBMIT'; prompt: string }
   | { type: 'PROMPT_CANCEL' }
-  | { type: 'PREVIEW'; resultMarkdown: string; resultHtml: string; from?: number; to?: number }
+  | {
+      type: 'PREVIEW';
+      resultMarkdown: string;
+      resultHtml: string;
+      from?: number;
+      to?: number;
+      didMutate?: boolean;
+      toolCount?: number;
+      conversationId?: string;
+    }
   | { type: 'ACCEPT' }
   | { type: 'RETRY' }
   | { type: 'DENY' }

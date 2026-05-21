@@ -853,6 +853,8 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
       container.resolve<SettingsService>(TOKENS.SettingsService),
       container.resolve<EditorService>(TOKENS.EditorService),
       container.resolve<SyncService>(TOKENS.SyncService),
+      container.resolve<FileSystemPort>(TOKENS.FileSystem),
+      container.resolve<VoidStoragePort>(TOKENS.VoidStorage),
     )
   );
 

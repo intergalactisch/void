@@ -29,11 +29,21 @@ export {
 
 export {
   DEFAULT_WORKSPACE_NAME,
+  MANAGED_DEFAULT_WORKSPACE_NAME,
+  MANAGED_DEFAULT_WORKSPACE_PATH,
+  MANAGED_WORKSPACE_ROOT,
   activeWorkspaceFrom,
   cloneWorkspace,
   createWorkspace,
   createWorkspaceId,
+  generateManagedWorkspacePath,
+  isAbsoluteOrTildePath,
+  isLegacyDefaultWorkspacePath,
+  isManagedDefaultWorkspacePath,
+  needsManagedDefaultWorkspaceMigration,
+  sanitizeWorkspaceFolderName,
   validateWorkspace,
+  workspacePathEquals,
 } from './Workspace';
 export type { Workspace, GitHubAccountRef, CreateWorkspaceInput } from './Workspace';
 

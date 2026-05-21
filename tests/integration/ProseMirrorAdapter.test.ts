@@ -389,6 +389,65 @@ describe('ProseMirrorAdapter', () => {
       expect(adapter.getMarkdown()).toContain('Start[[target.md|Target Note]]');
     });
 
+    it('replaces an exact single-block range without touching surrounding text', async () => {
+      const doc = createTestDocument({
+        blocks: [
+          {
+            id: 'p1',
+            type: 'paragraph',
+            content: 'Keep the old phrase around',
+            marks: [],
+            children: [],
+            attrs: { type: 'paragraph' },
+          },
+        ],
+      });
+
+      await adapter.mount(container, doc);
+      const view = getMountedView(adapter);
+      setSelectionAroundText(view, 'old phrase');
+      const { from, to } = view.state.selection;
+
+      adapter.execute('replaceRange', from, to, 'new phrase');
+
+      expect(adapter.getDocument().blocks[0]?.content).toBe('Keep the new phrase around');
+    });
+
+    it('replaces a multi-block partial range while preserving outside text', async () => {
+      const doc = createTestDocument({
+        blocks: [
+          {
+            id: 'p1',
+            type: 'paragraph',
+            content: 'Alpha start',
+            marks: [],
+            children: [],
+            attrs: { type: 'paragraph' },
+          },
+          {
+            id: 'p2',
+            type: 'paragraph',
+            content: 'end omega',
+            marks: [],
+            children: [],
+            attrs: { type: 'paragraph' },
+          },
+        ],
+      });
+
+      await adapter.mount(container, doc);
+      const view = getMountedView(adapter);
+      const from = positionInText(view, 'start');
+      const to = positionInText(view, 'end') + 'end'.length;
+      view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, from, to)));
+
+      adapter.execute('replaceRange', from, to, 'bridge');
+
+      expect(adapter.getMarkdown()).toContain('Alpha bridge omega');
+      expect(adapter.getMarkdown()).not.toContain('start');
+      expect(adapter.getMarkdown()).not.toContain('end omega');
+    });
+
     it('replaces an empty command paragraph when inserting a leaf block', async () => {
       const doc = createTestDocument({
         blocks: [
@@ -754,4 +813,18 @@ function setSelectionAroundText(view: EditorView, text: string): void {
   });
   if (from === -1 || to === -1) throw new Error(`Text not found: ${text}`);
   view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, from, to)));
+}
+
+function positionInText(view: EditorView, text: string): number {
+  let found = -1;
+  view.state.doc.descendants((node, pos) => {
+    if (found !== -1) return false;
+    if (!node.isTextblock) return true;
+    const index = node.textContent.indexOf(text);
+    if (index < 0) return true;
+    found = pos + 1 + index;
+    return false;
+  });
+  if (found === -1) throw new Error(`Text not found: ${text}`);
+  return found;
 }

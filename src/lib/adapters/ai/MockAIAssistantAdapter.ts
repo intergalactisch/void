@@ -98,8 +98,17 @@ export class MockAIAssistantAdapter implements AIAssistantProviderPort {
     const isSwarmWrite = request.message.includes('You are the main Void orchestrator') ||
       request.message.includes('Worker results:');
     const isAgentContinuation = request.message.includes('Continue the same approved agent run');
+    const isInlineSelection = request.systemPrompt?.includes("Void's inline note editor AI") ?? false;
+    const isInlineAnswerFixture =
+      isInlineSelection && request.message.includes('INLINE_NOTE_AI_TEST_ANSWER');
+    const isInlineReplaceFixture =
+      isInlineSelection && request.message.includes('INLINE_NOTE_AI_TEST_REPLACE');
 
-    const chat = isIntake
+    const chat = isInlineAnswerFixture
+      ? 'Mock inline answer: this selection means the note is asking for clarification.'
+      : isInlineReplaceFixture
+        ? 'Replaced the selected text.'
+        : isIntake
       ? JSON.stringify({
           kind: 'direct_answer',
           confidence: 0.5,
@@ -158,7 +167,18 @@ export class MockAIAssistantAdapter implements AIAssistantProviderPort {
               ? 'Creating the merged mock swarm research notes.'
       : `Mock response: ${request.message.slice(0, 240)}`;
 
-    const toolCalls = isSwarmWrite
+    const toolCalls = isInlineReplaceFixture
+      ? [
+          {
+            id: 'tc_mock_inline_replace',
+            toolId: 'editor:replace' as never,
+            args: {
+              text: 'mock replacement',
+              ...extractInlineSelectionRange(request.message),
+            },
+          },
+        ]
+      : isSwarmWrite
       ? [
           {
             id: 'tc_mock_swarm_note',
@@ -218,4 +238,13 @@ export class MockAIAssistantAdapter implements AIAssistantProviderPort {
   private delay(ms = this.options.delay): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
+}
+
+function extractInlineSelectionRange(message: string): { from?: number; to?: number } {
+  const from = Number(message.match(/Selection from: (\d+)/)?.[1]);
+  const to = Number(message.match(/Selection to: (\d+)/)?.[1]);
+  const range: { from?: number; to?: number } = {};
+  if (Number.isFinite(from)) range.from = from;
+  if (Number.isFinite(to)) range.to = to;
+  return range;
 }

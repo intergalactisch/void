@@ -362,8 +362,7 @@ fn default_workspace(notes_path: &str, sync: SyncSettings) -> Workspace {
         name: notes_path
             .replace('\\', "/")
             .split('/')
-            .filter(|part| !part.is_empty())
-            .last()
+            .rfind(|part| !part.is_empty())
             .unwrap_or("Void")
             .to_string(),
         notes_path: notes_path.to_string(),
@@ -399,8 +398,7 @@ fn normalize_settings(settings: &mut Settings) {
                 .notes_path
                 .replace('\\', "/")
                 .split('/')
-                .filter(|part| !part.is_empty())
-                .last()
+                .rfind(|part| !part.is_empty())
                 .unwrap_or("Void")
                 .to_string();
         }

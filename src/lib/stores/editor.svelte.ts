@@ -593,6 +593,9 @@ class EditorStore {
   replaceCurrentMatch(replacement: string) {
     this.#service?.replaceCurrentMatch(replacement);
   }
+  replaceRange(from: number, to: number, markdown: string) {
+    this.#service?.replaceRange(from, to, markdown);
+  }
   replaceAllMatches(replacement: string) {
     this.#service?.replaceAllMatches(replacement);
   }

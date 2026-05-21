@@ -48,7 +48,25 @@ export interface EditorPageLinkNote {
 
 export interface EditorInlineGenerateCallbacks {
   onComplete: (markdown: string) => void;
+  onResult?: (result: EditorInlineGenerateResult) => void;
   onError: (message: string) => void;
+}
+
+export interface EditorInlineGenerateRequest {
+  prompt: string;
+  selectionText: string | null;
+  mode: 'generate' | 'selection';
+  from: number | null;
+  to: number | null;
+  notePath: string | null;
+  blockIds: string[];
+}
+
+export interface EditorInlineGenerateResult {
+  message: string;
+  didMutate: boolean;
+  toolCount: number;
+  conversationId?: string;
 }
 
 /**
@@ -85,6 +103,7 @@ export interface EditorEvents {
   'editor:ai-inline-generate': {
     prompt: string;
     selectionText: string | null;
+    request: EditorInlineGenerateRequest;
     callbacks: EditorInlineGenerateCallbacks;
   };
   /** Emitted when block-level selection changes (gutter click, shift-click) */
@@ -199,6 +218,8 @@ export interface EditorCommands {
   findPrevMatch(): void;
   /** Replace the currently active match with the given text. */
   replaceCurrentMatch(replacement: string): void;
+  /** Replace an explicit document range with markdown/text content. */
+  replaceRange(from: number, to: number, markdown: string): void;
   /** Replace every match in the document atomically. Returns the number replaced. */
   replaceAllMatches(replacement: string): number;
   /** Activate quick-jump: label every visible block with a 2-letter code. */

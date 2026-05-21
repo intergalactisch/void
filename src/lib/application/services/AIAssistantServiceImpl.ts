@@ -49,8 +49,11 @@ import type { Message } from '$lib/domain/entities/Message';
 import { ConversationStore } from './ConversationStore';
 import type { ToolInvocationService } from './ToolInvocationService';
 import type { ToolInvocation } from '$lib/domain/entities/ToolInvocation';
+import type { Tool } from '$lib/domain/entities/Tool';
+import { formatToolForAI } from '$lib/domain/entities/Tool';
+import type { ToolId } from '$lib/domain/values/ToolId';
 import type { AIResponse, AIResponseChunk, AIStatusUpdate, ToolCall } from '$lib/domain/values/AIResponse';
-import { createEmptyResponse, parseToolCalls, extractChatContent } from '$lib/domain/values/AIResponse';
+import { createEmptyResponse } from '$lib/domain/values/AIResponse';
 import { serializeContext } from '$lib/domain/values/PromptContext';
 import type { ResolvedPromptReference } from '$lib/domain/values/PromptContext';
 import { events } from '$lib/events';
@@ -162,7 +165,11 @@ export class AIAssistantServiceImpl implements AIAssistantService {
 
   async prompt(message: string, options?: PromptOptions): Promise<Result<AIResponse, Error>> {
     // Get or create conversation
-    const conversation = await this.getConversation(options?.conversationId);
+    const conversationOptions =
+      options?.documentPath !== undefined
+        ? { documentPath: options.documentPath }
+        : undefined;
+    const conversation = await this.getConversation(options?.conversationId, conversationOptions);
     const conversationId = conversation.id;
 
     // Update state
@@ -202,6 +209,14 @@ export class AIAssistantServiceImpl implements AIAssistantService {
 
       // Process response
       const response = result.value;
+      const allowedError = this.validateAllowedToolCalls(response, options?.allowedToolIds);
+      if (allowedError) {
+        this.updateState({
+          isProcessing: false,
+          error: allowedError,
+        });
+        return err(allowedError);
+      }
 
       log.info('Prompt completed', {
         conversationId,
@@ -251,7 +266,11 @@ export class AIAssistantServiceImpl implements AIAssistantService {
     options?: PromptOptions
   ): Promise<Result<AIResponse, Error>> {
     // Get or create conversation
-    const conversation = await this.getConversation(options?.conversationId);
+    const conversationOptions =
+      options?.documentPath !== undefined
+        ? { documentPath: options.documentPath }
+        : undefined;
+    const conversation = await this.getConversation(options?.conversationId, conversationOptions);
     const conversationId = conversation.id;
 
     // Update state
@@ -341,6 +360,15 @@ export class AIAssistantServiceImpl implements AIAssistantService {
       }
 
       response = result.value;
+      const allowedError = this.validateAllowedToolCalls(response, options?.allowedToolIds);
+      if (allowedError) {
+        this.updateState({
+          isProcessing: false,
+          isStreaming: false,
+          error: allowedError,
+        });
+        return err(allowedError);
+      }
 
       log.info('Stream prompt completed', {
         conversationId,
@@ -416,8 +444,11 @@ export class AIAssistantServiceImpl implements AIAssistantService {
   // Conversation methods — thin delegations to ConversationStore.
   // =========================================================================
 
-  async getConversation(conversationId?: string): Promise<Conversation> {
-    return this.conversationStore.getOrCreate(conversationId);
+  async getConversation(
+    conversationId?: string,
+    options?: { documentPath?: string | null }
+  ): Promise<Conversation> {
+    return this.conversationStore.getOrCreate(conversationId, options);
   }
 
   async createNewConversation(): Promise<Conversation> {
@@ -539,7 +570,13 @@ export class AIAssistantServiceImpl implements AIAssistantService {
     }
 
     // Get tools
-    const tools = await this.toolRegistry.getAll(true);
+    const allTools = await this.toolRegistry.getAll(true);
+    const allowedToolIds = options?.allowedToolIds
+      ? new Set<ToolId>(options.allowedToolIds)
+      : null;
+    const tools = allowedToolIds
+      ? allTools.filter((tool) => allowedToolIds.has(tool.id))
+      : allTools;
 
     // Get conversation history
     const conversation = this.conversationStore.get(conversationId);
@@ -548,7 +585,7 @@ export class AIAssistantServiceImpl implements AIAssistantService {
     );
 
     // Build system prompt with tools
-    const toolsPrompt = await this.toolRegistry.getToolsSystemPrompt();
+    const toolsPrompt = buildToolsSystemPrompt(tools);
     const contextPrompt = serializeContext(context);
 
     const notesBasePath = this.contextProvider.getNotesBasePath();
@@ -562,10 +599,7 @@ export class AIAssistantServiceImpl implements AIAssistantService {
     // Track related context count for UI
     this._lastRelatedContextCount = relatedKnowledge.count;
 
-    const systemPrompt =
-      options?.model !== undefined
-        ? undefined
-        : `You are a helpful AI assistant integrated into a note-taking application.
+    const defaultSystemPrompt = `You are a helpful AI assistant integrated into a note-taking application.
 
 ## Current Context
 ${contextPrompt}
@@ -576,6 +610,11 @@ ${toolsPrompt}
 When the user asks you to perform actions, use the appropriate tools.
 Only interact with notes inside the configured notes folder.
 Respond conversationally while being helpful and concise.`;
+
+    const systemPrompt =
+      options?.model !== undefined
+        ? undefined
+        : options?.systemPrompt ?? defaultSystemPrompt;
 
     log.debug('AI request built', {
       toolCount: tools.length,
@@ -607,6 +646,21 @@ Respond conversationally while being helpful and concise.`;
 
   /** Last related context count, exposed for the store */
   private _lastRelatedContextCount = 0;
+
+  private validateAllowedToolCalls(
+    response: AIResponse,
+    allowedToolIds?: ToolId[]
+  ): Error | null {
+    if (!allowedToolIds) return null;
+
+    const allowed = new Set<ToolId>(allowedToolIds);
+    const disallowed = response.toolCalls.filter((toolCall) => !allowed.has(toolCall.toolId));
+    if (disallowed.length === 0) return null;
+
+    return new Error(
+      `AI attempted disallowed tool call(s): ${disallowed.map((toolCall) => toolCall.toolId).join(', ')}`
+    );
+  }
 
   /** Get how many related notes were included in the last prompt's context */
   getLastRelatedContextCount(): number {
@@ -858,6 +912,33 @@ function replaceMessageText(message: Message, text: string): Message {
     text,
     updatedAt: new Date(),
   };
+}
+
+function buildToolsSystemPrompt(tools: Tool[]): string {
+  if (tools.length === 0) return '';
+
+  const lines: string[] = [
+    '## Available Tools',
+    '',
+    'You have access to the following tools. To use a tool, include a tool call in your response using this format:',
+    '',
+    '<tool_call>',
+    '<tool>namespace:action</tool>',
+    '<args>{"param": "value"}</args>',
+    '</tool_call>',
+    '',
+    'You can make multiple tool calls in a single response.',
+    '',
+    '---',
+    '',
+  ];
+
+  for (const tool of tools) {
+    lines.push(formatToolForAI(tool));
+    lines.push('');
+  }
+
+  return lines.join('\n');
 }
 
 function mergeReferences(

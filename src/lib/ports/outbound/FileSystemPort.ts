@@ -68,6 +68,13 @@ export interface FileSystemPort {
   deleteDirectory(path: string): Promise<Result<void, Error>>;
 
   /**
+   * Move a file or directory to the operating system Trash.
+   * @param path - Absolute path to move to Trash
+   * @returns Success or error if the Trash operation fails
+   */
+  moveToTrash(path: string): Promise<Result<void, Error>>;
+
+  /**
    * Rename or move a file/directory.
    * @param from - Absolute source path
    * @param to - Absolute destination path

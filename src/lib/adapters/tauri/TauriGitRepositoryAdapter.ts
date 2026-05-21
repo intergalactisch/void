@@ -111,6 +111,20 @@ export class TauriGitRepositoryAdapter implements GitRepositoryPort {
     }
   }
 
+  async pushDryRun(
+    notesPath: string,
+    remote: string,
+    branch: string,
+    auth?: GitAuthOptions,
+  ): Promise<Result<void, Error>> {
+    try {
+      await gitCommands.pushDryRun(notesPath, remote, branch, auth);
+      return ok(undefined);
+    } catch (e) {
+      return err(toError(e));
+    }
+  }
+
   async readRemoteFile(
     notesPath: string,
     remote: string,

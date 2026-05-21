@@ -73,14 +73,16 @@ export function createAIInlineDecorations(state: EditorState): DecorationSet {
 
     case 'preview': {
       if (pluginState.mode === 'selection' && !pluginState.textReplaced) {
-        // Selection mode: dim original text + show preview widget after it
-        decorations.push(
-          Decoration.inline(from, to, { class: 'void-ai-inline-dimmed' })
-        );
+        // Answer-only keeps the selected text dimmed; applied edits leave the document readable.
+        if (!pluginState.didMutate) {
+          decorations.push(
+            Decoration.inline(from, to, { class: 'void-ai-inline-dimmed' })
+          );
+        }
         decorations.push(
           Decoration.widget(
             to,
-            (view) => createPreviewWidget(pluginState.resultHtml, view),
+            (view) => createPreviewWidget(pluginState.resultMarkdown, pluginState.resultHtml, pluginState, view),
             { side: 1, key: 'ai-inline-preview' }
           )
         );
@@ -92,7 +94,7 @@ export function createAIInlineDecorations(state: EditorState): DecorationSet {
         decorations.push(
           Decoration.widget(
             from + 1,
-            (view) => createPreviewWidget(pluginState.resultHtml, view),
+            (view) => createPreviewWidget(pluginState.resultMarkdown, pluginState.resultHtml, pluginState, view),
             { side: -1, key: 'ai-inline-preview' }
           )
         );
@@ -230,7 +232,7 @@ function createLoadingWidget(prompt: string, view: EditorView): HTMLElement {
   const text = document.createElement('span');
   text.className = 'void-ai-inline-prompt-text';
   const displayText = prompt.length > 60 ? prompt.slice(0, 57) + '...' : prompt;
-  text.textContent = `Generating: "${displayText}"`;
+  text.textContent = `Working: "${displayText}"`;
 
   // Cancel button
   const cancel = document.createElement('button');
@@ -253,33 +255,44 @@ function createLoadingWidget(prompt: string, view: EditorView): HTMLElement {
 }
 
 /**
- * Create the preview widget with rendered content and action buttons.
+ * Create the final result widget with rendered content and action buttons.
  */
-function createPreviewWidget(resultHtml: string, view: EditorView): HTMLElement {
+function createPreviewWidget(
+  resultMarkdown: string,
+  resultHtml: string,
+  state: AIInlineState,
+  view: EditorView
+): HTMLElement {
   const wrapper = document.createElement('div');
   wrapper.className = 'void-ai-preview';
   wrapper.setAttribute('contenteditable', 'false');
 
-  // Header with action buttons
   const header = document.createElement('div');
   header.className = 'void-ai-preview-header';
 
-  const denyBtn = document.createElement('button');
-  denyBtn.className = 'void-ai-preview-deny';
-  denyBtn.innerHTML = '&#x2715;';
-  denyBtn.title = 'Deny (Esc)';
-  denyBtn.type = 'button';
-  denyBtn.addEventListener('mousedown', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    view.dispatch(
-      view.state.tr.setMeta(aiInlineKey, { type: 'DENY' } satisfies AIInlineMeta)
-    );
-  });
+  const status = document.createElement('div');
+  status.className = 'void-ai-preview-status';
+
+  const badge = document.createElement('span');
+  badge.className = state.didMutate ? 'void-ai-preview-badge edited' : 'void-ai-preview-badge answer';
+  badge.textContent = state.didMutate ? 'Edited' : 'Answer';
+
+  const detail = document.createElement('span');
+  detail.className = 'void-ai-preview-detail';
+  detail.textContent = state.toolCount > 0
+    ? `${state.toolCount} tool${state.toolCount === 1 ? '' : 's'} used`
+    : 'No note changes';
+
+  status.appendChild(badge);
+  status.appendChild(detail);
+
+  const actions = document.createElement('div');
+  actions.className = 'void-ai-preview-actions';
 
   const retryBtn = document.createElement('button');
   retryBtn.className = 'void-ai-preview-retry';
-  retryBtn.innerHTML = '&#x21bb; Retry';
+  retryBtn.textContent = 'Retry';
+  retryBtn.title = 'Retry';
   retryBtn.type = 'button';
   retryBtn.addEventListener('mousedown', (e) => {
     e.preventDefault();
@@ -289,38 +302,65 @@ function createPreviewWidget(resultHtml: string, view: EditorView): HTMLElement 
     );
   });
 
-  const acceptBtn = document.createElement('button');
-  acceptBtn.className = 'void-ai-preview-accept';
-  acceptBtn.innerHTML = '&#x2713; Accept';
-  acceptBtn.type = 'button';
-  acceptBtn.addEventListener('mousedown', (e) => {
+  const copyBtn = document.createElement('button');
+  copyBtn.className = 'void-ai-preview-copy';
+  copyBtn.textContent = 'Copy';
+  copyBtn.title = 'Copy response';
+  copyBtn.type = 'button';
+  copyBtn.addEventListener('mousedown', (e) => {
     e.preventDefault();
     e.stopPropagation();
-    view.dispatch(
-      view.state.tr.setMeta(aiInlineKey, { type: 'ACCEPT' } satisfies AIInlineMeta)
+    void navigator.clipboard?.writeText(resultMarkdown || stripHtml(resultHtml)).then(() => {
+      copyBtn.textContent = 'Copied';
+      setTimeout(() => {
+        copyBtn.textContent = 'Copy';
+      }, 1200);
+    });
+  });
+
+  const chatBtn = document.createElement('button');
+  chatBtn.className = 'void-ai-preview-open';
+  chatBtn.textContent = 'Open chat';
+  chatBtn.title = 'Open chat';
+  chatBtn.type = 'button';
+  chatBtn.disabled = !state.conversationId;
+  chatBtn.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!state.conversationId) return;
+    window.dispatchEvent(
+      new CustomEvent('void:open-ai-chat', {
+        detail: { conversationId: state.conversationId },
+      })
     );
   });
 
-  header.appendChild(denyBtn);
-  header.appendChild(retryBtn);
-  header.appendChild(acceptBtn);
+  const dismissBtn = document.createElement('button');
+  dismissBtn.className = 'void-ai-preview-dismiss';
+  dismissBtn.textContent = 'Dismiss';
+  dismissBtn.title = 'Dismiss';
+  dismissBtn.type = 'button';
+  dismissBtn.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    view.dispatch(
+      view.state.tr.setMeta(aiInlineKey, { type: 'DENY' } satisfies AIInlineMeta)
+    );
+  });
 
-  // Content body with rendered HTML
+  actions.appendChild(retryBtn);
+  actions.appendChild(copyBtn);
+  actions.appendChild(chatBtn);
+  actions.appendChild(dismissBtn);
+  header.appendChild(status);
+  header.appendChild(actions);
+
   const content = document.createElement('div');
   content.className = 'void-ai-preview-content';
   content.innerHTML = resultHtml;
 
-  // Footer with keyboard shortcuts
-  const footer = document.createElement('div');
-  footer.className = 'void-ai-preview-footer';
-  footer.innerHTML =
-    '<kbd>\u2318\u21B5</kbd> Accept\u2003' +
-    '<kbd>\u2318R</kbd> Retry\u2003' +
-    '<kbd>Esc</kbd> Deny';
-
   wrapper.appendChild(header);
   wrapper.appendChild(content);
-  wrapper.appendChild(footer);
 
   return wrapper;
 }
@@ -368,4 +408,10 @@ function createErrorWidget(errorMessage: string, view: EditorView): HTMLElement 
   wrapper.appendChild(dismissBtn);
 
   return wrapper;
+}
+
+function stripHtml(html: string): string {
+  const div = document.createElement('div');
+  div.innerHTML = html;
+  return div.textContent ?? '';
 }

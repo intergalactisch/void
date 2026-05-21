@@ -234,6 +234,8 @@ export interface EditorService {
   findPrevMatch(): void;
   /** Replace the active match. */
   replaceCurrentMatch(replacement: string): void;
+  /** Replace an explicit editor document range with markdown/text content. */
+  replaceRange(from: number, to: number, markdown: string): void;
   /** Replace every match. */
   replaceAllMatches(replacement: string): void;
   /** Read raw plugin state — returns null if no editor is mounted. */

@@ -11,7 +11,7 @@
    * directly so the panel stays testable.
    */
 
-  import { settingsStore, syncStore, toastStore, uiStore } from '$lib/stores';
+  import { settingsStore, syncStore, toastStore, uiStore, workspaceStore } from '$lib/stores';
   import {
     AlertTriangle,
     Check,
@@ -41,6 +41,18 @@
     type GitHubRepoSummary,
   } from '$lib/domain/values';
   import { openUrl as tauriOpenUrl } from '@tauri-apps/plugin-opener';
+
+  interface Props {
+    /**
+     * Workspace this section is bound to. Defaults to the active workspace.
+     * The underlying sync service still operates on the active workspace only,
+     * so passing a non-active id is mostly for display correctness — controls
+     * should only be rendered when this id matches the active workspace.
+     */
+    workspaceId?: string;
+  }
+
+  let { workspaceId }: Props = $props();
 
   // ─── State ───
   type AuthTab = 'device' | 'token';
@@ -88,9 +100,22 @@
   const status = $derived(syncStore.status);
   const user = $derived(syncStore.user);
 
+  // The workspace this section is bound to. Falls back to the active workspace
+  // when no id is provided.
+  const boundWorkspaceId = $derived(workspaceId ?? workspaceStore.activeWorkspace?.id);
+  const boundWorkspace = $derived(
+    boundWorkspaceId
+      ? settings?.workspaces.find((w) => w.id === boundWorkspaceId) ?? null
+      : null,
+  );
+
+  // The sync config to read. Prefer the per-workspace sync; fall back to the
+  // top-level mirror for legacy settings that haven't been normalised yet.
+  const boundSync = $derived(boundWorkspace?.sync ?? settings?.sync ?? null);
+
   const isSignedIn = $derived(syncStore.isSignedIn);
-  const isAttached = $derived(syncStore.isAttached && !!settings?.sync.repository);
-  const authMode = $derived(settings?.sync.authMode ?? 'github-app');
+  const isAttached = $derived(syncStore.isAttached && !!boundSync?.repository);
+  const authMode = $derived(boundSync?.authMode ?? 'github-app');
 
   // Pull cached branches on attach
   $effect(() => {
@@ -113,7 +138,7 @@
   }
 
   function repoWebUrl(): string | null {
-    const repo = settings?.sync.repository;
+    const repo = boundSync?.repository;
     if (!repo) return null;
     return repo.htmlUrl ?? `https://github.com/${repo.fullName}`;
   }
@@ -359,7 +384,7 @@
   }
 
   async function togglePaused(): Promise<void> {
-    const next = !(settings?.sync.paused ?? false);
+    const next = !(boundSync?.paused ?? false);
     await run(async () => syncStore.setPaused(next));
   }
 
@@ -371,7 +396,7 @@
 
   async function attachToRemoteBranch(branch: GitHubBranchSummary): Promise<void> {
     branchPickerOpen = false;
-    const repo = settings?.sync.repository;
+    const repo = boundSync?.repository;
     if (!repo) return;
     if (status.branch === branch.name) return;
     // Switch the active branch — if it exists locally, switch; otherwise
@@ -874,7 +899,7 @@
 
     {:else}
       <!-- State 3: connected -->
-      {@const repo = settings?.sync.repository}
+      {@const repo = boundSync?.repository}
       <div class="gh-card">
         <div class="gh-connected-head">
           <div class="gh-connected-id">
@@ -990,7 +1015,7 @@
             type="button"
             class="gh-btn gh-btn-primary"
             onclick={syncNow}
-            disabled={busy || (settings?.sync.paused ?? false)}
+            disabled={busy || (boundSync?.paused ?? false)}
           >
             {#if busy || status.operation !== 'idle'}<Loader2 size={13} class="gh-spin" />{:else}<UploadCloud size={13} />{/if}
             Sync now
@@ -999,7 +1024,7 @@
             <RefreshCw size={12} class={busy ? 'gh-spin' : ''} /> Refresh
           </button>
           <button type="button" class="gh-btn gh-btn-ghost" onclick={togglePaused} disabled={busy}>
-            {#if settings?.sync.paused}<Play size={12} /> Resume{:else}<Pause size={12} /> Pause{/if}
+            {#if boundSync?.paused}<Play size={12} /> Resume{:else}<Pause size={12} /> Pause{/if}
           </button>
           <span class="gh-flex-1"></span>
           <button type="button" class="gh-btn gh-btn-ghost gh-btn-danger" onclick={detach} disabled={busy}>
@@ -1011,14 +1036,14 @@
           <button
             type="button"
             role="switch"
-            aria-checked={settings?.sync.autoSync ?? true}
+            aria-checked={boundSync?.autoSync ?? true}
             aria-label="Toggle gentle auto-sync"
             class="gh-toggle"
-            class:gh-toggle-on={settings?.sync.autoSync ?? true}
-            onclick={() => setAutoSync(!(settings?.sync.autoSync ?? true))}
+            class:gh-toggle-on={boundSync?.autoSync ?? true}
+            onclick={() => setAutoSync(!(boundSync?.autoSync ?? true))}
             disabled={busy}
           >
-            <span class="gh-knob" class:gh-knob-on={settings?.sync.autoSync ?? true}></span>
+            <span class="gh-knob" class:gh-knob-on={boundSync?.autoSync ?? true}></span>
           </button>
           <div class="gh-toggle-text">
             <span class="gh-toggle-title">Gentle auto-sync</span>

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { settingsStore } from '$lib/stores';
+  import { settingsStore, workspaceStore } from '$lib/stores';
   import {
     AI_REASONING_EFFORT_OPTIONS,
     CLI_PROVIDER_OPTIONS,
@@ -70,7 +70,31 @@
    * Handle notes path update
    */
   async function handleNotesPathUpdate() {
-    await updateSetting('notesPath', notesPathInput);
+    await updateActiveWorkspacePath(notesPathInput);
+  }
+
+  async function updateActiveWorkspacePath(path: string) {
+    if (!settingsStore.settings) return;
+    saveStatus = 'saving';
+    saveError = null;
+    try {
+      const updated = await workspaceStore.updateNotesPath(
+        settingsStore.settings.activeWorkspaceId,
+        path,
+      );
+      if (!updated) {
+        throw workspaceStore.error ?? new Error('Failed to update active workspace folder');
+      }
+      await settingsStore.load();
+      notesPathInput = settingsStore.settings?.notesPath ?? path;
+      saveStatus = 'saved';
+      setTimeout(() => {
+        if (saveStatus === 'saved') saveStatus = 'idle';
+      }, 2000);
+    } catch (e) {
+      saveStatus = 'error';
+      saveError = e instanceof Error ? e.message : String(e);
+    }
   }
 
   /**
@@ -86,7 +110,7 @@
 
       if (selected && typeof selected === 'string') {
         notesPathInput = selected;
-        await updateSetting('notesPath', selected);
+        await updateActiveWorkspacePath(selected);
       }
     } catch (e) {
       console.error('Failed to open folder dialog:', e);

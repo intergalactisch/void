@@ -316,6 +316,38 @@ pub async fn remove_directory(path: String) -> Result<(), VoidError> {
         })
 }
 
+/// Move a file or directory to the operating system Trash.
+#[tauri::command]
+pub async fn move_to_trash(path: String) -> Result<(), VoidError> {
+    let expanded_path = validate_path(&path)?;
+    let display_path = expanded_path.to_string_lossy().to_string();
+
+    tokio::task::spawn_blocking(move || move_path_to_trash(&expanded_path))
+        .await
+        .map_err(|e| VoidError::PathTrash {
+            path: display_path.clone(),
+            message: format!("Trash worker failed: {e}"),
+        })?
+        .map_err(|e| VoidError::PathTrash {
+            path: display_path,
+            message: e.to_string(),
+        })
+}
+
+#[cfg(target_os = "macos")]
+fn move_path_to_trash(path: &std::path::Path) -> Result<(), trash::Error> {
+    use trash::macos::{DeleteMethod, TrashContextExtMacos};
+
+    let mut trash_context = trash::TrashContext::new();
+    trash_context.set_delete_method(DeleteMethod::NsFileManager);
+    trash_context.delete(path)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn move_path_to_trash(path: &std::path::Path) -> Result<(), trash::Error> {
+    trash::delete(path)
+}
+
 /// Rename / move a file or directory.
 #[tauri::command]
 pub async fn rename_path(from: String, to: String) -> Result<(), VoidError> {

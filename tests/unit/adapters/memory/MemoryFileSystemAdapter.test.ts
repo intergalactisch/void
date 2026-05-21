@@ -215,6 +215,29 @@ describe('MemoryFileSystemAdapter', () => {
     });
   });
 
+  describe('moveToTrash()', () => {
+    it('removes a directory tree in memory', async () => {
+      adapter.seed({
+        '/notes/a.md': 'A',
+        '/notes/.void/provenance/a.jsonl': '{}',
+      });
+
+      const result = await adapter.moveToTrash('/notes');
+
+      expect(result.ok).toBe(true);
+      expect((await adapter.exists('/notes')).value).toBe(false);
+      expect((await adapter.exists('/notes/a.md')).value).toBe(false);
+      expect((await adapter.exists('/notes/.void/provenance/a.jsonl')).value).toBe(false);
+    });
+
+    it('returns an error for a missing path', async () => {
+      const result = await adapter.moveToTrash('/missing');
+
+      expect(result.ok).toBe(false);
+      expect(result.error.message).toContain('not found');
+    });
+  });
+
   describe('Testing utilities', () => {
     describe('seed()', () => {
       it('populates files', () => {

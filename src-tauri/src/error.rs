@@ -62,6 +62,9 @@ pub enum VoidError {
         source: std::io::Error,
     },
 
+    #[error("Failed to move {} to Trash: {message}", redact_path(path))]
+    PathTrash { path: String, message: String },
+
     #[error(
         "Failed to rename {} to {}: {source}",
         redact_path(from),

@@ -179,6 +179,19 @@ export class MemoryFileSystemAdapter implements FileSystemPort {
     return ok(undefined);
   }
 
+  async moveToTrash(path: string): Promise<Result<void, Error>> {
+    const normalizedPath = this.normalizePath(path);
+    const entry = this.storage.get(normalizedPath);
+
+    if (entry === undefined) {
+      return err(new Error(`Path not found: ${path}`));
+    }
+    if (isMemoryFile(entry)) {
+      return this.deleteFile(normalizedPath);
+    }
+    return this.deleteDirectory(normalizedPath);
+  }
+
   async renamePath(from: string, to: string): Promise<Result<void, Error>> {
     const normalizedFrom = this.normalizePath(from);
     const normalizedTo = this.normalizePath(to);

@@ -24,6 +24,8 @@ import type {
   DocumentPort,
   EditorBlockMenuRequest,
   EditorInlineGenerateCallbacks,
+  EditorInlineGenerateRequest,
+  EditorInlineGenerateResult,
   EditorNotesProvider,
   EditorPageLinkNote,
   EditorPort,
@@ -37,6 +39,8 @@ import { createEditorSession, ConflictError } from '$lib/domain';
 import type { DocumentMeta, Selection } from '$lib/domain/values';
 import { normalizeNoteTags } from '$lib/domain/values';
 import { EMPTY_SELECTION } from '$lib/domain/values/Selection';
+import type { ToolId } from '$lib/domain/values/ToolId';
+import type { Conversation } from '$lib/domain/entities/Conversation';
 import type { Result } from '$lib/core';
 import { combineMarkdownWithFrontmatter, ok, err } from '$lib/core';
 import { events } from '$lib/events';
@@ -55,6 +59,23 @@ const INITIAL_STATE: EditorState = {
 };
 
 const IN_APP_MUTATION_GRACE_MS = 2000;
+const INLINE_SELECTION_TOOL_IDS = [
+  'editor:replace',
+  'editor:replace-block',
+  'editor:apply-note-patch',
+] as ToolId[];
+
+const INLINE_SELECTION_SYSTEM_PROMPT = `You are Void's inline note editor AI. The user selected text inside a note and asked a visible prompt.
+
+Choose the least invasive correct outcome:
+- If the user asks a question, asks what something means, asks for critique, or requests explanation, answer only and do not call tools.
+- If the selected range itself should be rewritten, call editor:replace with from and to.
+- If only one exact substring inside the selection should change, call editor:replace with targetText and occurrence, or with an explicit subrange if provided.
+- If a whole visible block should be rewritten, call editor:replace-block with one of the supplied block IDs.
+- If the entire note must change, call editor:apply-note-patch with complete markdown for the note.
+
+Only use these editor write tools when the user's request truly asks for an edit. Never invent a broader edit when an answer or smaller replacement is enough.
+Always include a concise user-facing response. When you edit, summarize what changed; do not paste the entire replacement unless that is genuinely useful.`;
 
 export class EditorServiceImpl implements EditorService {
   private state: EditorState = { ...INITIAL_STATE };
@@ -785,6 +806,10 @@ export class EditorServiceImpl implements EditorService {
     this.editorPort?.execute('replaceCurrentMatch', replacement);
   }
 
+  replaceRange(from: number, to: number, markdown: string): void {
+    this.editorPort?.execute('replaceRange', from, to, markdown);
+  }
+
   replaceAllMatches(replacement: string): void {
     this.editorPort?.execute('replaceAllMatches', replacement);
   }
@@ -1040,8 +1065,8 @@ export class EditorServiceImpl implements EditorService {
       editorPort.on('editor:block-scrolled-into-view', (payload) =>
         events.emit('editor:block-scrolled-into-view', payload),
       ),
-      editorPort.on('editor:ai-inline-generate', ({ prompt, selectionText, callbacks }) => {
-        this.handleAIInlineGenerate(prompt, selectionText, callbacks);
+      editorPort.on('editor:ai-inline-generate', ({ prompt, selectionText, callbacks, request }) => {
+        this.handleAIInlineGenerate(prompt, selectionText, callbacks, request);
       }),
     ];
   }
@@ -1070,6 +1095,7 @@ export class EditorServiceImpl implements EditorService {
     prompt: string,
     selectionText: string | null,
     callbacks: EditorInlineGenerateCallbacks,
+    request?: EditorInlineGenerateRequest,
   ): Promise<void> {
     if (!this.aiAssistant) {
       callbacks.onError('AI is not configured');
@@ -1077,6 +1103,11 @@ export class EditorServiceImpl implements EditorService {
     }
 
     try {
+      if (request?.mode === 'selection' && selectionText && callbacks.onResult) {
+        await this.handleAIInlineSelectionRequest(prompt, selectionText, callbacks, request);
+        return;
+      }
+
       const noteTitle = this.state.document?.meta.title ?? 'Untitled';
       const parts = [`You are helping write a note titled "${noteTitle}".`];
 
@@ -1110,6 +1141,65 @@ export class EditorServiceImpl implements EditorService {
     } catch (error) {
       callbacks.onError(error instanceof Error ? error.message : 'AI generation failed');
     }
+  }
+
+  private async handleAIInlineSelectionRequest(
+    prompt: string,
+    selectionText: string,
+    callbacks: EditorInlineGenerateCallbacks,
+    request: EditorInlineGenerateRequest,
+  ): Promise<void> {
+    const noteTitle = this.state.document?.meta.title ?? 'Untitled';
+    const notePath = request.notePath ?? this.state.document?.path ?? null;
+    const internalPrompt = buildInlineSelectionPrompt({
+      prompt,
+      selectedText: selectionText,
+      noteTitle,
+      notePath,
+      from: request.from,
+      to: request.to,
+      blockIds: request.blockIds,
+    });
+
+    const result = await this.aiAssistant!.prompt(internalPrompt, {
+      autoExecuteTools: true,
+      displayMessage: prompt,
+      persistAssistantMessage: true,
+      documentPath: notePath,
+      allowedToolIds: [...INLINE_SELECTION_TOOL_IDS],
+      systemPrompt: INLINE_SELECTION_SYSTEM_PROMPT,
+    });
+
+    const conversation = this.aiAssistant!.getCurrentConversation();
+    const conversationId = conversation?.id ?? null;
+
+    if (!result.ok) {
+      callbacks.onError(result.error.message);
+      return;
+    }
+
+    const failedToolMessage = getLatestToolFailureMessage(conversation);
+    if (failedToolMessage) {
+      const errorMessage = `I could not apply that edit: ${failedToolMessage}`;
+      if (conversationId) {
+        await this.aiAssistant!.appendAssistantMessage(errorMessage, conversationId);
+      }
+      callbacks.onError(errorMessage);
+      return;
+    }
+
+    const response = result.value;
+    const didMutate = response.toolCalls.length > 0;
+    const message = response.chat.trim() || (didMutate ? 'Done.' : 'I do not have an answer for that yet.');
+    const inlineResult: EditorInlineGenerateResult = {
+      message,
+      didMutate,
+      toolCount: response.toolCalls.length,
+    };
+    if (conversationId) {
+      inlineResult.conversationId = conversationId;
+    }
+    callbacks.onResult?.(inlineResult);
   }
 
   private subscribeToTodoWorkspaceSync(): void {
@@ -1605,6 +1695,59 @@ export class EditorServiceImpl implements EditorService {
       }
     }
   }
+}
+
+function buildInlineSelectionPrompt(input: {
+  prompt: string;
+  selectedText: string;
+  noteTitle: string;
+  notePath: string | null;
+  from: number | null;
+  to: number | null;
+  blockIds: string[];
+}): string {
+  const location = [
+    `Note title: ${input.noteTitle}`,
+    `Note path: ${input.notePath ?? '(active note)'}`,
+    `Selection from: ${input.from ?? '(unknown)'}`,
+    `Selection to: ${input.to ?? '(unknown)'}`,
+    `Active block ids: ${input.blockIds.length ? input.blockIds.join(', ') : '(none)'}`,
+  ].join('\n');
+
+  return [
+    'Inline note AI request.',
+    '',
+    location,
+    '',
+    'Selected text:',
+    '```text',
+    input.selectedText,
+    '```',
+    '',
+    'User prompt:',
+    input.prompt,
+    '',
+    'Decide whether to answer only or apply an edit with the available editor tools.',
+    'For exact selection replacement, prefer editor:replace with the supplied from/to range.',
+    'For substring replacement, use targetText and occurrence when exact coordinates are not known.',
+  ].join('\n');
+}
+
+function getLatestToolFailureMessage(conversation: Conversation | null | undefined): string | null {
+  const assistant = conversation?.messages
+    .slice()
+    .reverse()
+    .find((message) => message.role === 'assistant' && message.toolInvocations.length > 0);
+  if (!assistant) return null;
+
+  const failed = assistant.toolInvocations.find(
+    (invocation) => invocation.status === 'failed' || invocation.status === 'cancelled'
+  );
+  if (!failed) return null;
+
+  if (failed.result?.status === 'failure') return failed.result.error.message;
+  if (failed.result?.status === 'cancelled') return failed.result.reason;
+  return failed.message ?? `Tool ${failed.toolId} did not complete`;
 }
 
 function inferEditorCaptureReason(lineage?: LineageRecordOptions): NonNullable<LineageRecordOptions['captureReason']> {

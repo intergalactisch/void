@@ -36,6 +36,10 @@ import {
   type AIInlineMeta,
   type AIInlineMode,
 } from './plugins/aiInline';
+import type {
+  EditorInlineGenerateRequest,
+  EditorInlineGenerateResult,
+} from '$lib/ports/outbound/EditorPort';
 import { parseMarkdown, renderMarkdownToHtml } from '../markdown/parser';
 import { resolveVisibleBlock } from './commands/blockUtils';
 import { aiBlockKey, AI_BYPASS, type AIBlockMeta } from './plugins/aiBlock';
@@ -51,8 +55,10 @@ export type AIInlineGenerateCallback = (
   selectionText: string | null,
   callbacks: {
     onComplete: (markdown: string) => void;
+    onResult?: (result: EditorInlineGenerateResult) => void;
     onError: (msg: string) => void;
   },
+  request: EditorInlineGenerateRequest,
 ) => void;
 
 export interface AIInlineCoordinatorDeps {
@@ -155,7 +161,7 @@ export class AIInlineCoordinator {
         if (!v) return;
         this.failBlockAI(v, target.blockId, msg);
       },
-    });
+    }, this.createRequest(view, prompt, null, null, null, 'generate'));
   }
 
   /**
@@ -177,25 +183,33 @@ export class AIInlineCoordinator {
 
     const originalContent = selectionText;
     startAIInlineProcessing(view, prompt, from, to, originalContent);
-    this.startBlockAI(view, target.blockId, 'AI rewrite');
     this.scrollBlockIntoView(view, target.blockId);
 
     this.onGenerate?.(prompt, selectionText, {
       onComplete: (markdown) => {
         const v = this.getView();
         if (!v) return;
-        this.finishBlockAI(v, target.blockId, markdown);
-        v.dispatch(
-          v.state.tr.setMeta(aiInlineKey, { type: 'ACCEPT' } satisfies AIInlineMeta)
-        );
+        const html = renderMarkdownToHtml(markdown);
+        showAIInlinePreview(v, markdown, html);
+      },
+      onResult: (result) => {
+        const v = this.getView();
+        if (!v) return;
+        const markdown = result.message.trim() || (result.didMutate ? 'Done.' : '');
+        const html = renderMarkdownToHtml(markdown);
+        const options: { didMutate: boolean; toolCount: number; conversationId?: string } = {
+          didMutate: result.didMutate,
+          toolCount: result.toolCount,
+        };
+        if (result.conversationId) options.conversationId = result.conversationId;
+        showAIInlinePreview(v, markdown, html, undefined, undefined, options);
       },
       onError: (msg) => {
         const v = this.getView();
         if (!v) return;
         reportAIInlineError(v, msg);
-        this.failBlockAI(v, target.blockId, msg);
       },
-    });
+    }, this.createRequest(view, prompt, selectionText, from, to, 'selection'));
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -240,6 +254,8 @@ export class AIInlineCoordinator {
     const pluginState = aiInlineKey.getState(view.state);
     const selectionText =
       pluginState?.mode === 'selection' ? pluginState.selectionText : null;
+    const from = pluginState?.mode === 'selection' ? pluginState.blockPos?.from ?? null : null;
+    const to = pluginState?.mode === 'selection' ? pluginState.blockPos?.to ?? null : null;
 
     this.onGenerate?.(prompt, selectionText, {
       onComplete: (markdown) => {
@@ -248,11 +264,23 @@ export class AIInlineCoordinator {
         const html = renderMarkdownToHtml(markdown);
         showAIInlinePreview(v, markdown, html);
       },
+      onResult: (result) => {
+        const v = this.getView();
+        if (!v) return;
+        const markdown = result.message.trim() || (result.didMutate ? 'Done.' : '');
+        const html = renderMarkdownToHtml(markdown);
+        const options: { didMutate: boolean; toolCount: number; conversationId?: string } = {
+          didMutate: result.didMutate,
+          toolCount: result.toolCount,
+        };
+        if (result.conversationId) options.conversationId = result.conversationId;
+        showAIInlinePreview(v, markdown, html, undefined, undefined, options);
+      },
       onError: (msg) => {
         const v = this.getView();
         if (v) reportAIInlineError(v, msg);
       },
-    });
+    }, this.createRequest(view, prompt, selectionText, from, to, selectionText ? 'selection' : 'generate'));
   }
 
   /** Reject the AI output and restore the original markdown content. */
@@ -277,6 +305,43 @@ export class AIInlineCoordinator {
     const blockId = resolved?.node.attrs.id as string | undefined;
     if (!resolved || !blockId) return null;
     return { blockId, pos: resolved.pos, end: resolved.end, node: resolved.node };
+  }
+
+  private createRequest(
+    view: EditorView,
+    prompt: string,
+    selectionText: string | null,
+    from: number | null,
+    to: number | null,
+    mode: 'generate' | 'selection',
+  ): EditorInlineGenerateRequest {
+    return {
+      prompt,
+      selectionText,
+      mode,
+      from,
+      to,
+      notePath: null,
+      blockIds: this.getBlockIdsInRange(view, from, to),
+    };
+  }
+
+  private getBlockIdsInRange(view: EditorView, from: number | null, to: number | null): string[] {
+    if (from == null || to == null) {
+      const current = this.resolveBlockAt(view, view.state.selection.from);
+      return current ? [current.blockId] : [];
+    }
+
+    const ids = new Set<string>();
+    view.state.doc.nodesBetween(from, to, (node) => {
+      const id = node.attrs?.id as string | undefined;
+      if (id) ids.add(id);
+    });
+    if (ids.size === 0) {
+      const current = this.resolveBlockAt(view, from);
+      if (current) ids.add(current.blockId);
+    }
+    return Array.from(ids);
   }
 
   private startBlockAI(view: EditorView, blockId: string, operation: string): void {

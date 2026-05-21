@@ -14,6 +14,7 @@ import type { ToolInvocation } from '$lib/domain/entities/ToolInvocation';
 import type { AIResponse, AIResponseChunk, AIStatusUpdate } from '$lib/domain/values/AIResponse';
 import type { PromptContext } from '$lib/domain/values/PromptContext';
 import type { AIWebAccess } from '$lib/domain/values/AIWebAccess';
+import type { ToolId } from '$lib/domain/values/ToolId';
 
 /**
  * Options for sending a prompt.
@@ -48,6 +49,15 @@ export interface PromptOptions {
 
   /** Whether this turn may use provider-native internet research. */
   webAccess?: AIWebAccess;
+
+  /** Optional full system prompt override for this turn. */
+  systemPrompt?: string;
+
+  /** Restrict the tool manifest and executable tool calls to this allow-list. */
+  allowedToolIds?: ToolId[];
+
+  /** Bind a newly-created conversation to a note/document path. */
+  documentPath?: string | null;
 }
 
 /**
@@ -126,7 +136,10 @@ export interface AIAssistantService {
    * @param conversationId - Optional ID of existing conversation
    * @returns The conversation
    */
-  getConversation(conversationId?: string): Promise<Conversation>;
+  getConversation(
+    conversationId?: string,
+    options?: { documentPath?: string | null }
+  ): Promise<Conversation>;
 
   /**
    * Always create a fresh new conversation.

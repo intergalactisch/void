@@ -30,9 +30,42 @@ class WorkspaceStore {
     this.activeWorkspace = this.#service.active();
   }
 
-  async create(name: string, notesPath: string): Promise<Workspace | null> {
+  async create(name: string, notesPath?: string | null): Promise<Workspace | null> {
     if (!this.#service) return null;
-    return this.run(async () => this.#service!.create({ name, notesPath }));
+    return this.run(async () => this.#service!.create(
+      notesPath === undefined ? { name } : { name, notesPath }
+    ));
+  }
+
+  async createAndSwitch(
+    name: string,
+    notesPath?: string | null,
+    migrateLegacyDefault = false,
+  ): Promise<boolean> {
+    if (!this.#service) return false;
+    this.loading = true;
+    this.error = null;
+    this.switchBlockers = [];
+    try {
+      const params = notesPath === undefined
+        ? { name, migrateLegacyDefault }
+        : { name, notesPath, migrateLegacyDefault };
+      const created = await this.#service.createAndSwitch(params);
+      if (!created.ok) {
+        this.error = created.error;
+        toastStore.error(created.error.message);
+        return false;
+      }
+      await settingsStore.load();
+      this.refreshLocal();
+      toastStore.success(`Created ${created.value.workspace.name}`);
+      if (created.value.requiresReload && typeof window !== 'undefined') {
+        window.location.reload();
+      }
+      return true;
+    } finally {
+      this.loading = false;
+    }
   }
 
   async rename(workspaceId: string, name: string): Promise<Workspace | null> {
@@ -45,9 +78,20 @@ class WorkspaceStore {
     return this.run(async () => this.#service!.updateNotesPath(workspaceId, notesPath));
   }
 
+  async moveFolder(workspaceId: string, destinationPath: string): Promise<Workspace | null> {
+    if (!this.#service) return null;
+    return this.run(async () => this.#service!.moveFolder(workspaceId, destinationPath));
+  }
+
   async remove(workspaceId: string): Promise<boolean> {
     if (!this.#service) return false;
     const result = await this.run(async () => this.#service!.remove(workspaceId));
+    return result !== null;
+  }
+
+  async trash(workspaceId: string): Promise<boolean> {
+    if (!this.#service) return false;
+    const result = await this.run(async () => this.#service!.trash(workspaceId));
     return result !== null;
   }
 

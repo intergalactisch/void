@@ -727,6 +727,16 @@
     const handleExportRequest = () => { void exportAsMarkdown(); };
     events.on('app:request-export-markdown', handleExportRequest);
 
+    const handleOpenAIChat = (event: Event) => {
+      const detail = (event as CustomEvent<{ conversationId?: string }>).detail;
+      uiStore.openAISidebar();
+      aiStore.setSidebarView('chat');
+      if (detail?.conversationId) {
+        void aiStore.switchConversation(detail.conversationId);
+      }
+    };
+    window.addEventListener('void:open-ai-chat', handleOpenAIChat);
+
     const handleTasksNewRequest = () => {
       todoWorkspace?.focusCapture();
     };
@@ -752,6 +762,7 @@
       events.off('app:request-export-markdown', handleExportRequest);
       events.off('tasks:request-new', handleTasksNewRequest);
       events.off('command:executed', handleCommandExecuted);
+      window.removeEventListener('void:open-ai-chat', handleOpenAIChat);
       document.removeEventListener('contextmenu', contextMenuHandler);
     };
   });
