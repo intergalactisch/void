@@ -1,6 +1,6 @@
 [package]
 name = "void"
-version = "0.1.2"
+version = "0.1.3"
 description = "AI-powered note-taking app"
 authors = ["intergalactisch"]
 edition = "2021"

@@ -13,6 +13,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 ### Security
 
+## [0.1.3] - 2026-05-22
+
+### Added
+- Inline AI threads — comment-thread-style AI conversations anchored to a text selection, with a new `InlineAIThread` domain entity, `InlineAIThreadService`, dedicated `aiThreads` ProseMirror plugin, and a `BlockNodeView` for rendering thread blocks inside the editor.
+- AI continuation plugin — a ProseMirror plugin that drives streaming AI continuations directly inside the editor flow.
+- Note AI activity tracking — `NoteAIActivityService` and `noteAIActivity` store expose per-note AI activity state to the UI (status bar, command center).
+- `EditorPort` outbound port — decouples editor primitives from the ProseMirror adapter so services can drive the editor without reaching into the adapter directly.
+- Lineage history workspace — a much expanded `LineageHistoryWorkspace` view for browsing provenance and AI lineage on a note.
+
+### Changed
+- Editor shell rewrite — `EditorShell.svelte` and `EditorServiceImpl` were substantially expanded to host inline AI threads, continuations, and the new editor port wiring.
+- AI command center — `AICommandCenter`, `CommandComposer`, `CommandTranscript`, and `WorkerComposer` updated for the new inline-thread + activity model.
+- Sync service — refactored sync flow and store to coordinate with note AI activity.
+- Status bar and slash menu polish to surface inline AI state and new actions.
+
 ## [0.1.2] - 2026-05-21
 
 ### Fixed
@@ -57,7 +72,8 @@ Initial public alpha release.
 - URL scheme allowlist on `openUrl` (http, https, mailto only).
 - Concurrent-process cap on CLI spawns.
 
-[Unreleased]: https://github.com/intergalactisch/void/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/intergalactisch/void/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/intergalactisch/void/releases/tag/v0.1.3
 [0.1.2]: https://github.com/intergalactisch/void/releases/tag/v0.1.2
 [0.1.1]: https://github.com/intergalactisch/void/releases/tag/v0.1.1
 [0.1.0]: https://github.com/intergalactisch/void/releases/tag/v0.1.0
