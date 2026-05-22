@@ -33,7 +33,7 @@
     type GlobalKeymapBinder,
   } from '$lib/keymap';
   import { formatChord, type KeyChord } from '$lib/domain/values/KeyChord';
-  import { buildRefId } from '$lib/domain/values';
+  import { AI_UNAVAILABLE_MESSAGE, buildRefId } from '$lib/domain/values';
   import { copyTextToClipboard } from '$lib/utils/clipboard';
   import type { CommandService } from '$lib/ports/inbound/CommandService';
   import type { KeymapService } from '$lib/ports/inbound/KeymapService';
@@ -525,6 +525,11 @@
   async function summarizeActiveFolder() {
     const folder = notesStore.activeFolderPath;
     if (!folder) return;
+    if (!aiStore.ensureAIAvailable()) {
+      toastStore.error(aiStore.availabilityMessage ?? AI_UNAVAILABLE_MESSAGE);
+      uiStore.openAISidebar();
+      return;
+    }
 
     const operation = await operationsStore.queueFromTemplate('summarize-folder', { folder });
     if (operation) {

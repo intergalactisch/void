@@ -10,10 +10,13 @@ import type {
   GitHubNameAvailability,
   GitHubRepoSummary,
   GitHubUser,
+  SyncAuthProbe,
+  SyncAuthState,
   SyncConflict,
   SyncConflictPreview,
   SyncConflictResolution,
   SyncConflictSession,
+  SyncMode,
   SyncSettings,
   SyncStatus,
 } from '$lib/domain/values';
@@ -44,11 +47,20 @@ export interface DeviceAuthPollResult {
   retryAfter?: number;
 }
 
+export interface SyncStatusOptions {
+  authProbe?: SyncAuthProbe;
+}
+
+export interface SyncNowOptions {
+  mode?: SyncMode;
+}
+
 export interface SyncService {
   getStatus(): SyncStatus;
   getCurrentUser(): GitHubUser | null;
   subscribe(callback: (status: SyncStatus) => void): () => void;
-  refreshStatus(): Promise<Result<SyncStatus, Error>>;
+  refreshStatus(options?: SyncStatusOptions): Promise<Result<SyncStatus, Error>>;
+  prepareAutomaticSyncAuth(): Promise<Result<SyncAuthState, Error>>;
   connectWithToken(token: string): Promise<Result<GitHubUser, Error>>;
   beginDeviceAuth(clientId: string): Promise<Result<GitHubDeviceAuthStart, Error>>;
   completeDeviceAuth(clientId: string, deviceCode: string): Promise<Result<GitHubUser, Error>>;
@@ -57,7 +69,7 @@ export interface SyncService {
   createAndAttachRepository(params: CreateAndAttachRepositoryParams): Promise<Result<SyncSettings, Error>>;
   attachRepository(params: AttachRepositoryParams): Promise<Result<SyncSettings, Error>>;
   detach(): Promise<Result<SyncSettings, Error>>;
-  syncNow(): Promise<Result<SyncStatus, Error>>;
+  syncNow(options?: SyncNowOptions): Promise<Result<SyncStatus, Error>>;
   previewRemoteNote(path: string): Promise<Result<RemoteNotePreview, Error>>;
   refreshNoteFromRemote(path: string): Promise<Result<RemoteNotePreview, Error>>;
   resolveConflict(conflictId: string, resolution: SyncConflictResolution): Promise<Result<SyncConflict | null, Error>>;

@@ -21,12 +21,16 @@ import type {
   EditorPort,
   EditorEvents,
   EditorCommands,
+  EditorInlineAIComposerState,
+  EditorInlineAIRangeAnchorInput,
+  EditorInlineAIRangeAnchorResult,
   EditorInlineGenerateCallbacks,
   EditorInlineGenerateRequest,
   EditorPageLinkNote,
 } from '$lib/ports/outbound/EditorPort';
 import type { Document } from '$lib/domain/entities/Document';
 import type { Block, BlockAttrs } from '$lib/domain/entities/Block';
+import type { InlineAIThread } from '$lib/domain/entities/InlineAIThread';
 import { generateBlockId, createBlock, createEmptyParagraph } from '$lib/domain/entities/Block';
 import type { Selection } from '$lib/domain/values/Selection';
 import { EMPTY_SELECTION } from '$lib/domain/values/Selection';
@@ -51,8 +55,13 @@ import { createDragDropPlugin, type DragDropPluginOptions } from './plugins/drag
 import { createAIRewritePlugin, type AIRewritePluginState, type AIRewritePluginOptions } from './plugins/aiRewrite';
 import {
   createAIInlinePlugin,
+  updateAIInlineComposerDraft,
+  submitAIInlineComposer,
+  cancelAIInlineComposer,
+  focusAIInlineComposer,
   type AIInlineState,
 } from './plugins/aiInline';
+import { createAIThreadsPlugin, setAIThreads } from './plugins/aiThreads';
 import {
   createPageLinkPlugin,
   insertPageLink,
@@ -400,11 +409,29 @@ export class ProseMirrorAdapter implements EditorPort {
           args[2] as string,
         );
         break;
+      case 'updateAIInlineComposerDraft':
+        updateAIInlineComposerDraft(this.view, args[0] as string, args[1] as string);
+        break;
+      case 'submitAIInlineComposer':
+        submitAIInlineComposer(this.view, args[0] as string, args[1] as string);
+        break;
+      case 'cancelAIInlineComposer':
+        cancelAIInlineComposer(this.view, args[0] as string);
+        break;
+      case 'focusAIInlineComposer':
+        focusAIInlineComposer(this.view, args[0] as string);
+        break;
       case 'insertContent':
         this.executeInsertContent(args[0] as string);
         break;
       case 'replaceRange':
         this.executeReplaceRange(args[0] as number, args[1] as number, args[2] as string);
+        break;
+      case 'setInlineAIThreads':
+        this.executeSetInlineAIThreads(args[0] as InlineAIThread[]);
+        break;
+      case 'scrollInlineAIThreadIntoView':
+        this.executeScrollInlineAIThreadIntoView(args[0] as string);
         break;
       case 'setLink':
         this.executeSetLink(args[0] as string, args[1] as string | undefined);
@@ -629,6 +656,28 @@ export class ProseMirrorAdapter implements EditorPort {
     };
   }
 
+  private handleAIInlineStateChange(state: AIInlineState): void {
+    this.options.onAIInlineStateChange?.(state);
+    this.emit('editor:ai-inline-composers-change', this.toInlineAIComposerState(state));
+  }
+
+  private toInlineAIComposerState(state: AIInlineState): EditorInlineAIComposerState {
+    return {
+      activeComposerId: state.activeComposerId,
+      composers: state.composers.map((composer) => ({
+        id: composer.id,
+        from: composer.from,
+        to: composer.to,
+        selectionText: composer.selectionText,
+        draftPrompt: composer.draftPrompt,
+        status: composer.status,
+        createdAt: composer.createdAt,
+        updatedAt: composer.updatedAt,
+        isActive: composer.id === state.activeComposerId,
+      })),
+    };
+  }
+
   /**
    * Subscribe to editor events.
    *
@@ -671,6 +720,50 @@ export class ProseMirrorAdapter implements EditorPort {
   getTextContent(): string {
     if (!this.view) return '';
     return this.view.state.doc.textContent;
+  }
+
+  getTextBetween(from: number, to: number): string {
+    if (!this.view) return '';
+    if (!Number.isFinite(from) || !Number.isFinite(to) || from > to) return '';
+    const docSize = this.view.state.doc.content.size;
+    const safeFrom = Math.max(0, Math.min(from, docSize));
+    const safeTo = Math.max(0, Math.min(to, docSize));
+    return this.view.state.doc.textBetween(safeFrom, safeTo, '\n');
+  }
+
+  resolveInlineAIRangeAnchor(input: EditorInlineAIRangeAnchorInput): EditorInlineAIRangeAnchorResult | null {
+    if (!this.view) return null;
+    const originalText = input.originalText;
+    if (!originalText) return input.preferredRange;
+
+    const doc = this.view.state.doc;
+    const docSize = doc.content.size;
+    if (input.preferredRange) {
+      const from = Math.max(0, Math.min(input.preferredRange.from, docSize));
+      const to = Math.max(0, Math.min(input.preferredRange.to, docSize));
+      if (from <= to && doc.textBetween(from, to, '\n') === originalText) {
+        return { from, to };
+      }
+    }
+
+    const candidates = collectInlineTextRangeCandidates(doc, originalText);
+    if (candidates.length === 0) return null;
+    if (candidates.length === 1) {
+      const only = candidates[0]!;
+      return { from: only.from, to: only.to };
+    }
+
+    const scored = candidates
+      .map((candidate) => ({
+        candidate,
+        score: scoreInlineTextRangeCandidate(doc, candidate, input),
+      }))
+      .sort((left, right) => right.score - left.score);
+    const best = scored[0];
+    if (!best || best.score <= 0) return null;
+    const second = scored[1];
+    if (second && second.score === best.score) return null;
+    return { from: best.candidate.from, to: best.candidate.to };
   }
 
   /**
@@ -971,14 +1064,21 @@ export class ProseMirrorAdapter implements EditorPort {
     }
     plugins.push(
       createAIInlinePlugin({
-        onStateChange: this.options.onAIInlineStateChange,
+        onStateChange: (state) => this.handleAIInlineStateChange(state),
         onAccept: (data) => this.aiInline.handleAIInlineAccept(data),
         onRetry: (prompt) => this.aiInline.handleAIInlineRetry(prompt),
         onDeny: (data) => this.aiInline.handleAIInlineDeny(data),
-        onPromptSubmit: (prompt, selectionText, from, to) =>
-          this.aiInline.handleAIInlinePromptSubmit(prompt, selectionText, from, to),
+        onPromptSubmit: ({ composerId, prompt, selectionText, selectionFrom, selectionTo }) =>
+          this.aiInline.handleAIInlinePromptSubmit(
+            prompt,
+            selectionText,
+            selectionFrom,
+            selectionTo,
+            composerId,
+          ),
       })
     );
+    plugins.push(createAIThreadsPlugin());
 
     // ---- 5. Block Selection plugin (multi-select decorations + keyboard) ----
     plugins.push(
@@ -1462,13 +1562,13 @@ export class ProseMirrorAdapter implements EditorPort {
 
   private executeReplaceRange(from: number, to: number, markdown: string): void {
     if (!this.view) return;
-    if (!Number.isFinite(from) || !Number.isFinite(to) || from >= to) return;
+    if (!Number.isFinite(from) || !Number.isFinite(to) || from > to) return;
 
     const state = this.view.state;
     const docSize = state.doc.content.size;
     const safeFrom = Math.max(0, Math.min(from, docSize));
     const safeTo = Math.max(0, Math.min(to, docSize));
-    if (safeFrom >= safeTo) return;
+    if (safeFrom > safeTo) return;
 
     const $from = state.doc.resolve(safeFrom);
     const $to = state.doc.resolve(safeTo);
@@ -1476,8 +1576,10 @@ export class ProseMirrorAdapter implements EditorPort {
     const replacement = this.createReplacementSlice(markdown, inlineOnly);
 
     let tr = state.tr;
-    if (replacement.content.size === 0) {
+    if (replacement.content.size === 0 && safeFrom < safeTo) {
       tr = tr.delete(safeFrom, safeTo);
+    } else if (replacement.content.size === 0) {
+      return;
     } else {
       tr = tr.replaceRange(safeFrom, safeTo, replacement);
     }
@@ -1488,6 +1590,22 @@ export class ProseMirrorAdapter implements EditorPort {
       .setSelection(TextSelection.near(tr.doc.resolve(selectionPos), -1))
       .setMeta(AI_BYPASS, true);
     this.view.dispatch(tr.scrollIntoView());
+  }
+
+  private executeSetInlineAIThreads(threads: InlineAIThread[]): void {
+    if (!this.view) return;
+    setAIThreads(this.view, threads);
+  }
+
+  private executeScrollInlineAIThreadIntoView(threadId: string): void {
+    if (!this.view) return;
+    const direct = this.view.dom.querySelector(
+      `[data-inline-ai-thread-id="${CSS.escape(threadId)}"]`,
+    ) as HTMLElement | null;
+    const el = direct ?? this.view.dom.querySelector(
+        `[data-inline-ai-thread-ids~="${CSS.escape(threadId)}"]`,
+      ) as HTMLElement | null;
+    el?.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' });
   }
 
   private createReplacementSlice(markdown: string, inlineOnly: boolean): Slice {
@@ -2053,4 +2171,62 @@ export class ProseMirrorAdapter implements EditorPort {
     }
     return proseMirrorToDomain(pmDoc, this.currentDocument);
   }
+}
+
+interface InlineTextRangeCandidate {
+  from: number;
+  to: number;
+  blockId: string | null;
+}
+
+function collectInlineTextRangeCandidates(doc: PmNode, needle: string): InlineTextRangeCandidate[] {
+  const candidates: InlineTextRangeCandidate[] = [];
+  if (!needle) return candidates;
+
+  doc.descendants((node, pos) => {
+    if (!node.isTextblock) return true;
+    const text = node.textContent;
+    let start = 0;
+    while (start <= text.length) {
+      const index = text.indexOf(needle, start);
+      if (index < 0) break;
+      const from = pos + 1 + index;
+      candidates.push({
+        from,
+        to: from + needle.length,
+        blockId: typeof node.attrs?.id === 'string' ? node.attrs.id : null,
+      });
+      start = index + Math.max(needle.length, 1);
+    }
+    return true;
+  });
+
+  return candidates;
+}
+
+function scoreInlineTextRangeCandidate(
+  doc: PmNode,
+  candidate: InlineTextRangeCandidate,
+  input: EditorInlineAIRangeAnchorInput,
+): number {
+  let score = 1;
+  if (candidate.blockId && input.blockIds.includes(candidate.blockId)) score += 100;
+
+  const beforeNeedle = normalizeAnchorContext(input.beforeText ?? '').slice(-80);
+  const afterNeedle = normalizeAnchorContext(input.afterText ?? '').slice(0, 80);
+  const beforeCurrent = normalizeAnchorContext(
+    doc.textBetween(Math.max(0, candidate.from - 240), candidate.from, '\n'),
+  );
+  const afterCurrent = normalizeAnchorContext(
+    doc.textBetween(candidate.to, Math.min(doc.content.size, candidate.to + 240), '\n'),
+  );
+
+  if (beforeNeedle && beforeCurrent.endsWith(beforeNeedle)) score += 30;
+  if (afterNeedle && afterCurrent.startsWith(afterNeedle)) score += 30;
+
+  return score;
+}
+
+function normalizeAnchorContext(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
 }

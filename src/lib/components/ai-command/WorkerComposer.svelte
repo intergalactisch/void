@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Bot, Send, Sparkles } from '@lucide/svelte';
   import type { AgentWorker } from '$lib/domain/entities/AgentRun';
+  import { aiStore } from '$lib/stores';
 
   type Target = 'worker' | 'orchestrator';
 
@@ -18,12 +19,14 @@
   let textareaRef: HTMLTextAreaElement | null = $state(null);
 
   let workerRunning = $derived(worker.status === 'running' || worker.status === 'pending');
+  let aiUnavailable = $derived(!aiStore.canStartAIWork);
 
   let sendDisabled = $derived(
-    !draft.trim() || sending || (target === 'worker' && workerRunning)
+    aiUnavailable || !draft.trim() || sending || (target === 'worker' && workerRunning)
   );
 
   let placeholder = $derived.by(() => {
+    if (aiUnavailable) return aiStore.availabilityMessage ?? 'Install a local AI to use this feature.';
     if (target === 'orchestrator') return 'Tell the orchestrator how to steer this run...';
     if (worker.status === 'running' || worker.status === 'pending') {
       return 'Worker is still running — wait for the response before adding context.';
@@ -57,6 +60,7 @@
   async function send() {
     const text = draft.trim();
     if (!text || sendDisabled) return;
+    if (!aiStore.ensureAIAvailable()) return;
 
     sending = true;
     error = null;
@@ -120,7 +124,7 @@
       bind:value={draft}
       rows="2"
       {placeholder}
-      disabled={sending}
+      disabled={sending || aiUnavailable}
       oninput={handleInput}
       onkeydown={handleKeydown}
     ></textarea>

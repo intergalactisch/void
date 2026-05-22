@@ -22,6 +22,15 @@ export { CREDENTIAL_KEYS, PROVIDER_CREDENTIAL_MAP, getCredentialKeyForProvider, 
 // Editor services
 export type { EditorService, EditorState, EditorMountOptions } from './EditorService';
 export type {
+  InlineAISelectionPromptInput,
+  InlineAIThreadService,
+} from './InlineAIThreadService';
+export type {
+  NoteAIActivity,
+  NoteAIActivityItem,
+  NoteAIActivityService,
+} from './NoteAIActivityService';
+export type {
   CommandService,
   CommandPaletteState,
   CommandSearchResult,

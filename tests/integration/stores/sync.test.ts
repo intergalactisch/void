@@ -3,6 +3,7 @@ import { MemorySettingsAdapter } from '$lib/adapters/memory';
 import { SettingsServiceImpl } from '$lib/application/services';
 import { EMPTY_SYNC_STATUS, type SyncSettings, type SyncStatus } from '$lib/domain/values';
 import { ok, err } from '$lib/core';
+import { events } from '$lib/events';
 import { settingsStore } from '$lib/stores/settings.svelte';
 import { syncStore } from '$lib/stores/sync.svelte';
 import type { AttachRepositoryParams, CreateAndAttachRepositoryParams, RemoteNotePreview, SyncService } from '$lib/ports/inbound/SyncService';
@@ -14,7 +15,9 @@ import type {
   GitHubRepoSummary,
   GitHubUser,
   SyncConflict,
+  SyncConflictPreview,
   SyncConflictResolution,
+  SyncConflictSession,
 } from '$lib/domain/values';
 
 describe('Sync Store Integration', () => {
@@ -37,6 +40,7 @@ describe('Sync Store Integration', () => {
         return () => undefined;
       },
       refreshStatus: vi.fn(async () => ok(status)),
+      prepareAutomaticSyncAuth: vi.fn(async () => ok('signed-in' as const)),
       connectWithToken: vi.fn(async () => ok({ login: 'void-dev', name: null } satisfies GitHubUser)),
       beginDeviceAuth: vi.fn(async () => ok({
         deviceCode: 'device',
@@ -69,6 +73,22 @@ describe('Sync Store Integration', () => {
         remoteRef: 'origin/main:plan.md',
       } satisfies RemoteNotePreview)),
       resolveConflict: vi.fn(async (_id: string, _resolution: SyncConflictResolution) => ok(null as SyncConflict | null)),
+      loadConflictSession: vi.fn(async () => ok(null as SyncConflictSession | null)),
+      refreshConflictSession: vi.fn(async () => ok(null as SyncConflictSession | null)),
+      previewConflict: vi.fn(async () => ok({
+        conflictId: 'conflict',
+        path: 'plan.md',
+        baseMarkdown: null,
+        localMarkdown: null,
+        remoteMarkdown: null,
+        mergedMarkdown: '',
+        hunks: [],
+        mergeClean: false,
+        supported: true,
+      } satisfies SyncConflictPreview)),
+      applyConflictResolution: vi.fn(async () => ok(null as SyncConflictSession | null)),
+      resumeConflictResolution: vi.fn(async () => ok(status)),
+      abortConflictResolution: vi.fn(async () => ok(null as SyncConflictSession | null)),
       listLocalBranches: vi.fn(async () => ok([] as GitBranchInfo[])),
       switchBranch: vi.fn(async () => ok(settings.current().sync)),
       createBranch: vi.fn(async () => ok([] as GitBranchInfo[])),
@@ -122,5 +142,19 @@ describe('Sync Store Integration', () => {
     expect(attached).toBeNull();
     expect(settingsStore.settings?.sync.repository?.fullName).toBe('me/void-notes');
     expect(settingsStore.settings?.sync.enabled).toBe(true);
+  });
+
+  it('shows a temporary quiet completion label after sync completes', async () => {
+    syncStore.init(service());
+
+    events.emit('sync:completed', {
+      status: { ...status, kind: 'ready' },
+      mode: 'background',
+    });
+
+    expect(syncStore.displayLabel).toBe('GitHub synced just now');
+    expect(syncStore.lastSyncMode).toBe('background');
+
+    events.emit('sync:started', { operation: 'committing', mode: 'background' });
   });
 });

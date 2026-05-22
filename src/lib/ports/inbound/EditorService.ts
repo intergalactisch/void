@@ -12,9 +12,17 @@ import type { Document, Block } from '$lib/domain';
 import type { DocumentMeta } from '$lib/domain/values';
 import type { Selection } from '$lib/domain/values';
 import type { Result } from '$lib/core';
-import type { BlockInfo, EditorPageLinkNote } from '$lib/ports/outbound/EditorPort';
+import type {
+  BlockInfo,
+  EditorInlineAIComposerView,
+  EditorInlineAIRangeAnchorInput,
+  EditorInlineAIRangeAnchorResult,
+  EditorPageLinkNote,
+} from '$lib/ports/outbound/EditorPort';
 import type { RegisteredCommand } from '$lib/ports/outbound/CommandRegistryPort';
 import type { LineageRecordOptions } from './LineageService';
+import type { InlineAIThread } from '$lib/domain/entities/InlineAIThread';
+import type { InlineAIThreadService } from './InlineAIThreadService';
 
 export interface EditorMountOptions {
   autoSaveDelayMs?: number;
@@ -68,6 +76,10 @@ export interface EditorState {
     /** Operation being performed */
     operation: string;
   } | null;
+  /** Floating inline Ask composers currently anchored in the editor */
+  aiInlineComposers: EditorInlineAIComposerView[];
+  /** The expanded/focused inline Ask composer, if any */
+  activeAIInlineComposerId: string | null;
 }
 
 /**
@@ -213,6 +225,17 @@ export interface EditorService {
    */
   getMarkdown(): Result<string, Error>;
 
+  /**
+   * Read editor text between ProseMirror positions. Returns empty string when
+   * the editor is not mounted or the range is invalid.
+   */
+  getTextBetween(from: number, to: number): string;
+
+  /**
+   * Re-resolve an inline AI text anchor against the mounted editor.
+   */
+  resolveInlineAIRangeAnchor(input: EditorInlineAIRangeAnchorInput): EditorInlineAIRangeAnchorResult | null;
+
   // ========== Editor commands ==========
 
   /**
@@ -236,6 +259,15 @@ export interface EditorService {
   replaceCurrentMatch(replacement: string): void;
   /** Replace an explicit editor document range with markdown/text content. */
   replaceRange(from: number, to: number, markdown: string): void;
+
+  /** Sync persisted inline AI sidecar threads into the mounted editor. */
+  setInlineAIThreads(threads: InlineAIThread[]): void;
+
+  /** Scroll to a rendered inline AI response card. */
+  scrollInlineAIThreadIntoView(threadId: string): void;
+
+  /** Wire the persisted inline AI service after bootstrap resolves services. */
+  setInlineAIThreadService(service: InlineAIThreadService): void;
   /** Replace every match. */
   replaceAllMatches(replacement: string): void;
   /** Read raw plugin state — returns null if no editor is mounted. */
@@ -321,6 +353,18 @@ export interface EditorService {
    * Open AI prompt for an explicit DOM selection.
    */
   aiPromptSelectionAt(from: number, to: number, text: string): void;
+
+  /** Update one floating inline AI composer prompt draft. */
+  updateAIInlineComposerDraft(id: string, prompt: string): void;
+
+  /** Submit one floating inline AI composer. */
+  submitAIInlineComposer(id: string, prompt: string): void;
+
+  /** Cancel one floating inline AI composer. */
+  cancelAIInlineComposer(id: string): void;
+
+  /** Focus/expand one floating inline AI composer. */
+  focusAIInlineComposer(id: string): void;
 
   /**
    * Resolve a DOM Range to editor document positions.

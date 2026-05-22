@@ -11,7 +11,7 @@
    * directly so the panel stays testable.
    */
 
-  import { settingsStore, syncStore, toastStore, uiStore, workspaceStore } from '$lib/stores';
+  import { editorStore, settingsStore, syncStore, toastStore, uiStore, workspaceStore } from '$lib/stores';
   import {
     AlertTriangle,
     Check,
@@ -98,6 +98,15 @@
   // Derived: current settings + status (from stores)
   const settings = $derived(settingsStore.settings);
   const status = $derived(syncStore.status);
+  const openEditorChangeCount = $derived.by(() =>
+    editorStore.tabs.filter((tab) => tab.isDirty || tab.isSaving).length
+  );
+  const effectiveStatusKind = $derived.by(() =>
+    status.kind === 'ready' && openEditorChangeCount > 0 ? 'pending' : status.kind
+  );
+  const effectiveStatusLabel = $derived.by(() =>
+    status.kind === 'ready' && openEditorChangeCount > 0 ? 'GitHub pending' : syncStore.label
+  );
   const user = $derived(syncStore.user);
 
   // The workspace this section is bound to. Falls back to the active workspace
@@ -451,9 +460,9 @@
     {@render ghIcon(14)}
     <span class="gh-section-title">GitHub sync</span>
     {#if isAttached}
-      <span class="gh-status-pill {status.kind}">
-        <span class="gh-status-dot {status.kind}"></span>
-        {syncStore.label}
+      <span class="gh-status-pill {effectiveStatusKind}">
+        <span class="gh-status-dot {effectiveStatusKind}"></span>
+        {effectiveStatusLabel}
       </span>
     {/if}
   </header>
@@ -914,7 +923,7 @@
           <div class="gh-connected-meta">
             <span>Last sync {formatRelative(status.lastSyncAt)}</span>
             <span class="gh-divider">·</span>
-            <span>{status.changedFiles} changed · {status.ahead} ↑ · {status.behind} ↓</span>
+            <span>{status.changedFiles + openEditorChangeCount} changed · {status.ahead} ↑ · {status.behind} ↓</span>
           </div>
         </div>
 

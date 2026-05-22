@@ -14,6 +14,7 @@ import type { Selection } from '$lib/domain/values';
 import type { BlockType } from '$lib/domain/values/BlockType';
 import type { Result } from '$lib/core';
 import type { RegisteredCommand } from './CommandRegistryPort';
+import type { InlineAIThread } from '$lib/domain/entities/InlineAIThread';
 
 export type EditorMenuStatePayload = unknown;
 export type EditorBlockMenuMode = 'actions' | 'convert';
@@ -67,6 +68,40 @@ export interface EditorInlineGenerateResult {
   didMutate: boolean;
   toolCount: number;
   conversationId?: string;
+  inlineThreadId?: string;
+  suppressLegacyPreview?: boolean;
+}
+
+export type EditorInlineAIComposerStatus = 'draft' | 'submitting';
+
+export interface EditorInlineAIComposerView {
+  id: string;
+  from: number;
+  to: number;
+  selectionText: string;
+  draftPrompt: string;
+  status: EditorInlineAIComposerStatus;
+  createdAt: string;
+  updatedAt: string;
+  isActive: boolean;
+}
+
+export interface EditorInlineAIComposerState {
+  composers: EditorInlineAIComposerView[];
+  activeComposerId: string | null;
+}
+
+export interface EditorInlineAIRangeAnchorInput {
+  preferredRange: { from: number; to: number } | null;
+  originalText: string;
+  blockIds: string[];
+  beforeText?: string;
+  afterText?: string;
+}
+
+export interface EditorInlineAIRangeAnchorResult {
+  from: number;
+  to: number;
 }
 
 /**
@@ -106,6 +141,8 @@ export interface EditorEvents {
     request: EditorInlineGenerateRequest;
     callbacks: EditorInlineGenerateCallbacks;
   };
+  /** Emitted when inline AI draft composers change */
+  'editor:ai-inline-composers-change': EditorInlineAIComposerState;
   /** Emitted when block-level selection changes (gutter click, shift-click) */
   'editor:block-selected': { blockIds: string[] };
   /** Emitted when a block is moved (drag-drop or keyboard) */
@@ -153,6 +190,14 @@ export interface EditorCommands {
   aiPromptSelection(): void;
   /** Open AI prompt input at explicit positions (toolbar click path) */
   aiPromptSelectionAt(from: number, to: number, text: string): void;
+  /** Update one floating inline AI composer draft. */
+  updateAIInlineComposerDraft(id: string, prompt: string): void;
+  /** Submit one floating inline AI composer. */
+  submitAIInlineComposer(id: string, prompt: string): void;
+  /** Cancel one floating inline AI composer. */
+  cancelAIInlineComposer(id: string): void;
+  /** Focus/expand one floating inline AI composer. */
+  focusAIInlineComposer(id: string): void;
   /** Insert markdown content at current cursor position */
   insertContent(markdown: string): void;
   /** Apply a link mark to the current selection */
@@ -220,6 +265,10 @@ export interface EditorCommands {
   replaceCurrentMatch(replacement: string): void;
   /** Replace an explicit document range with markdown/text content. */
   replaceRange(from: number, to: number, markdown: string): void;
+  /** Sync persisted inline AI sidecar threads into editor decorations. */
+  setInlineAIThreads(threads: InlineAIThread[]): void;
+  /** Scroll a rendered inline AI sidecar thread into view. */
+  scrollInlineAIThreadIntoView(threadId: string): void;
   /** Replace every match in the document atomically. Returns the number replaced. */
   replaceAllMatches(replacement: string): number;
   /** Activate quick-jump: label every visible block with a 2-letter code. */
@@ -305,6 +354,18 @@ export interface EditorPort {
    * @returns Plain text content, or an empty string when unmounted
    */
   getTextContent(): string;
+
+  /**
+   * Get text in a document range.
+   * @returns Plain text for the requested range, or empty string when invalid.
+   */
+  getTextBetween(from: number, to: number): string;
+
+  /**
+   * Re-resolve an inline AI text anchor against the current editor document.
+   * Returns null when the original text is gone or the match is ambiguous.
+   */
+  resolveInlineAIRangeAnchor(input: EditorInlineAIRangeAnchorInput): EditorInlineAIRangeAnchorResult | null;
 
   /**
    * Serialize current editor content to markdown.

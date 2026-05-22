@@ -213,7 +213,7 @@ export class NoteCollaborationServiceImpl implements NoteCollaborationService {
     const label = params.label ?? 'AI replace selection';
     const lineage = params.lineage ?? defaultBlockLineage('rewrite', label);
 
-    if (!Number.isFinite(params.from) || !Number.isFinite(params.to) || params.from >= params.to) {
+    if (!Number.isFinite(params.from) || !Number.isFinite(params.to) || params.from > params.to) {
       return err(new Error('Invalid editor range for replacement'));
     }
 

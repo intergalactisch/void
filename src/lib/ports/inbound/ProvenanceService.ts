@@ -18,7 +18,7 @@ export interface ProvenanceService {
   record(
     noteName: string,
     event: Omit<ProvenanceEvent, 'id' | 'ts'>
-  ): Promise<Result<void, Error>>;
+  ): Promise<Result<ProvenanceEvent, Error>>;
 
   /**
    * Get the full interaction history for a note.

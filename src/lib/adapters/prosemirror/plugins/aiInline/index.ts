@@ -12,6 +12,8 @@ export {
   type AIInlineMeta,
   type AIInlineStatus,
   type AIInlineMode,
+  type InlineAIComposer,
+  type InlineAIComposerStatus,
 } from './state';
 
 // Decorations
@@ -27,5 +29,9 @@ export {
   denyAIInline,
   reportAIInlineError,
   cancelAIInlineProcessing,
+  updateAIInlineComposerDraft,
+  submitAIInlineComposer,
+  cancelAIInlineComposer,
+  focusAIInlineComposer,
   type AIInlinePluginOptions,
 } from './plugin';

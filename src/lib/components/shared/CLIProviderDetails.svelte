@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import type { CLIProviderId } from '$lib/domain';
+  import { aiStore } from '$lib/stores';
 
   interface Props {
     selectedProvider: CLIProviderId;
@@ -74,6 +75,9 @@
     error = null;
     try {
       availability = await invoke<CLIAvailability>('check_cli_available');
+      if (aiStore.isInitialized) {
+        void aiStore.refreshAvailability();
+      }
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {

@@ -12,6 +12,7 @@ import type {
   EditorService,
   EditorState,
   FrecencyService,
+  InlineAIThreadService,
   LineageRecordOptions,
   LineageService,
   NotesListItem,
@@ -26,6 +27,8 @@ import type {
   EditorInlineGenerateCallbacks,
   EditorInlineGenerateRequest,
   EditorInlineGenerateResult,
+  EditorInlineAIRangeAnchorInput,
+  EditorInlineAIRangeAnchorResult,
   EditorNotesProvider,
   EditorPageLinkNote,
   EditorPort,
@@ -38,9 +41,11 @@ import type { Document, Block, EditorSession } from '$lib/domain';
 import { createEditorSession, ConflictError } from '$lib/domain';
 import type { DocumentMeta, Selection } from '$lib/domain/values';
 import { normalizeNoteTags } from '$lib/domain/values';
+import { AI_UNAVAILABLE_MESSAGE } from '$lib/domain/values/AIAvailability';
 import { EMPTY_SELECTION } from '$lib/domain/values/Selection';
 import type { ToolId } from '$lib/domain/values/ToolId';
 import type { Conversation } from '$lib/domain/entities/Conversation';
+import type { InlineAIThread } from '$lib/domain/entities/InlineAIThread';
 import type { Result } from '$lib/core';
 import { combineMarkdownWithFrontmatter, ok, err } from '$lib/core';
 import { events } from '$lib/events';
@@ -56,12 +61,17 @@ const INITIAL_STATE: EditorState = {
   isSaving: false,
   conflictState: 'clean',
   aiProcessing: null,
+  aiInlineComposers: [],
+  activeAIInlineComposerId: null,
 };
 
 const IN_APP_MUTATION_GRACE_MS = 2000;
+const INLINE_AI_CONTEXT_WINDOW = 900;
+const INLINE_AI_PROMPT_CONTEXT_LIMIT = 1200;
 const INLINE_SELECTION_TOOL_IDS = [
   'editor:replace',
   'editor:replace-block',
+  'editor:insert-blocks',
   'editor:apply-note-patch',
 ] as ToolId[];
 
@@ -72,9 +82,16 @@ Choose the least invasive correct outcome:
 - If the selected range itself should be rewritten, call editor:replace with from and to.
 - If only one exact substring inside the selection should change, call editor:replace with targetText and occurrence, or with an explicit subrange if provided.
 - If a whole visible block should be rewritten, call editor:replace-block with one of the supplied block IDs.
+- If new blocks should be inserted after a visible block, call editor:insert-blocks with afterBlockId.
 - If the entire note must change, call editor:apply-note-patch with complete markdown for the note.
 
-Only use these editor write tools when the user's request truly asks for an edit. Never invent a broader edit when an answer or smaller replacement is enough.
+Tool calls are staged proposals. They will not be executed until the user explicitly accepts them. Never claim that an edit has already been applied.
+Use the supplied note title, likely language, selected text, visible block content, and local before/after context to make the edit specific to this exact invocation.
+For vague rewrite prompts such as "change this sentence", infer the best concrete rewrite from the surrounding note. If the selected text is rough placeholder text, still propose a context-fitting replacement instead of blocking.
+Do not fall back to stock replacement sentences. Avoid generic templates like "This is a clearer sentence" or "Dit is een duidelijkere zin" unless that exact sentence is uniquely justified by the local note context.
+Different selected ranges or local contexts should normally receive different proposed replacements.
+Only use these editor write tools when the user's request truly asks for an edit. Ask a clarifying question only if an edit is impossible from the selection and context.
+Never invent a broader edit when an answer or smaller replacement is enough.
 Always include a concise user-facing response. When you edit, summarize what changed; do not paste the entire replacement unless that is genuinely useful.`;
 
 export class EditorServiceImpl implements EditorService {
@@ -88,6 +105,7 @@ export class EditorServiceImpl implements EditorService {
   private saveTimeout: ReturnType<typeof setTimeout> | null = null;
   private readonly lineageClusters = new Map<string, { id: string; lastTouchedAt: number }>();
   private readonly lineageClusterWindowMs = 8000;
+  private inlineAIThreadService: InlineAIThreadService | null = null;
 
   /**
    * Multi-tab session map. One entry per open tab; the active session
@@ -307,6 +325,10 @@ export class EditorServiceImpl implements EditorService {
     this.subscribeToEditorPort(editorPort);
   }
 
+  setInlineAIThreadService(service: InlineAIThreadService): void {
+    this.inlineAIThreadService = service;
+  }
+
   async mount(
     element: HTMLElement,
     document: Document | undefined = this.state.document ?? undefined,
@@ -356,6 +378,8 @@ export class EditorServiceImpl implements EditorService {
       isReady: true,
       isDirty: false,
       isSaving: false,
+      aiInlineComposers: [],
+      activeAIInlineComposerId: null,
     });
 
     return ok(undefined);
@@ -779,6 +803,14 @@ export class EditorServiceImpl implements EditorService {
     }
   }
 
+  getTextBetween(from: number, to: number): string {
+    return this.editorPort?.getTextBetween(from, to) ?? '';
+  }
+
+  resolveInlineAIRangeAnchor(input: EditorInlineAIRangeAnchorInput): EditorInlineAIRangeAnchorResult | null {
+    return this.editorPort?.resolveInlineAIRangeAnchor(input) ?? null;
+  }
+
   async executeCommand(commandId: string): Promise<void> {
     if (!this.editorPort) return;
     const command = this.commandRegistry.get(commandId);
@@ -815,6 +847,14 @@ export class EditorServiceImpl implements EditorService {
 
   replaceRange(from: number, to: number, markdown: string): void {
     this.editorPort?.execute('replaceRange', from, to, markdown);
+  }
+
+  setInlineAIThreads(threads: InlineAIThread[]): void {
+    this.editorPort?.execute('setInlineAIThreads', threads);
+  }
+
+  scrollInlineAIThreadIntoView(threadId: string): void {
+    this.editorPort?.execute('scrollInlineAIThreadIntoView', threadId);
   }
 
   replaceAllMatches(replacement: string): void {
@@ -885,6 +925,22 @@ export class EditorServiceImpl implements EditorService {
 
   aiPromptSelectionAt(from: number, to: number, text: string): void {
     this.editorPort?.execute('aiPromptSelectionAt', from, to, text);
+  }
+
+  updateAIInlineComposerDraft(id: string, prompt: string): void {
+    this.editorPort?.execute('updateAIInlineComposerDraft', id, prompt);
+  }
+
+  submitAIInlineComposer(id: string, prompt: string): void {
+    this.editorPort?.execute('submitAIInlineComposer', id, prompt);
+  }
+
+  cancelAIInlineComposer(id: string): void {
+    this.editorPort?.execute('cancelAIInlineComposer', id);
+  }
+
+  focusAIInlineComposer(id: string): void {
+    this.editorPort?.execute('focusAIInlineComposer', id);
   }
 
   resolveSelectionFromDOM(range: Range): { from: number; to: number } | null {
@@ -1076,6 +1132,13 @@ export class EditorServiceImpl implements EditorService {
       editorPort.on('editor:block-scrolled-into-view', (payload) =>
         events.emit('editor:block-scrolled-into-view', payload),
       ),
+      editorPort.on('editor:ai-inline-composers-change', (payload) => {
+        this.updateState({
+          aiInlineComposers: payload.composers,
+          activeAIInlineComposerId: payload.activeComposerId,
+        });
+        events.emit('editor:ai-inline-composers-change', payload);
+      }),
       editorPort.on('editor:ai-inline-generate', ({ prompt, selectionText, callbacks, request }) => {
         this.handleAIInlineGenerate(prompt, selectionText, callbacks, request);
       }),
@@ -1109,11 +1172,16 @@ export class EditorServiceImpl implements EditorService {
     request?: EditorInlineGenerateRequest,
   ): Promise<void> {
     if (!this.aiAssistant) {
-      callbacks.onError('AI is not configured');
+      callbacks.onError(AI_UNAVAILABLE_MESSAGE);
       return;
     }
 
     try {
+      if (!(await this.aiAssistant.isAvailable())) {
+        callbacks.onError(AI_UNAVAILABLE_MESSAGE);
+        return;
+      }
+
       if (request?.mode === 'selection' && selectionText && callbacks.onResult) {
         await this.handleAIInlineSelectionRequest(prompt, selectionText, callbacks, request);
         return;
@@ -1160,8 +1228,52 @@ export class EditorServiceImpl implements EditorService {
     callbacks: EditorInlineGenerateCallbacks,
     request: EditorInlineGenerateRequest,
   ): Promise<void> {
+    if (this.inlineAIThreadService) {
+      const notePath = request.notePath ?? this.state.document?.path ?? null;
+      if (!notePath) {
+        callbacks.onError('No active note for inline AI');
+        return;
+      }
+      const result = await this.inlineAIThreadService.submitSelectionPrompt({
+        prompt,
+        selectionText,
+        notePath,
+        from: request.from,
+        to: request.to,
+        blockIds: request.blockIds,
+      });
+      if (!result.ok) {
+        callbacks.onError(result.error.message);
+        return;
+      }
+      const thread = result.value;
+      const latest = thread.turns.at(-1);
+      const inlineResult: EditorInlineGenerateResult = {
+        message: latest?.response ?? '',
+        didMutate: thread.proposal?.status === 'pending',
+        toolCount: latest?.toolCalls.length ?? 0,
+        suppressLegacyPreview: true,
+        inlineThreadId: thread.id,
+      };
+      if (thread.conversationId) inlineResult.conversationId = thread.conversationId;
+      callbacks.onResult?.(inlineResult);
+      return;
+    }
+
     const noteTitle = this.state.document?.meta.title ?? 'Untitled';
     const notePath = request.notePath ?? this.state.document?.path ?? null;
+    const beforeText = request.from != null
+      ? limitInlineContextText(this.getTextBetween(Math.max(0, request.from - INLINE_AI_CONTEXT_WINDOW), request.from), 'end')
+      : '';
+    const afterText = request.to != null
+      ? limitInlineContextText(this.getTextBetween(request.to, request.to + INLINE_AI_CONTEXT_WINDOW), 'start')
+      : '';
+    const blockContext = request.blockIds
+      .map((blockId) => {
+        const block = this.getBlockInfo(blockId);
+        return block ? `${block.id} (${block.type}): ${block.content}` : `${blockId}: (block not currently resolved)`;
+      })
+      .join('\n');
     const internalPrompt = buildInlineSelectionPrompt({
       prompt,
       selectedText: selectionText,
@@ -1170,10 +1282,19 @@ export class EditorServiceImpl implements EditorService {
       from: request.from,
       to: request.to,
       blockIds: request.blockIds,
+      beforeText,
+      afterText,
+      blockContext,
+      likelyLanguage: detectInlineLikelyLanguage([
+        selectionText,
+        beforeText,
+        afterText,
+        noteTitle,
+      ].join('\n')),
     });
 
     const result = await this.aiAssistant!.prompt(internalPrompt, {
-      autoExecuteTools: true,
+      autoExecuteTools: false,
       displayMessage: prompt,
       persistAssistantMessage: true,
       documentPath: notePath,
@@ -1716,10 +1837,18 @@ function buildInlineSelectionPrompt(input: {
   from: number | null;
   to: number | null;
   blockIds: string[];
+  beforeText?: string;
+  afterText?: string;
+  blockContext?: string;
+  likelyLanguage?: string;
 }): string {
+  const beforeText = limitInlineContextText(input.beforeText ?? '', 'end');
+  const afterText = limitInlineContextText(input.afterText ?? '', 'start');
+  const blockContext = (input.blockContext ?? '').trim() || 'No visible block content was resolved.';
   const location = [
     `Note title: ${input.noteTitle}`,
     `Note path: ${input.notePath ?? '(active note)'}`,
+    `Likely note language: ${input.likelyLanguage ?? 'Infer from context'}`,
     `Selection from: ${input.from ?? '(unknown)'}`,
     `Selection to: ${input.to ?? '(unknown)'}`,
     `Active block ids: ${input.blockIds.length ? input.blockIds.join(', ') : '(none)'}`,
@@ -1730,9 +1859,24 @@ function buildInlineSelectionPrompt(input: {
     '',
     location,
     '',
+    'Visible block content:',
+    '```text',
+    blockContext,
+    '```',
+    '',
+    'Local context before selection:',
+    '```text',
+    beforeText || '(start of note or unavailable)',
+    '```',
+    '',
     'Selected text:',
     '```text',
-    input.selectedText,
+    input.selectedText || '(empty selection)',
+    '```',
+    '',
+    'Local context after selection:',
+    '```text',
+    afterText || '(end of note or unavailable)',
     '```',
     '',
     'User prompt:',
@@ -1741,7 +1885,30 @@ function buildInlineSelectionPrompt(input: {
     'Decide whether to answer only or apply an edit with the available editor tools.',
     'For exact selection replacement, prefer editor:replace with the supplied from/to range.',
     'For substring replacement, use targetText and occurrence when exact coordinates are not known.',
+    'Make the replacement specific to the selected range and nearby context.',
+    'If the selected text is low-signal placeholder text, still write the best concrete replacement from context.',
+    'Do not use generic stock replacements such as "Dit is een duidelijkere zin." unless the context uniquely calls for that exact sentence.',
   ].join('\n');
+}
+
+function limitInlineContextText(value: string, side: 'start' | 'end'): string {
+  const normalized = value
+    .replace(/\r\n?/g, '\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{4,}/g, '\n\n\n');
+  if (normalized.length <= INLINE_AI_PROMPT_CONTEXT_LIMIT) return normalized;
+  return side === 'start'
+    ? normalized.slice(0, INLINE_AI_PROMPT_CONTEXT_LIMIT)
+    : normalized.slice(normalized.length - INLINE_AI_PROMPT_CONTEXT_LIMIT);
+}
+
+function detectInlineLikelyLanguage(value: string): string {
+  const normalized = value.toLowerCase();
+  const dutchMatches = normalized.match(/\b(de|het|een|en|van|voor|zin|deze|dit|dat|niet|wel|met|naar|om|is|zijn|wordt|punten|belangrijkste)\b/g)?.length ?? 0;
+  const englishMatches = normalized.match(/\b(the|a|an|and|of|for|sentence|this|that|not|with|to|is|are|will|should|note|points|important)\b/g)?.length ?? 0;
+  if (dutchMatches >= 2 && dutchMatches >= englishMatches) return 'Dutch';
+  if (englishMatches >= 2 && englishMatches > dutchMatches) return 'English';
+  return 'Infer from selected text and surrounding note context';
 }
 
 function getLatestToolFailureMessage(conversation: Conversation | null | undefined): string | null {
@@ -1768,4 +1935,3 @@ function inferEditorCaptureReason(lineage?: LineageRecordOptions): NonNullable<L
   if (lineage?.intentKind === 'external-reconcile') return 'external-reconcile';
   return 'autosave';
 }
-

@@ -38,6 +38,10 @@ import type { AIResponse, AIResponseChunk } from '$lib/domain/values/AIResponse'
 import type { ConversationSummary } from '$lib/ports/outbound/ConversationStoragePort';
 import type { Operation } from '$lib/domain/entities/Operation';
 import type { OperationTemplate } from '$lib/domain/values/OperationTemplate';
+import {
+  AI_UNAVAILABLE_MESSAGE,
+  type AIAvailabilityStatus,
+} from '$lib/domain/values/AIAvailability';
 
 /** Sidebar view states */
 export type SidebarView = 'chat' | 'history' | 'actions';
@@ -71,6 +75,12 @@ class AIStore {
   streamingText = $state('');
   progress = $state(0);
   error = $state<Error | null>(null);
+
+  // Local AI CLI availability. Unknown is optimistic so tests/browser mock
+  // paths keep working until bootstrap or Settings resolves the real state.
+  availabilityStatus = $state<AIAvailabilityStatus>('unknown');
+  isAIAvailable = $state(true);
+  availabilityMessage = $state<string | null>(null);
 
   // Conversation state
   currentConversation = $state<Conversation | null>(null);
@@ -123,6 +133,9 @@ class AIStore {
     this.#cleanup();
 
     this.#service = service;
+    this.availabilityStatus = 'unknown';
+    this.isAIAvailable = true;
+    this.availabilityMessage = null;
 
     // Subscribe to service state changes (includes conversation)
     this.#unsubscribe = service.subscribe((state: AIInteractionState) => {
@@ -234,6 +247,7 @@ class AIStore {
     templateId: string,
     variables: Record<string, string | number | boolean>
   ): Promise<Operation | null> {
+    if (!this.#guardAIAvailable()) return null;
     if (!this.#operationService) return null;
 
     const result = await this.#operationService.queueFromTemplate(templateId, variables);
@@ -253,6 +267,7 @@ class AIStore {
    */
   async runAgent(prompt: string, options?: AgentOptions): Promise<AgentResult | null> {
     if (!this.#agentService) throw new Error('Agent service not initialized');
+    if (!this.#guardAIAvailable()) return null;
 
     this.error = null;
     try {
@@ -285,6 +300,7 @@ class AIStore {
    */
   async startAgentRun(prompt: string, options?: StartAgentRunOptions) {
     if (!this.#agentOrchestrationService) throw new Error('Agent orchestration service not initialized');
+    if (!this.#guardAIAvailable()) return null;
 
     this.error = null;
     const result = await this.#agentOrchestrationService.startRun(prompt, options);
@@ -301,6 +317,7 @@ class AIStore {
    */
   async approveAgentRun(runId: string): Promise<boolean> {
     if (!this.#agentOrchestrationService) throw new Error('Agent orchestration service not initialized');
+    if (!this.#guardAIAvailable()) return false;
 
     this.error = null;
     const result = await this.#agentOrchestrationService.approveRun(runId);
@@ -318,6 +335,7 @@ class AIStore {
    */
   async continueWorker(options: ContinueWorkerOptions) {
     if (!this.#agentOrchestrationService) throw new Error('Agent orchestration service not initialized');
+    if (!this.#guardAIAvailable()) return null;
 
     this.error = null;
     const result = await this.#agentOrchestrationService.continueWorker(options);
@@ -365,6 +383,8 @@ class AIStore {
    * Let the model decide whether this is chat, a single action, or a durable run.
    */
   async submitPrompt(message: string, options?: SubmitPromptOptions): Promise<AIResponse | null> {
+    if (!this.#guardAIAvailable()) return null;
+
     const conversationId = options?.conversationId ?? this.currentConversation?.id;
     const promptOptions: PromptOptions = {};
     if (conversationId) promptOptions.conversationId = conversationId;
@@ -428,6 +448,7 @@ class AIStore {
    */
   async prompt(message: string, options?: PromptOptions): Promise<AIResponse | null> {
     if (!this.#service) throw new Error('AIStore not initialized');
+    if (!this.#guardAIAvailable()) return null;
 
     this.error = null;
     this.lastResponse = null;
@@ -461,6 +482,7 @@ class AIStore {
    */
   async streamPrompt(message: string, options?: PromptOptions): Promise<AIResponse | null> {
     if (!this.#service) throw new Error('AIStore not initialized');
+    if (!this.#guardAIAvailable()) return null;
 
     this.error = null;
     this.lastResponse = null;
@@ -622,8 +644,34 @@ class AIStore {
    * Check if AI is available and configured.
    */
   async isAvailable(): Promise<boolean> {
-    if (!this.#service) return false;
-    return this.#service.isAvailable();
+    return this.refreshAvailability();
+  }
+
+  async refreshAvailability(): Promise<boolean> {
+    if (!this.#service) {
+      this.#setAvailability(false);
+      return false;
+    }
+    this.availabilityStatus = 'checking';
+    this.availabilityMessage = null;
+
+    try {
+      const available = await this.#service.isAvailable();
+      this.#setAvailability(available);
+      return available;
+    } catch (e) {
+      this.#setAvailability(false);
+      this.error = toError(e);
+      return false;
+    }
+  }
+
+  get canStartAIWork(): boolean {
+    return this.availabilityStatus !== 'unavailable' && this.isAIAvailable;
+  }
+
+  ensureAIAvailable(): boolean {
+    return this.#guardAIAvailable();
   }
 
   /**
@@ -702,6 +750,23 @@ class AIStore {
     }));
   }
 
+  #setAvailability(available: boolean): void {
+    this.isAIAvailable = available;
+    this.availabilityStatus = available ? 'available' : 'unavailable';
+    this.availabilityMessage = available ? null : AI_UNAVAILABLE_MESSAGE;
+    if (available && this.error?.message === AI_UNAVAILABLE_MESSAGE) {
+      this.error = null;
+    }
+  }
+
+  #guardAIAvailable(): boolean {
+    if (this.canStartAIWork) return true;
+    const message = this.availabilityMessage ?? AI_UNAVAILABLE_MESSAGE;
+    this.error = new Error(message);
+    this.isRouting = false;
+    return false;
+  }
+
   /**
    * Cleanup subscriptions.
    */
@@ -736,6 +801,9 @@ class AIStore {
     this.streamingText = '';
     this.progress = 0;
     this.error = null;
+    this.availabilityStatus = 'unknown';
+    this.isAIAvailable = true;
+    this.availabilityMessage = null;
     this.currentConversation = null;
     this.conversations = [];
     this.executingTools = [];

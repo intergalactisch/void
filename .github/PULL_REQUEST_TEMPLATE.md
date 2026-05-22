@@ -1,3 +1,5 @@
+> Pull requests are restricted to repository collaborators. CI is configured not to execute code from forked PRs.
+
 ## Summary
 
 <!-- 1-3 lines: what does this change and why? -->

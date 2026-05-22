@@ -71,6 +71,43 @@ export type { Document } from './Document';
 export { createEditorSession } from './EditorSession';
 export type { EditorSession, EditorSessionConflictState } from './EditorSession';
 
+export {
+  appendInlineAIThreadEvent,
+  appendInlineAITurn,
+  completeInlineAITurn,
+  createInlineAIAnchor,
+  createInlineAIProposal,
+  createInlineAIThread,
+  dismissInlineAIThread,
+  failInlineAITurn,
+  hashInlineAIText,
+  isInlineAIThreadUnread,
+  markInlineAIProposal,
+  markInlineAIThreadSeen,
+  withInlineAIThreadLinks,
+} from './InlineAIThread';
+export type {
+  CreateInlineAIThreadInput,
+  InlineAIAnchor,
+  InlineAIApplyNotePatchChange,
+  InlineAIInvocation,
+  InlineAIInvocationEntryPoint,
+  InlineAIInvocationSource,
+  InlineAIInsertBlocksChange,
+  InlineAIProposal,
+  InlineAIProposalStatus,
+  InlineAIProposedChange,
+  InlineAIRange,
+  InlineAIReplaceBlockChange,
+  InlineAIReplaceRangeChange,
+  InlineAIThreadEvent,
+  InlineAIThreadEventType,
+  InlineAIThreadLinks,
+  InlineAIThread,
+  InlineAIThreadStatus,
+  InlineAITurn,
+} from './InlineAIThread';
+
 // AI-related entities
 export {
   createTool,

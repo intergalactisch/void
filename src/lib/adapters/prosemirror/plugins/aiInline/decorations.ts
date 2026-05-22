@@ -8,38 +8,53 @@
 import { DecorationSet, Decoration, type EditorView } from 'prosemirror-view';
 import { EditorState } from 'prosemirror-state';
 import { aiInlineKey, type AIInlineState, type AIInlineMeta } from './state';
+import {
+  createAIContinuationWidget,
+  resolveAIContinuationTargetForRange,
+} from '../aiContinuation';
 
 /**
  * Create decorations based on the current AI inline state.
  */
 export function createAIInlineDecorations(state: EditorState): DecorationSet {
   const pluginState = aiInlineKey.getState(state);
-  if (!pluginState || pluginState.status === 'idle' || !pluginState.blockPos) {
+  if (!pluginState) {
     return DecorationSet.empty;
+  }
+
+  const docSize = state.doc.content.size;
+  const decorations: Decoration[] = [];
+
+  for (const composer of pluginState.composers) {
+    const from = Math.max(0, Math.min(composer.from, docSize));
+    const to = Math.max(0, Math.min(composer.to, docSize));
+    if (from >= to) continue;
+    const isActive = pluginState.activeComposerId === composer.id;
+    decorations.push(
+      Decoration.inline(from, to, {
+        class: `void-ai-inline-selection-highlight void-ai-composer-highlight${isActive ? ' active' : ''}`,
+        'data-ai-composer-id': composer.id,
+      })
+    );
+  }
+
+  if (pluginState.status === 'idle' || !pluginState.blockPos) {
+    return decorations.length ? DecorationSet.create(state.doc, decorations) : DecorationSet.empty;
   }
 
   const { from, to } = pluginState.blockPos;
-  const docSize = state.doc.content.size;
 
   // Validate range
   if (from < 0 || to > docSize || from >= to) {
-    return DecorationSet.empty;
+    return decorations.length ? DecorationSet.create(state.doc, decorations) : DecorationSet.empty;
   }
-
-  const decorations: Decoration[] = [];
 
   switch (pluginState.status) {
     case 'prompting': {
-      // Highlight the selected text
+      // Legacy prompt state is retained for backward compatibility. The
+      // modern selection Ask UI is rendered as a floating EditorShell overlay.
       decorations.push(
         Decoration.inline(from, to, { class: 'void-ai-inline-selection-highlight' })
-      );
-      // Prompt input widget at the end of the selection
-      decorations.push(
-        Decoration.widget(to, (view) => createPromptWidget(view), {
-          side: 1,
-          key: 'ai-inline-prompt',
-        })
       );
       break;
     }
@@ -132,6 +147,22 @@ export function createAIInlineDecorations(state: EditorState): DecorationSet {
     }
   }
 
+  if (pluginState.status === 'processing' || pluginState.status === 'preview') {
+    const target = resolveAIContinuationTargetForRange(state, from, to);
+    if (target) {
+      decorations.push(
+        Decoration.widget(
+          target.widgetPos,
+          (view) => createAIContinuationWidget(view, target),
+          {
+            side: 1,
+            key: `ai-inline-continuation-${target.blockId}-${target.widgetPos}`,
+          }
+        )
+      );
+    }
+  }
+
   return DecorationSet.create(state.doc, decorations);
 }
 
@@ -146,7 +177,9 @@ function createPromptWidget(view: EditorView): HTMLElement {
   const input = document.createElement('input');
   input.className = 'void-ai-prompt-input';
   input.type = 'text';
+  input.name = 'inline-ai-prompt';
   input.placeholder = 'Describe what to do with this text...';
+  input.setAttribute('aria-label', 'Inline AI prompt');
   input.setAttribute('autocomplete', 'off');
   input.setAttribute('spellcheck', 'false');
 
@@ -180,6 +213,8 @@ function createPromptWidget(view: EditorView): HTMLElement {
     view.focus();
   };
 
+  stopEditorEventPropagation(input);
+
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
@@ -210,8 +245,7 @@ function createPromptWidget(view: EditorView): HTMLElement {
   wrapper.appendChild(submitBtn);
   wrapper.appendChild(cancelBtn);
 
-  // Auto-focus the input after it's added to the DOM
-  setTimeout(() => input.focus(), 0);
+  focusPromptInput(input);
 
   return wrapper;
 }
@@ -414,4 +448,41 @@ function stripHtml(html: string): string {
   const div = document.createElement('div');
   div.innerHTML = html;
   return div.textContent ?? '';
+}
+
+function focusPromptInput(input: HTMLInputElement): void {
+  const focus = () => {
+    if (!input.isConnected) return;
+    input.focus({ preventScroll: true });
+  };
+  queueMicrotask(focus);
+  requestAnimationFrame(focus);
+  setTimeout(focus, 0);
+}
+
+function stopEditorEventPropagation(element: HTMLElement): void {
+  const events = [
+    'mousedown',
+    'mouseup',
+    'pointerdown',
+    'pointerup',
+    'click',
+    'dblclick',
+    'keydown',
+    'keyup',
+    'keypress',
+    'beforeinput',
+    'input',
+    'copy',
+    'cut',
+    'paste',
+    'select',
+    'selectionchange',
+  ] as const;
+
+  for (const eventName of events) {
+    element.addEventListener(eventName, (event) => {
+      event.stopPropagation();
+    });
+  }
 }

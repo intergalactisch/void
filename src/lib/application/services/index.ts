@@ -16,6 +16,8 @@ export { SyncServiceImpl } from './SyncServiceImpl';
 export { UpdaterServiceImpl } from './UpdaterServiceImpl';
 export { AIRewriteServiceImpl } from './AIRewriteServiceImpl';
 export { EditorServiceImpl } from './EditorServiceImpl';
+export { InlineAIThreadServiceImpl } from './InlineAIThreadServiceImpl';
+export { NoteAIActivityServiceImpl } from './NoteAIActivityServiceImpl';
 export { CommandServiceImpl } from './CommandServiceImpl';
 export { KeymapServiceImpl } from './KeymapServiceImpl';
 export { SearchServiceImpl } from './SearchServiceImpl';

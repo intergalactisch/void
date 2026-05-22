@@ -11,11 +11,12 @@
 
 import type { EditorService, EditorState } from '$lib/ports/inbound';
 import type { Document, Block } from '$lib/domain';
+import type { InlineAIThread } from '$lib/domain/entities/InlineAIThread';
 import type { DocumentMeta, Selection } from '$lib/domain/values';
 import { EMPTY_SELECTION } from '$lib/domain/values';
 import { events } from '$lib/events';
 import type { BlockType } from '$lib/domain/values/BlockType';
-import type { EditorPageLinkNote, RegisteredCommand } from '$lib/ports/outbound';
+import type { EditorInlineAIComposerView, EditorPageLinkNote, RegisteredCommand } from '$lib/ports/outbound';
 
 /**
  * Operation result for tracking the last completed operation.
@@ -40,6 +41,8 @@ const INITIAL_STATE: EditorState = {
   isSaving: false,
   conflictState: 'clean',
   aiProcessing: null,
+  aiInlineComposers: [],
+  activeAIInlineComposerId: null,
 };
 
 /**
@@ -63,6 +66,8 @@ class EditorStore {
   isSaving = $state(false);
   conflictState = $state<EditorState['conflictState']>('clean');
   aiProcessing = $state<EditorState['aiProcessing']>(null);
+  aiInlineComposers = $state<EditorInlineAIComposerView[]>([]);
+  activeAIInlineComposerId = $state<string | null>(null);
   error = $state<Error | null>(null);
 
   // Operation tracking (for event-driven architecture)
@@ -125,6 +130,8 @@ class EditorStore {
       this.isSaving = state.isSaving;
       this.conflictState = state.conflictState;
       this.aiProcessing = state.aiProcessing;
+      this.aiInlineComposers = state.aiInlineComposers;
+      this.activeAIInlineComposerId = state.activeAIInlineComposerId;
     });
 
     // Initialize with current state
@@ -138,6 +145,8 @@ class EditorStore {
     this.isSaving = initialState.isSaving;
     this.conflictState = initialState.conflictState;
     this.aiProcessing = initialState.aiProcessing;
+    this.aiInlineComposers = initialState.aiInlineComposers;
+    this.activeAIInlineComposerId = initialState.activeAIInlineComposerId;
 
     // Subscribe to document events for operation tracking
     this.#subscribeToEvents();
@@ -566,6 +575,22 @@ class EditorStore {
     this.#service?.aiPromptSelectionAt(from, to, text);
   }
 
+  updateAIInlineComposerDraft(id: string, prompt: string) {
+    this.#service?.updateAIInlineComposerDraft(id, prompt);
+  }
+
+  submitAIInlineComposer(id: string, prompt: string) {
+    this.#service?.submitAIInlineComposer(id, prompt);
+  }
+
+  cancelAIInlineComposer(id: string) {
+    this.#service?.cancelAIInlineComposer(id);
+  }
+
+  focusAIInlineComposer(id: string) {
+    this.#service?.focusAIInlineComposer(id);
+  }
+
   executeSlashMenuCommand(command: RegisteredCommand) {
     this.#service?.executeSlashMenuCommand(command);
   }
@@ -595,6 +620,12 @@ class EditorStore {
   }
   replaceRange(from: number, to: number, markdown: string) {
     this.#service?.replaceRange(from, to, markdown);
+  }
+  setInlineAIThreads(threads: InlineAIThread[]) {
+    this.#service?.setInlineAIThreads(threads);
+  }
+  scrollInlineAIThreadIntoView(threadId: string) {
+    this.#service?.scrollInlineAIThreadIntoView(threadId);
   }
   replaceAllMatches(replacement: string) {
     this.#service?.replaceAllMatches(replacement);

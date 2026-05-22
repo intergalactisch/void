@@ -451,8 +451,8 @@ export class AIAssistantServiceImpl implements AIAssistantService {
     return this.conversationStore.getOrCreate(conversationId, options);
   }
 
-  async createNewConversation(): Promise<Conversation> {
-    return this.conversationStore.create();
+  async createNewConversation(options?: { documentPath?: string | null }): Promise<Conversation> {
+    return this.conversationStore.create(options);
   }
 
   async listConversations(): Promise<Conversation[]> {

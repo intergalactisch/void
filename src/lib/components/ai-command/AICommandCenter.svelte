@@ -1,9 +1,10 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import { Bot, Check, Copy, MessageSquare, PanelRightClose, Plus, Sparkles, X } from '@lucide/svelte';
-  import { aiStore, commandCenterStore, lineageStore, operationsStore } from '$lib/stores';
+  import { AlertCircle, Bot, Check, Copy, MessageSquare, PanelRightClose, Plus, RefreshCw, Settings, Sparkles, X } from '@lucide/svelte';
+  import { aiStore, commandCenterStore, lineageStore, operationsStore, uiStore } from '$lib/stores';
   import { copyTextToClipboard } from '$lib/utils/clipboard';
   import { buildRefId } from '$lib/domain/values';
+  import { AI_UNAVAILABLE_MESSAGE } from '$lib/domain/values/AIAvailability';
   import CommandComposer from './CommandComposer.svelte';
   import CommandHistoryPanel from './CommandHistoryPanel.svelte';
   import CommandInspector from './CommandInspector.svelte';
@@ -36,6 +37,10 @@
   let isActive = $derived(aiStore.isRouting || aiStore.isProcessing || aiStore.isStreaming || aiStore.agentRunState.isRunning);
   let hasOpenConversation = $derived(aiStore.currentConversation !== null);
   let conversationTitle = $derived(aiStore.currentConversation?.title ?? 'New Command');
+  let aiUnavailable = $derived(!aiStore.canStartAIWork);
+  let availabilityChecking = $derived(aiStore.availabilityStatus === 'checking');
+  let availabilityMessage = $derived(aiStore.availabilityMessage ?? AI_UNAVAILABLE_MESSAGE);
+  let commandTitle = $derived(aiUnavailable ? 'AI Command Center' : conversationTitle);
   let visibleConversationId = $derived(commandCenterStore.visibleConversationId);
   let conversationId = $derived(visibleConversationId?.id ?? null);
   let conversationIdLabel = $derived(visibleConversationId?.source === 'run' ? 'Run Ref' : 'Ref');
@@ -56,6 +61,7 @@
     if (aiStore.agentRunState.isRunning) return 'Agent working';
     if (aiStore.isStreaming) return 'Writing response';
     if (aiStore.isProcessing) return 'Thinking';
+    if (aiUnavailable) return 'Local AI unavailable';
     if (aiStore.lastIntakeDecision) return `Last routed as ${aiStore.lastIntakeDecision.kind.replace(/_/g, ' ')}`;
     return 'Ready';
   });
@@ -94,6 +100,7 @@
   }
 
   async function handleNewConversation() {
+    if (!aiStore.ensureAIAvailable()) return;
     await aiStore.newConversation();
     commandCenterStore.reset();
     requestAnimationFrame(scrollTranscriptToBottom);
@@ -117,6 +124,7 @@
   async function handleRetryAsSwarm() {
     const recovery = retryableSwarmRun;
     if (!recovery || retryingAsSwarm) return;
+    if (!aiStore.ensureAIAvailable()) return;
 
     retryingAsSwarm = true;
     try {
@@ -160,9 +168,20 @@
     commandCenterStore.closeWorkerConversation();
   }
 
+  function handleOpenSettings() {
+    uiStore.openSettings();
+  }
+
+  function handleCheckAgain() {
+    void aiStore.refreshAvailability();
+  }
+
   $effect(() => {
     if (!visible) return;
 
+    if (aiStore.availabilityStatus === 'unknown') {
+      void aiStore.refreshAvailability();
+    }
     void aiStore.loadAgentRuns();
     void aiStore.loadConversationHistory();
 
@@ -222,7 +241,7 @@
           <Bot size={18} strokeWidth={1.8} />
         </span>
         <div class="command-heading">
-          <h2>{conversationTitle}</h2>
+          <h2>{commandTitle}</h2>
           <div class="command-meta">
             <span class:active={isActive}>{statusLabel}</span>
             {#if workBadge > 0}
@@ -253,12 +272,21 @@
       </div>
 
       <div class="command-header-actions" role="toolbar" aria-label="Command center actions">
-        <button type="button" class="header-icon" title="Action templates" aria-label="Action templates" onclick={() => commandCenterStore.showTemplates()}>
-          <Sparkles size={15} strokeWidth={1.8} aria-hidden="true" />
-        </button>
-        <button type="button" class="header-icon" title="New command thread" aria-label="New command thread" onclick={handleNewConversation}>
-          <Plus size={15} strokeWidth={1.9} aria-hidden="true" />
-        </button>
+        {#if aiUnavailable}
+          <button type="button" class="header-icon" title="Check local AI again" aria-label="Check local AI again" onclick={handleCheckAgain} disabled={availabilityChecking}>
+            <RefreshCw size={15} strokeWidth={1.8} aria-hidden="true" />
+          </button>
+          <button type="button" class="header-icon" title="Open settings" aria-label="Open settings" onclick={handleOpenSettings}>
+            <Settings size={15} strokeWidth={1.8} aria-hidden="true" />
+          </button>
+        {:else}
+          <button type="button" class="header-icon" title="Action templates" aria-label="Action templates" onclick={() => commandCenterStore.showTemplates()}>
+            <Sparkles size={15} strokeWidth={1.8} aria-hidden="true" />
+          </button>
+          <button type="button" class="header-icon" title="New command thread" aria-label="New command thread" onclick={handleNewConversation}>
+            <Plus size={15} strokeWidth={1.9} aria-hidden="true" />
+          </button>
+        {/if}
         <span class="header-divider" aria-hidden="true"></span>
         <button type="button" class="header-icon compact-toggle" title="Close command center" aria-label="Close command center" onclick={handleClose}>
           <PanelRightClose size={15} strokeWidth={1.8} aria-hidden="true" />
@@ -271,10 +299,30 @@
 
     <div
       class="command-body"
-      data-inspector={inspectorVisible ? 'visible' : 'hidden'}
-      data-mode={workerView ? 'worker' : 'normal'}
+      data-inspector={!aiUnavailable && inspectorVisible ? 'visible' : 'hidden'}
+      data-mode={aiUnavailable ? 'locked' : workerView ? 'worker' : 'normal'}
     >
-      {#if workerView && selectedWorkerDetail}
+      {#if aiUnavailable}
+        <section class="ai-unavailable-panel" role="status" aria-live="polite">
+          <span class="ai-unavailable-icon" aria-hidden="true">
+            <AlertCircle size={24} strokeWidth={1.7} />
+          </span>
+          <div class="ai-unavailable-copy">
+            <h3>Local AI is not installed</h3>
+            <p>{availabilityMessage}</p>
+          </div>
+          <div class="ai-unavailable-actions">
+            <button type="button" class="ai-unavailable-primary" onclick={handleOpenSettings}>
+              <Settings size={14} strokeWidth={1.8} aria-hidden="true" />
+              <span>Open Settings</span>
+            </button>
+            <button type="button" class="ai-unavailable-secondary" onclick={handleCheckAgain} disabled={availabilityChecking}>
+              <RefreshCw size={14} strokeWidth={1.8} aria-hidden="true" />
+              <span>{availabilityChecking ? 'Checking...' : 'Check again'}</span>
+            </button>
+          </div>
+        </section>
+      {:else if workerView && selectedWorkerDetail}
         <WorkerConversationView
           run={selectedWorkerDetail.run}
           worker={selectedWorkerDetail.worker}
@@ -311,7 +359,7 @@
                   type="button"
                   class="swarm-retry-button"
                   onclick={handleRetryAsSwarm}
-                  disabled={retryingAsSwarm || isActive}
+                  disabled={retryingAsSwarm || isActive || aiUnavailable}
                 >
                   <Sparkles size={13} strokeWidth={1.9} aria-hidden="true" />
                   <span>{retryingAsSwarm ? 'Starting' : swarmRecoveryButton}</span>
@@ -543,6 +591,11 @@
     color: var(--text-primary);
   }
 
+  .header-icon:disabled {
+    cursor: wait;
+    opacity: 0.55;
+  }
+
   .header-divider {
     width: 1px;
     height: 18px;
@@ -568,6 +621,97 @@
   .command-body[data-mode='worker'] {
     grid-template-columns: 1fr;
     grid-template-rows: minmax(0, 1fr);
+  }
+
+  .command-body[data-mode='locked'] {
+    grid-template-columns: 1fr;
+  }
+
+  .ai-unavailable-panel {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    min-width: 0;
+    min-height: 0;
+    padding: 32px;
+    text-align: center;
+    background: var(--bg-editor);
+  }
+
+  .ai-unavailable-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-md);
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    box-shadow: var(--shadow-xs);
+  }
+
+  .ai-unavailable-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-width: 420px;
+  }
+
+  .ai-unavailable-copy h3 {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1.25;
+  }
+
+  .ai-unavailable-copy p {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 13px;
+    line-height: 1.45;
+  }
+
+  .ai-unavailable-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+  }
+
+  .ai-unavailable-primary,
+  .ai-unavailable-secondary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-height: 32px;
+    padding: 0 11px;
+    border-radius: var(--radius-sm);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 650;
+    cursor: pointer;
+  }
+
+  .ai-unavailable-primary {
+    border: 0;
+    background: var(--ai-accent);
+    color: var(--text-inverse);
+  }
+
+  .ai-unavailable-secondary {
+    border: 1px solid var(--border-light);
+    background: var(--bg-card);
+    color: var(--text-secondary);
+  }
+
+  .ai-unavailable-secondary:disabled {
+    cursor: wait;
+    opacity: 0.6;
   }
 
   .history-pane {

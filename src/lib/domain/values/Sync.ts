@@ -7,6 +7,8 @@
 
 export type SyncProvider = 'github';
 export type SyncAuthMode = 'github-app' | 'token' | 'system-git';
+export type SyncAuthProbe = 'passive' | 'keychain';
+export type SyncMode = 'manual' | 'background';
 export type SyncOperation =
   | 'idle'
   | 'detecting'

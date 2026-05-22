@@ -1,14 +1,29 @@
 <script lang="ts">
-  import { lineageStore, uiStore, type LineageTimelineFilter } from '$lib/stores';
+  import { onMount } from 'svelte';
+  import {
+    aiStore,
+    commandCenterStore,
+    editorStore,
+    inlineAIStore,
+    lineageStore,
+    noteAIActivityStore,
+    toastStore,
+    uiStore,
+    type LineageTimelineFilter,
+  } from '$lib/stores';
   import {
     AlertTriangle,
     ArchiveRestore,
     CheckCircle2,
     Clock3,
+    Copy,
+    ExternalLink,
     GitBranch,
     History,
+    LocateFixed,
     ListFilter,
     Loader2,
+    MessageSquare,
     RotateCcw,
     Route,
     Save,
@@ -22,11 +37,19 @@
     LineagePendingTimelineEntry,
     LineageTimelineEntry,
   } from '$lib/ports/inbound/LineageService';
+  import type { NoteAIActivityItem } from '$lib/ports/inbound';
   import type { IntentFrame, LineActor } from '$lib/domain/entities/Lineage';
+  import type { InlineAIProposedChange, InlineAIThreadStatus } from '$lib/domain/entities/InlineAIThread';
+  import { copyTextToClipboard } from '$lib/utils/clipboard';
 
+  type WorkspaceView = 'timeline' | 'ai';
+
+  let workspaceView = $state<WorkspaceView>('timeline');
   const timeline = $derived(lineageStore.timeline);
   const entries = $derived(lineageStore.visibleTimelineEntries);
   const selectedEntry = $derived(lineageStore.selectedEntry);
+  const aiItems = $derived(noteAIActivityStore.items);
+  const selectedAIItem = $derived(noteAIActivityStore.selectedItem);
   const selectedHunks = $derived(selectedEntry?.diffHunks ?? []);
   const selectedDeletedLines = $derived(selectedEntry?.deletedLines ?? []);
   const hasWorkspace = $derived(lineageStore.visible || uiStore.lineageWorkspaceOpen);
@@ -45,10 +68,38 @@
 
   function refresh() {
     void lineageStore.refresh();
+    if (lineageStore.notePath) void noteAIActivityStore.loadForDocument(lineageStore.notePath);
   }
+
+  $effect(() => {
+    if (!hasWorkspace) return;
+    const notePath = timeline?.notePath ?? lineageStore.notePath;
+    if (notePath) void noteAIActivityStore.loadForDocument(notePath);
+  });
+
+  function setWorkspaceView(view: WorkspaceView) {
+    workspaceView = view;
+    if (view === 'ai' && lineageStore.notePath) {
+      void noteAIActivityStore.loadForDocument(lineageStore.notePath);
+    }
+  }
+
+  onMount(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ view?: WorkspaceView; threadId?: string }>).detail;
+      if (detail?.view === 'ai') setWorkspaceView('ai');
+      if (detail?.threadId) noteAIActivityStore.selectItem(detail.threadId);
+    };
+    window.addEventListener('void:lineage-workspace-view', handler);
+    return () => window.removeEventListener('void:lineage-workspace-view', handler);
+  });
 
   function select(entry: LineageTimelineEntry) {
     lineageStore.selectEntry(entry.id);
+  }
+
+  function selectAIActivity(item: NoteAIActivityItem) {
+    noteAIActivityStore.selectItem(item.id);
   }
 
   function setFilter(filter: LineageTimelineFilter) {
@@ -99,6 +150,103 @@
   function hunkTitle(hunk: LineageDiffHunk): string {
     const line = hunk.line !== null ? `Line ${hunk.line}` : 'Archived line';
     return `${line} · ${changeLabel(hunk.changeType)}`;
+  }
+
+  function statusLabel(status: InlineAIThreadStatus): string {
+    switch (status) {
+      case 'generating': return 'Working';
+      case 'answer': return 'Answer';
+      case 'proposed': return 'Proposed';
+      case 'applied': return 'Applied';
+      case 'canceled': return 'Canceled';
+      case 'stale': return 'Stale';
+      case 'error': return 'Error';
+    }
+  }
+
+  function latestResponse(item: NoteAIActivityItem): string {
+    return item.thread.turns.at(-1)?.response || item.responsePreview || 'No response yet.';
+  }
+
+  function compactText(value: string | null | undefined, fallback = 'No text captured'): string {
+    const text = (value ?? '').replace(/\s+/g, ' ').trim();
+    if (!text) return fallback;
+    return text.length > 90 ? `${text.slice(0, 87)}...` : text;
+  }
+
+  function contextText(value: string | null | undefined, fallback: string): string {
+    const text = (value ?? '').trim();
+    return text || fallback;
+  }
+
+  function blockLabel(item: NoteAIActivityItem): string {
+    const blockIds = item.thread.invocation.blockIds;
+    if (blockIds.length === 0) return 'No block captured';
+    if (blockIds.length === 1) return blockIds[0] ?? 'One block';
+    return `${blockIds.length} blocks`;
+  }
+
+  function visibleMessages(item: NoteAIActivityItem) {
+    return item.conversation?.messages.filter((message) => message.visibility !== 'internal') ?? [];
+  }
+
+  function proposalBefore(change: InlineAIProposedChange): string {
+    switch (change.kind) {
+      case 'replace-range':
+      case 'replace-block':
+        return change.originalText ?? '(unknown)';
+      case 'insert-blocks':
+        return '(insertion)';
+      case 'apply-note-patch':
+        return '(full note)';
+    }
+  }
+
+  function proposalAfter(change: InlineAIProposedChange): string {
+    switch (change.kind) {
+      case 'replace-range':
+      case 'replace-block':
+      case 'insert-blocks':
+        return change.markdown;
+      case 'apply-note-patch':
+        return change.content;
+    }
+  }
+
+  function jumpToAIThread(item: NoteAIActivityItem) {
+    editorStore.scrollInlineAIThreadIntoView(item.id);
+    close();
+  }
+
+  async function openAIConversation(item: NoteAIActivityItem) {
+    if (!item.conversationId) {
+      toastStore.info('No chat is linked to this response');
+      return;
+    }
+    await aiStore.switchConversation(item.conversationId);
+    commandCenterStore.showConversationDetail();
+    uiStore.openAISidebar();
+  }
+
+  async function copyAIResponse(item: NoteAIActivityItem) {
+    const copied = await copyTextToClipboard(latestResponse(item));
+    if (copied) toastStore.info('AI response copied');
+    else toastStore.error('Failed to copy AI response');
+  }
+
+  async function retryAIThread(item: NoteAIActivityItem) {
+    if (!(await inlineAIStore.retry(item.id))) {
+      toastStore.error(inlineAIStore.error?.message ?? 'Retry failed');
+      return;
+    }
+    await noteAIActivityStore.refresh();
+  }
+
+  function viewChangedLines(item: NoteAIActivityItem) {
+    const entry = item.lineageEntries[0];
+    if (!entry) return;
+    workspaceView = 'timeline';
+    lineageStore.selectEntry(entry.id);
   }
 
   function handleKeydown(event: KeyboardEvent) {
@@ -159,6 +307,26 @@
 
     <div class="lineage-body">
       <aside class="lineage-timeline" aria-label="Edit timeline">
+        <div class="workspace-view-tabs" role="tablist" aria-label="History views">
+          <button
+            type="button"
+            class:active={workspaceView === 'timeline'}
+            onclick={() => setWorkspaceView('timeline')}
+          >
+            <History size={12} strokeWidth={1.8} aria-hidden="true" />
+            Edits
+          </button>
+          <button
+            type="button"
+            class:active={workspaceView === 'ai'}
+            onclick={() => setWorkspaceView('ai')}
+          >
+            <MessageSquare size={12} strokeWidth={1.8} aria-hidden="true" />
+            AI conversations
+          </button>
+        </div>
+
+        {#if workspaceView === 'timeline'}
         <div class="lineage-timeline-head">
           <span>
             <ListFilter size={12} strokeWidth={1.8} aria-hidden="true" />
@@ -262,9 +430,235 @@
             {/each}
           </ol>
         {/if}
+        {:else}
+          <div class="lineage-timeline-head">
+            <span>
+              <MessageSquare size={12} strokeWidth={1.8} aria-hidden="true" />
+              AI Conversations
+            </span>
+            <span>{aiItems.length}</span>
+          </div>
+
+          {#if noteAIActivityStore.loading && aiItems.length === 0}
+            <div class="lineage-empty">Loading AI conversations...</div>
+          {:else if noteAIActivityStore.error}
+            <div class="lineage-empty lineage-error">{noteAIActivityStore.error.message}</div>
+          {:else if aiItems.length === 0}
+            <div class="lineage-empty">
+              <Sparkles size={18} strokeWidth={1.5} aria-hidden="true" />
+              <span>No inline AI conversations yet</span>
+            </div>
+          {:else}
+            <ol class="timeline-list ai-thread-list" role="list">
+              {#each aiItems as item (item.id)}
+                <li>
+                  <button
+                    type="button"
+                    class:active={item.id === noteAIActivityStore.selectedItemId}
+                    class="timeline-row ai-thread-row"
+                    onclick={() => selectAIActivity(item)}
+                  >
+                    <span class="timeline-row-top">
+                      <span class={`ai-status-badge status-${item.status}`}>{statusLabel(item.status)}</span>
+                      <time datetime={item.updatedAt}>{formatRelativeDate(new Date(item.updatedAt))}</time>
+                    </span>
+                    <span class="timeline-summary">{item.prompt}</span>
+                    <span class="ai-thread-selection">{compactText(item.selectedText, 'No selection captured')}</span>
+                    <span class="timeline-meta">
+                      <span>{item.invokedLocation}</span>
+                      <span>{item.changeCount} change{item.changeCount === 1 ? '' : 's'}</span>
+                    </span>
+                  </button>
+                </li>
+              {/each}
+            </ol>
+          {/if}
+        {/if}
       </aside>
 
       <main class="lineage-detail" aria-live="polite">
+        {#if workspaceView === 'ai'}
+          {#if noteAIActivityStore.loading && !selectedAIItem}
+            <div class="detail-empty">Preparing AI conversation history...</div>
+          {:else if !selectedAIItem}
+            <div class="detail-empty">Select an AI conversation to inspect its trace.</div>
+          {:else}
+            <section class="detail-hero">
+              <div>
+                <span class="detail-kind">{statusLabel(selectedAIItem.status)}</span>
+                <h3>{selectedAIItem.prompt}</h3>
+                <p>
+                  {selectedAIItem.invokedLocation}
+                  · {selectedAIItem.thread.turns.length} turn{selectedAIItem.thread.turns.length === 1 ? '' : 's'}
+                  · {selectedAIItem.changeCount} change{selectedAIItem.changeCount === 1 ? '' : 's'}
+                </p>
+              </div>
+              <div class="detail-badges">
+                <span class={`badge ai-status-badge status-${selectedAIItem.status}`}>
+                  {statusLabel(selectedAIItem.status)}
+                </span>
+                {#if selectedAIItem.accepted}
+                  <span class="badge">
+                    <CheckCircle2 size={12} strokeWidth={1.8} aria-hidden="true" />
+                    Accepted
+                  </span>
+                {/if}
+              </div>
+            </section>
+
+            <section class="detail-section ai-actions">
+              <button type="button" onclick={() => jumpToAIThread(selectedAIItem)}>
+                <LocateFixed size={13} strokeWidth={1.8} aria-hidden="true" />
+                Jump
+              </button>
+              <button type="button" onclick={() => void openAIConversation(selectedAIItem)}>
+                <ExternalLink size={13} strokeWidth={1.8} aria-hidden="true" />
+                Open chat
+              </button>
+              <button type="button" onclick={() => void copyAIResponse(selectedAIItem)}>
+                <Copy size={13} strokeWidth={1.8} aria-hidden="true" />
+                Copy
+              </button>
+              {#if selectedAIItem.status === 'stale' || selectedAIItem.status === 'error'}
+                <button type="button" onclick={() => void retryAIThread(selectedAIItem)}>
+                  <RotateCcw size={13} strokeWidth={1.8} aria-hidden="true" />
+                  Retry
+                </button>
+              {/if}
+              {#if selectedAIItem.lineageEntries.length > 0}
+                <button type="button" onclick={() => viewChangedLines(selectedAIItem)}>
+                  <GitBranch size={13} strokeWidth={1.8} aria-hidden="true" />
+                  Changed lines
+                </button>
+              {/if}
+            </section>
+
+            <section class="detail-section">
+              <header class="section-head">
+                <span>
+                  <LocateFixed size={13} strokeWidth={1.8} aria-hidden="true" />
+                  Invocation
+                </span>
+              </header>
+              <div class="detail-grid ai-invocation-meta">
+                <div>
+                  <span class="field-label">Selected text</span>
+                  <span class="field-value">{compactText(selectedAIItem.selectedText)}</span>
+                </div>
+                <div>
+                  <span class="field-label">Range</span>
+                  <span class="field-value">{selectedAIItem.invokedLocation}</span>
+                </div>
+                <div>
+                  <span class="field-label">Blocks</span>
+                  <span class="field-value mono">{blockLabel(selectedAIItem)}</span>
+                </div>
+                {#if selectedAIItem.conversationId}
+                  <div>
+                    <span class="field-label">Conversation</span>
+                    <span class="field-value mono">{selectedAIItem.conversationId}</span>
+                  </div>
+                {/if}
+              </div>
+              <div class="ai-context-strip" aria-label="Inline AI invocation context">
+                <div>
+                  <span>Before</span>
+                  <pre>{contextText(selectedAIItem.contextBefore, 'Start of note or unavailable')}</pre>
+                </div>
+                <div>
+                  <span>Selected</span>
+                  <pre>{contextText(selectedAIItem.selectedText, 'No selected text captured')}</pre>
+                </div>
+                <div>
+                  <span>After</span>
+                  <pre>{contextText(selectedAIItem.contextAfter, 'End of note or unavailable')}</pre>
+                </div>
+              </div>
+            </section>
+
+            <section class="detail-section">
+              <header class="section-head">
+                <span>
+                  <Sparkles size={13} strokeWidth={1.8} aria-hidden="true" />
+                  Latest Response
+                </span>
+              </header>
+              <p class="ai-response-text">{latestResponse(selectedAIItem)}</p>
+            </section>
+
+            {#if selectedAIItem.thread.proposal}
+              <section class="detail-section">
+                <header class="section-head">
+                  <span>
+                    <GitBranch size={13} strokeWidth={1.8} aria-hidden="true" />
+                    Proposed Edit
+                  </span>
+                  <span class="confidence">{selectedAIItem.thread.proposal.status}</span>
+                </header>
+                <div class="diff-list">
+                  {#each selectedAIItem.thread.proposal.changes as change, index (`${selectedAIItem.id}-proposal-${index}`)}
+                    <article class="diff-hunk">
+                      <header>
+                        <span>{change.kind.replace(/-/g, ' ')}</span>
+                      </header>
+                      <div class="diff-before-after">
+                        <div>
+                          <span>Before</span>
+                          <p>{proposalBefore(change)}</p>
+                        </div>
+                        <div>
+                          <span>After</span>
+                          <p>{proposalAfter(change)}</p>
+                        </div>
+                      </div>
+                    </article>
+                  {/each}
+                </div>
+              </section>
+            {/if}
+
+            <section class="detail-section">
+              <header class="section-head">
+                <span>
+                  <Route size={13} strokeWidth={1.8} aria-hidden="true" />
+                  Lifecycle
+                </span>
+              </header>
+              <ol class="ai-event-list" role="list">
+                {#each selectedAIItem.events as event (event.id)}
+                  <li>
+                    <span>{event.type.replace(/_/g, ' ')}</span>
+                    <time datetime={event.createdAt}>{formatRelativeDate(new Date(event.createdAt))}</time>
+                    {#if event.message}
+                      <p>{event.message}</p>
+                    {/if}
+                  </li>
+                {/each}
+              </ol>
+            </section>
+
+            <section class="detail-section">
+              <header class="section-head">
+                <span>
+                  <MessageSquare size={13} strokeWidth={1.8} aria-hidden="true" />
+                  Transcript
+                </span>
+              </header>
+              {#if visibleMessages(selectedAIItem).length === 0}
+                <p class="muted">No visible chat messages are stored for this request yet.</p>
+              {:else}
+                <ol class="ai-transcript" role="list">
+                  {#each visibleMessages(selectedAIItem) as message (message.id)}
+                    <li class={`role-${message.role}`}>
+                      <span>{message.role}</span>
+                      <p>{message.text}</p>
+                    </li>
+                  {/each}
+                </ol>
+              {/if}
+            </section>
+          {/if}
+        {:else}
         {#if lineageStore.loading && !selectedEntry}
           <div class="detail-empty">Preparing lineage...</div>
         {:else if !selectedEntry}
@@ -578,6 +972,7 @@
             </section>
           {/if}
         {/if}
+        {/if}
       </main>
     </div>
   </div>
@@ -707,9 +1102,55 @@
     overflow-y: auto;
   }
 
-  .lineage-timeline-head {
+  .workspace-view-tabs {
     position: sticky;
     top: 0;
+    z-index: 2;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px;
+    padding: 8px;
+    border-bottom: 1px solid var(--border-faint);
+    background: var(--bg-subtle, var(--bg-app));
+  }
+
+  .workspace-view-tabs button {
+    min-width: 0;
+    min-height: 30px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    padding: 0 7px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-muted);
+    font: inherit;
+    font-size: var(--text-caption);
+    font-weight: 700;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .workspace-view-tabs button:hover,
+  .workspace-view-tabs button:focus-visible {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+    outline: none;
+  }
+
+  .workspace-view-tabs button.active {
+    border-color: var(--border-light);
+    background: var(--bg-card);
+    color: var(--text-primary);
+  }
+
+  .lineage-timeline-head {
+    position: sticky;
+    top: 47px;
     z-index: 1;
     height: 36px;
     display: flex;
@@ -731,7 +1172,7 @@
 
   .timeline-filter {
     position: sticky;
-    top: 36px;
+    top: 83px;
     z-index: 1;
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -896,6 +1337,51 @@
     border-left-color: var(--color-error, #b3261e);
   }
 
+  .ai-thread-row {
+    border-left-color: color-mix(in srgb, var(--accent-primary) 42%, transparent);
+  }
+
+  .ai-thread-row.active {
+    border-left-color: var(--accent-primary);
+  }
+
+  .ai-status-badge {
+    display: inline-flex;
+    align-items: center;
+    min-width: 0;
+    min-height: 22px;
+    padding: 0 7px;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    font-size: var(--text-caption);
+    font-weight: 700;
+    line-height: 1;
+  }
+
+  .ai-status-badge.status-generating {
+    color: var(--accent-primary);
+    border-color: color-mix(in srgb, var(--accent-primary) 28%, var(--border-light));
+  }
+
+  .ai-status-badge.status-proposed {
+    color: var(--color-warning, #a46400);
+    border-color: color-mix(in srgb, var(--color-warning, #a46400) 30%, var(--border-light));
+  }
+
+  .ai-status-badge.status-applied,
+  .ai-status-badge.status-answer {
+    color: var(--color-success, #167348);
+    border-color: color-mix(in srgb, var(--color-success, #167348) 28%, var(--border-light));
+  }
+
+  .ai-status-badge.status-canceled,
+  .ai-status-badge.status-stale,
+  .ai-status-badge.status-error {
+    color: var(--color-error, #b3261e);
+    border-color: color-mix(in srgb, var(--color-error, #b3261e) 28%, var(--border-light));
+  }
+
   .timeline-row-top,
   .timeline-meta {
     display: flex;
@@ -924,10 +1410,95 @@
     overflow-wrap: anywhere;
   }
 
+  .ai-thread-selection {
+    color: var(--text-muted);
+    font-size: var(--text-caption);
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+  }
+
   .lineage-detail {
     min-width: 0;
     overflow-y: auto;
     padding: 18px clamp(16px, 3vw, 36px) 42px;
+  }
+
+  .ai-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .ai-actions button {
+    min-height: 30px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 9px;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    font: inherit;
+    font-size: var(--text-caption);
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .ai-actions button:hover,
+  .ai-actions button:focus-visible {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+    outline: none;
+  }
+
+  .ai-response-text {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: var(--text-body-sm);
+    line-height: 1.55;
+    white-space: pre-wrap;
+  }
+
+  .ai-invocation-meta {
+    margin-bottom: 12px;
+  }
+
+  .ai-context-strip {
+    display: grid;
+    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1fr) minmax(0, 0.9fr);
+    gap: 10px;
+  }
+
+  .ai-context-strip > div {
+    min-width: 0;
+    border-top: 1px solid var(--border-faint);
+    padding-top: 8px;
+  }
+
+  .ai-context-strip span {
+    display: block;
+    margin-bottom: 5px;
+    color: var(--text-muted);
+    font-size: var(--text-caption);
+    font-weight: 700;
+  }
+
+  .ai-context-strip pre {
+    max-height: 148px;
+    margin: 0;
+    padding: 9px;
+    overflow: auto;
+    border: 1px solid var(--border-faint);
+    border-radius: var(--radius-sm);
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
   }
 
   .detail-empty,
@@ -1172,6 +1743,58 @@
     font-weight: 600;
   }
 
+  .ai-event-list,
+  .ai-transcript {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .ai-event-list li,
+  .ai-transcript li {
+    padding: 9px 0;
+    border-top: 1px solid var(--border-faint);
+  }
+
+  .ai-event-list li:first-child,
+  .ai-transcript li:first-child {
+    border-top: 0;
+    padding-top: 0;
+  }
+
+  .ai-event-list span,
+  .ai-transcript span {
+    display: inline-flex;
+    color: var(--text-muted);
+    font-size: var(--text-caption);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0;
+  }
+
+  .ai-event-list time {
+    margin-left: 8px;
+    color: var(--text-muted);
+    font-size: var(--text-caption);
+  }
+
+  .ai-event-list p,
+  .ai-transcript p {
+    margin: 4px 0 0;
+    color: var(--text-secondary);
+    font-size: var(--text-body-sm);
+    line-height: 1.45;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .ai-transcript .role-user p {
+    color: var(--text-primary);
+  }
+
   .version-list li {
     grid-template-columns: minmax(0, 1fr) auto;
   }
@@ -1301,6 +1924,7 @@
 
     .detail-hero,
     .diff-before-after,
+    .ai-context-strip,
     .restore-preview-grid,
     .deleted-line-list li {
       grid-template-columns: 1fr;

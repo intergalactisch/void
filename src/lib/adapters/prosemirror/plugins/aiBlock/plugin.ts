@@ -19,6 +19,12 @@ import type { EditorState, Transaction } from 'prosemirror-state';
 import { Decoration, DecorationSet } from 'prosemirror-view';
 import type { EditorView } from 'prosemirror-view';
 import type { AIBlockState, AIBlockMeta, AIBlockLock, AIBlockPhase } from './state';
+import {
+  createAIContinuationWidget,
+  insertAIContinuation,
+  resolveAIContinuationTargetForBlockId,
+  shouldActivateAIContinuationFromKey,
+} from '../aiContinuation';
 
 export const aiBlockKey = new PluginKey<AIBlockState>('aiBlock');
 
@@ -288,6 +294,7 @@ export function createAIBlockPlugin(
         if (!locks || locks.size === 0) return DecorationSet.empty;
 
         const decorations: Decoration[] = [];
+        const continuationTargets = new Set<string>();
         state.doc.descendants((node, pos) => {
           const blockId = node.attrs?.id;
           if (!blockId) return;
@@ -298,6 +305,23 @@ export function createAIBlockPlugin(
                 class: `void-block--ai-${lock.phase}`,
               })
             );
+
+            if (HARD_LOCK_PHASES.has(lock.phase) && !continuationTargets.has(blockId)) {
+              const target = resolveAIContinuationTargetForBlockId(state, blockId);
+              if (target) {
+                continuationTargets.add(blockId);
+                decorations.push(
+                  Decoration.widget(
+                    target.widgetPos,
+                    (view) => createAIContinuationWidget(view, target),
+                    {
+                      side: 1,
+                      key: `ai-block-continuation-${blockId}-${target.widgetPos}`,
+                    }
+                  )
+                );
+              }
+            }
           }
         });
 
@@ -329,6 +353,19 @@ export function createAIBlockPlugin(
 
         const lock = locks.get(cursorBlockId);
         if (!lock) return false;
+
+        // Enter, or Down at the lower edge, continues below final AI text
+        // instead of leaving the cursor trapped in the hard lock.
+        if (
+          shouldActivateAIContinuationFromKey(view, event) &&
+          HARD_LOCK_PHASES.has(lock.phase)
+        ) {
+          const target = resolveAIContinuationTargetForBlockId(view.state, cursorBlockId);
+          if (target && insertAIContinuation(view, target)) {
+            event.preventDefault();
+            return true;
+          }
+        }
 
         // Escape in an AI block cancels active work or dismisses terminal state.
         if (event.key === 'Escape') {

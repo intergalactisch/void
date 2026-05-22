@@ -85,6 +85,7 @@
   }
 
   function runSuggestion(prompt: string) {
+    if (!aiStore.ensureAIAvailable()) return;
     void submitOptimisticPrompt(prompt);
   }
 
@@ -122,19 +123,19 @@
       <h3>What are you capturing now?</h3>
       <p>Start with a note, a todo cleanup, a rewrite, or research across your workspace.</p>
       <div class="suggestions">
-        <button type="button" onclick={() => runSuggestion('Create a new note for today')}>
+        <button type="button" onclick={() => runSuggestion('Create a new note for today')} disabled={!aiStore.canStartAIWork}>
           <FilePlus2 size={14} strokeWidth={1.8} aria-hidden="true" />
           <span>New note for today</span>
         </button>
-        <button type="button" onclick={() => runSuggestion('Rewrite the current note into clearer action items')}>
+        <button type="button" onclick={() => runSuggestion('Rewrite the current note into clearer action items')} disabled={!aiStore.canStartAIWork}>
           <Wand2 size={14} strokeWidth={1.8} aria-hidden="true" />
           <span>Rewrite into actions</span>
         </button>
-        <button type="button" onclick={() => runSuggestion('Research this topic and create a source-backed note')}>
+        <button type="button" onclick={() => runSuggestion('Research this topic and create a source-backed note')} disabled={!aiStore.canStartAIWork}>
           <Search size={14} strokeWidth={1.8} aria-hidden="true" />
           <span>Research into a note</span>
         </button>
-        <button type="button" onclick={() => runSuggestion('Find open todos and group them by priority')}>
+        <button type="button" onclick={() => runSuggestion('Find open todos and group them by priority')} disabled={!aiStore.canStartAIWork}>
           <ListTodo size={14} strokeWidth={1.8} aria-hidden="true" />
           <span>Group open todos</span>
         </button>
@@ -267,6 +268,11 @@
     border-color: var(--border-medium);
     color: var(--text-primary);
     background: var(--bg-hover);
+  }
+
+  .suggestions button:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
   }
 
   .suggestions button :global(svg) {

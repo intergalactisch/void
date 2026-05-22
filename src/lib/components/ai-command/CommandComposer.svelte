@@ -15,6 +15,7 @@
 
   let isCancellable = $derived(aiStore.isProcessing || aiStore.isStreaming || aiStore.agentRunState.isRunning);
   let isRouting = $derived(aiStore.isRouting || commandCenterStore.hasRoutingPendingTurn);
+  let isUnavailable = $derived(!aiStore.canStartAIWork);
   let isBusy = $derived(isCancellable || isRouting);
 
   $effect(() => {
@@ -32,6 +33,7 @@
   async function submit() {
     const prompt = input.trim();
     if (!prompt) return;
+    if (isUnavailable) return;
 
     if (isBusy && !isCancellable) return;
 
@@ -96,7 +98,8 @@
     aria-label="AI command"
     class="composer-input"
     rows="1"
-    placeholder={isCancelling ? 'Cancelling...' : isRouting ? 'Understanding request...' : isCancellable ? 'Type to interrupt the current work...' : 'Ask Void to create, research, edit, or organize...'}
+    placeholder={isUnavailable ? (aiStore.availabilityMessage ?? 'Install a local AI to use this feature') : isCancelling ? 'Cancelling...' : isRouting ? 'Understanding request...' : isCancellable ? 'Type to interrupt the current work...' : 'Ask Void to create, research, edit, or organize...'}
+    disabled={isUnavailable}
     oninput={resize}
     onkeydown={onKeydown}
     onfocus={() => { focused = true; }}
@@ -109,7 +112,7 @@
         <Square size={14} strokeWidth={2} aria-hidden="true" />
       </button>
     {:else}
-      <button type="button" class="composer-button send" onclick={submit} disabled={!input.trim() || isRouting} aria-label="Send command">
+      <button type="button" class="composer-button send" onclick={submit} disabled={isUnavailable || !input.trim() || isRouting} aria-label="Send command">
         <Send size={14} strokeWidth={2} aria-hidden="true" />
       </button>
     {/if}

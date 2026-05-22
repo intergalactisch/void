@@ -6,7 +6,8 @@
    * Spans full app width below both sidebar and content area.
    */
 
-  import { pulseStore, syncStore, uiStore } from '$lib/stores';
+  import { editorStore, pulseStore, syncStore, uiStore } from '$lib/stores';
+  import { AlertTriangle, Check, Cloud, RefreshCw } from '@lucide/svelte';
 
   interface Props {
     /** Whether a document is currently open */
@@ -42,17 +43,35 @@
   }: Props = $props();
 
   let pulseCount = $derived(pulseStore.count);
+  let openEditorChangeCount = $derived.by(() =>
+    editorStore.tabs.filter((tab) => tab.isDirty || tab.isSaving).length
+  );
+  let hasOpenEditorChanges = $derived(openEditorChangeCount > 0);
+  let effectiveSyncKind = $derived.by(() =>
+    syncStore.status.kind === 'ready' && hasOpenEditorChanges ? 'pending' : syncStore.status.kind
+  );
+  let syncDisplayLabel = $derived.by(() =>
+    syncStore.status.kind === 'ready' && hasOpenEditorChanges ? 'GitHub pending' : syncStore.displayLabel
+  );
   let syncTitle = $derived.by(() => {
-    const pieces = [syncStore.label];
+    const pieces = [syncDisplayLabel];
     if (syncStore.status.ahead > 0) pieces.push(`${syncStore.status.ahead} ahead`);
     if (syncStore.status.behind > 0) pieces.push(`${syncStore.status.behind} behind`);
     if (syncStore.status.changedFiles > 0) pieces.push(`${syncStore.status.changedFiles} changed`);
+    if (openEditorChangeCount > 0) {
+      pieces.push(`${openEditorChangeCount} open note${openEditorChangeCount === 1 ? '' : 's'} pending`);
+    }
+    if (effectiveSyncKind === 'ready' || effectiveSyncKind === 'pending') pieces.push('Click to sync now');
     return pieces.join(' · ');
   });
 
-  function openSyncSurface(): void {
-    if (syncStore.status.kind === 'conflicted' || syncStore.status.conflicts.length > 0) {
+  async function handleSyncClick(): Promise<void> {
+    if (effectiveSyncKind === 'conflicted' || syncStore.status.conflicts.length > 0) {
       uiStore.openSyncConflictWorkspace();
+      return;
+    }
+    if (effectiveSyncKind === 'ready' || effectiveSyncKind === 'pending') {
+      await syncStore.syncNow({ mode: 'manual' });
       return;
     }
     uiStore.openSettings();
@@ -105,18 +124,26 @@
     <button
       type="button"
       class="statusbar-sync-btn"
-      class:statusbar-sync-active={syncStore.status.kind === 'ready'}
-      class:statusbar-sync-warn={syncStore.status.kind === 'pending' || syncStore.status.kind === 'auth-required' || syncStore.status.kind === 'paused'}
-      class:statusbar-sync-error={syncStore.status.kind === 'error' || syncStore.status.kind === 'conflicted'}
-      onclick={openSyncSurface}
+      class:statusbar-sync-active={effectiveSyncKind === 'ready'}
+      class:statusbar-sync-recent={!!syncStore.recentSyncLabel && !hasOpenEditorChanges}
+      class:statusbar-sync-warn={effectiveSyncKind === 'pending' || effectiveSyncKind === 'auth-required' || effectiveSyncKind === 'paused'}
+      class:statusbar-sync-error={effectiveSyncKind === 'error' || effectiveSyncKind === 'conflicted'}
+      onclick={handleSyncClick}
       title={syncTitle}
       aria-label={syncTitle}
     >
-      <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.6">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M16 16l-4 4m0 0l-4-4m4 4V4" />
-        <path stroke-linecap="round" stroke-linejoin="round" d="M20 10.5A5.5 5.5 0 0010.2 7 4 4 0 004 10.75 4.25 4.25 0 008.25 15H10" />
-      </svg>
-      <span class="statusbar-sync-label">{syncStore.label}</span>
+      {#if effectiveSyncKind === 'syncing'}
+        <span class="statusbar-sync-icon-spinning" aria-hidden="true">
+          <RefreshCw size={12} strokeWidth={1.7} />
+        </span>
+      {:else if effectiveSyncKind === 'error' || effectiveSyncKind === 'conflicted' || effectiveSyncKind === 'auth-required'}
+        <AlertTriangle size={12} strokeWidth={1.7} aria-hidden="true" />
+      {:else if effectiveSyncKind === 'ready' || (syncStore.recentSyncLabel && !hasOpenEditorChanges)}
+        <Check size={12} strokeWidth={1.8} aria-hidden="true" />
+      {:else}
+        <Cloud size={12} strokeWidth={1.6} aria-hidden="true" />
+      {/if}
+      <span class="statusbar-sync-label">{syncDisplayLabel}</span>
     </button>
     <span class="statusbar-separator" aria-hidden="true">&middot;</span>
     {#if onToggleOperations}
@@ -290,6 +317,10 @@
     color: var(--color-success);
   }
 
+  .statusbar-sync-recent {
+    color: var(--color-success);
+  }
+
   .statusbar-sync-warn {
     color: var(--color-warning);
   }
@@ -299,11 +330,18 @@
   }
 
   .statusbar-sync-label {
-    max-width: 100px;
+    max-width: 132px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     font-weight: 500;
+  }
+
+  .statusbar-sync-icon-spinning {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    animation: spin 1.2s linear infinite;
   }
 
   .statusbar-ops-btn:hover {

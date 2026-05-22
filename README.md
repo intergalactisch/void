@@ -62,7 +62,7 @@ For the full architecture guide, the Artifact System, the event bus, and the DI 
 
 ## Contributing
 
-PRs welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md) for the dev setup, conventions, and the 7-step recipe for adding a feature. Browse [good first issues](https://github.com/intergalactisch/void/issues?q=is:open+label:%22good+first+issue%22) for low-friction places to dive in.
+Public pull requests are disabled. Please start with an issue or discussion; maintainers and invited collaborators can use [CONTRIBUTING.md](CONTRIBUTING.md) for the dev setup and internal PR workflow.
 
 Security report? Don't open a public issue — see [SECURITY.md](SECURITY.md).
 

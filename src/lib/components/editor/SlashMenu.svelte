@@ -45,9 +45,19 @@
     onSelect: (command: RegisteredCommand) => void;
     /** Callback to close the menu */
     onClose: () => void;
+    aiUnavailable?: boolean;
+    aiUnavailableMessage?: string;
+    onAIUnavailable?: () => void;
   }
 
-  let { menuState, onSelect, onClose }: Props = $props();
+  let {
+    menuState,
+    onSelect,
+    onClose,
+    aiUnavailable = false,
+    aiUnavailableMessage = 'Install a local AI to use this feature.',
+    onAIUnavailable,
+  }: Props = $props();
 
   // Local selected index for keyboard navigation (synced from menuState but can be overridden)
   let selectedIndex = $state(0);
@@ -208,7 +218,9 @@
       case 'Tab':
         event.preventDefault();
         event.stopPropagation();
-        if (!menuState.isAIPromptMode) {
+        if (menuState.isAIPromptMode && aiUnavailable) {
+          onAIUnavailable?.();
+        } else if (!menuState.isAIPromptMode) {
           const command = commands[selectedIndex];
           if (command) onSelect(command);
         }
@@ -301,7 +313,7 @@
       {#if menuState.isAIPromptMode}
         <div class="slash-menu-ai-mode">
           <span class="slash-menu-ai-badge">/ai</span>
-          <span class="slash-menu-ai-hint">Press Enter to generate</span>
+          <span class="slash-menu-ai-hint">{aiUnavailable ? aiUnavailableMessage : 'Press Enter to generate'}</span>
         </div>
       {:else if isAIQueryHint}
         <div class="slash-menu-ai-mode">
@@ -371,8 +383,10 @@
     <!-- Footer hint -->
     <div class="slash-menu-footer">
       {#if menuState.isAIPromptMode}
-        <span class="slash-menu-footer-key">Enter</span> generate
-        <span class="slash-menu-footer-sep">\u00B7</span>
+        {#if !aiUnavailable}
+          <span class="slash-menu-footer-key">Enter</span> generate
+          <span class="slash-menu-footer-sep">\u00B7</span>
+        {/if}
         <span class="slash-menu-footer-key">Esc</span> close
       {:else if isAIQueryHint}
         <span class="slash-menu-footer-key">Space</span> add prompt

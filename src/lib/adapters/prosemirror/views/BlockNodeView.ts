@@ -387,6 +387,13 @@ export class BlockNodeView implements NodeView {
   }
 
   private setupEventListeners(): void {
+    this.dom.addEventListener('mousedown', (event) => {
+      this.handleEditableWhitespaceDoubleClick(event);
+    });
+    this.dom.addEventListener('dblclick', (event) => {
+      this.handleEditableWhitespaceDoubleClick(event);
+    });
+
     // ── Grip: mousedown decides between drag and click ──
     // - mouseup with no movement above 4px → click → open block-action menu
     // - mousemove > 4px → custom pointer drag (ghost preview, drop indicator)
@@ -525,6 +532,100 @@ export class BlockNodeView implements NodeView {
       });
       this.view.dispatch(tr);
     });
+  }
+
+  private handleEditableWhitespaceDoubleClick(event: MouseEvent): void {
+    if (event.button !== 0 || event.detail < 2) return;
+    if (!this.isEditableWhitespaceEvent(event)) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    this.placeCaretNearWhitespace(event);
+  }
+
+  private isEditableWhitespaceEvent(event: MouseEvent): boolean {
+    if (!this.contentDOM || !this.node.isTextblock) return false;
+
+    const typeName = this.node.type.name;
+    if (typeName !== 'paragraph' && typeName !== 'heading' && typeName !== 'todoItem') {
+      return false;
+    }
+
+    const target = event.target;
+    if (!(target instanceof Node)) return false;
+
+    const targetEl = target instanceof Element ? target : target.parentElement;
+    if (
+      targetEl?.closest(
+        'button,input,textarea,select,a,[contenteditable="false"],.void-gutter,.void-ai-action-bar'
+      )
+    ) {
+      return false;
+    }
+
+    if (this.contentDOM === target || this.contentDOM.contains(target)) {
+      return !this.isPointInsideContentTextLine(event.clientY);
+    }
+
+    return this.dom === target || this.dom.contains(target);
+  }
+
+  private isPointInsideContentTextLine(clientY: number): boolean {
+    const lineRects = this.getContentTextLineRects();
+    if (lineRects.length > 0) {
+      return lineRects.some((rect) => clientY >= rect.top - 2 && clientY <= rect.bottom + 2);
+    }
+
+    if (!this.contentDOM) return false;
+    const rect = this.contentDOM.getBoundingClientRect();
+    if (rect.height <= 0) return false;
+
+    const style = window.getComputedStyle(this.contentDOM);
+    const paddingTop = Number.parseFloat(style.paddingTop) || 0;
+    const paddingBottom = Number.parseFloat(style.paddingBottom) || 0;
+    const textTop = rect.top + paddingTop;
+    const textBottom = rect.bottom - paddingBottom;
+
+    return clientY >= textTop - 2 && clientY <= textBottom + 2;
+  }
+
+  private getContentTextLineRects(): DOMRect[] {
+    if (!this.contentDOM || !this.contentDOM.hasChildNodes()) return [];
+
+    const range = document.createRange();
+    range.selectNodeContents(this.contentDOM);
+
+    const rects =
+      typeof range.getClientRects === 'function'
+        ? Array.from(range.getClientRects()).filter((rect) => rect.height > 0)
+        : [];
+    range.detach?.();
+
+    return rects;
+  }
+
+  private placeCaretNearWhitespace(event: MouseEvent): void {
+    const pos = this.getPos();
+    if (pos === undefined) return;
+
+    const doc = this.view.state.doc;
+    const start = pos + 1;
+    const end = pos + this.node.nodeSize - 1;
+    const rect = this.contentDOM?.getBoundingClientRect();
+    const midpoint = rect && rect.height > 0 ? rect.top + rect.height / 2 : Number.NEGATIVE_INFINITY;
+    const target = event.clientY < midpoint ? start : end;
+    const clamped = Math.max(0, Math.min(target, doc.content.size));
+
+    try {
+      this.view.dispatch(this.view.state.tr.setSelection(TextSelection.create(doc, clamped)));
+      this.view.focus();
+    } catch {
+      // Browser coordinates can land just outside the textblock; keep the
+      // editor in charge instead of letting native line selection take over.
+      const $pos = doc.resolve(Math.max(0, Math.min(end, doc.content.size)));
+      this.view.dispatch(this.view.state.tr.setSelection(TextSelection.near($pos, -1)));
+      this.view.focus();
+    }
   }
 
   /**

@@ -26,7 +26,7 @@ export class ProvenanceServiceImpl implements ProvenanceService {
   async record(
     noteName: string,
     eventData: Omit<ProvenanceEvent, 'id' | 'ts'>
-  ): Promise<Result<void, Error>> {
+  ): Promise<Result<ProvenanceEvent, Error>> {
     return this.lock.withLock(`provenance:${noteName}`, async () => {
       const event: ProvenanceEvent = {
         id: `evt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -42,9 +42,10 @@ export class ProvenanceServiceImpl implements ProvenanceService {
 
       if (result.ok) {
         events.emit('provenance:recorded', { noteName, event });
+        return ok(event);
       }
 
-      return result;
+      return err(result.error);
     });
   }
 

@@ -146,7 +146,7 @@ export interface AIAssistantService {
    * Use this when the user explicitly wants a new conversation.
    * @returns The newly created conversation
    */
-  createNewConversation(): Promise<Conversation>;
+  createNewConversation(options?: { documentPath?: string | null }): Promise<Conversation>;
 
   /**
    * Get all conversations.

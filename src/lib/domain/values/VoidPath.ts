@@ -32,6 +32,14 @@ export function branchDir(noteName: string): string {
 }
 
 /**
+ * Get the inline AI thread file for a note.
+ * @returns Relative path like "inline-ai/my-note.json"
+ */
+export function inlineAIPath(noteName: string): string {
+  return `inline-ai/${sanitizeName(noteName)}.json`;
+}
+
+/**
  * Get the index directory path.
  * @returns "index"
  */

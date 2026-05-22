@@ -139,6 +139,8 @@ import {
   type ClipboardWatcher,
   type ClipboardWriter,
   AIRewriteServiceImpl,
+  InlineAIThreadServiceImpl,
+  NoteAIActivityServiceImpl,
   UpdaterServiceImpl,
   ToolRegistryServiceImpl,
   AIAssistantServiceImpl,
@@ -188,6 +190,8 @@ import {
   credentialsStore,
   toastStore,
   editorStore,
+  inlineAIStore,
+  noteAIActivityStore,
   commandCenterStore,
   uiStore,
   keymapStore,
@@ -213,6 +217,8 @@ import type {
   FileService,
   CredentialService,
   EditorService,
+  InlineAIThreadService,
+  NoteAIActivityService,
   CommandService,
   AIRewriteService,
   ToolRegistryService,
@@ -345,6 +351,10 @@ export interface AppContext {
   updater: UpdaterService;
   /** GitHub-backed local-first note sync. */
   sync: SyncService;
+  /** Persisted sidecar inline AI responses. */
+  inlineAI: InlineAIThreadService;
+  /** Per-note AI conversation and change history read model. */
+  noteAIActivity: NoteAIActivityService;
 }
 
 /**
@@ -890,6 +900,26 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
     )
   );
 
+  container.register(TOKENS.InlineAIThreadService, () =>
+    new InlineAIThreadServiceImpl(
+      container.resolve<VoidStoragePort>(TOKENS.VoidStorage),
+      notesPath,
+      container.resolve<AIAssistantService>(TOKENS.AIAssistantService),
+      container.resolve<NoteCollaborationService>(TOKENS.NoteCollaborationService),
+      container.resolve<EditorService>(TOKENS.EditorService),
+      container.resolve<ProvenanceService>(TOKENS.ProvenanceService),
+    )
+  );
+
+  container.register(TOKENS.NoteAIActivityService, () =>
+    new NoteAIActivityServiceImpl(
+      container.resolve<InlineAIThreadService>(TOKENS.InlineAIThreadService),
+      container.resolve<AIAssistantService>(TOKENS.AIAssistantService),
+      container.resolve<ProvenanceService>(TOKENS.ProvenanceService),
+      container.resolve<LineageService>(TOKENS.LineageService),
+    )
+  );
+
   container.register(TOKENS.CommitmentLineageService, () =>
     new CommitmentLineageServiceImpl(
       container.resolve<TodoService>(TOKENS.TodoService),
@@ -1143,6 +1173,9 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
   const capture = container.resolve<CaptureService>(TOKENS.CaptureService);
   const updater = container.resolve<UpdaterService>(TOKENS.UpdaterService);
   const sync = container.resolve<SyncService>(TOKENS.SyncService);
+  const inlineAI = container.resolve<InlineAIThreadService>(TOKENS.InlineAIThreadService);
+  const noteAIActivity = container.resolve<NoteAIActivityService>(TOKENS.NoteAIActivityService);
+  editor.setInlineAIThreadService(inlineAI);
   const gitRepository = container.resolve<GitRepositoryPort>(TOKENS.GitRepository);
 
   // Wire the global capture window + OS-level shortcut. In `useMocks` mode
@@ -1197,11 +1230,10 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
   events.on('error:user-facing', ({ source, error }) => {
     toastStore.error(`${source}: ${error.message}`, { duration: 6000 });
   });
-  events.on('sync:completed', () => {
-    toastStore.success('Synced with GitHub', { duration: 4000 });
-  });
-  events.on('sync:failed', ({ error }) => {
-    toastStore.error(`GitHub sync failed: ${error.message}`, { duration: 8000 });
+  events.on('sync:failed', ({ error, mode, actionable }) => {
+    if (!actionable) return;
+    const prefix = mode === 'manual' ? 'GitHub sync failed' : 'GitHub sync needs attention';
+    toastStore.error(`${prefix}: ${error.message}`, { duration: 8000 });
   });
   events.on('sync:conflict', ({ conflicts }) => {
     toastStore.warning(`${conflicts.length} sync conflict${conflicts.length === 1 ? '' : 's'} need review`, {
@@ -1215,9 +1247,61 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
     autoSyncTimer = null;
   };
 
+  let autoSyncAuthPrepared = false;
+  let autoSyncAuthPreflight: Promise<boolean> | null = null;
+  let autoSyncAuthToastShown = false;
+
+  const requiresAutoSyncAuth = (): boolean => {
+    const syncSettings = settings.current().sync;
+    return syncSettings.enabled
+      && syncSettings.autoSync
+      && !syncSettings.paused
+      && !!syncSettings.repository
+      && syncSettings.authMode !== 'system-git';
+  };
+
+  const showAutoSyncAuthFailure = (error: Error): void => {
+    if (autoSyncAuthToastShown) return;
+    autoSyncAuthToastShown = true;
+    toastStore.warning(`GitHub autosync needs Keychain access: ${error.message}`, {
+      duration: 8000,
+      onClick: () => uiStore.openSettings(),
+    });
+  };
+
+  const prepareAutoSyncAuth = async (): Promise<boolean> => {
+    if (!requiresAutoSyncAuth()) return true;
+    if (autoSyncAuthPrepared) return true;
+    if (autoSyncAuthPreflight) return autoSyncAuthPreflight;
+
+    autoSyncAuthPreflight = (async () => {
+      const result = await sync.prepareAutomaticSyncAuth();
+      if (result.ok) {
+        autoSyncAuthPrepared = true;
+        autoSyncAuthToastShown = false;
+        return true;
+      }
+      autoSyncAuthPrepared = false;
+      showAutoSyncAuthFailure(result.error);
+      return false;
+    })().finally(() => {
+      autoSyncAuthPreflight = null;
+    });
+
+    return autoSyncAuthPreflight;
+  };
+
+  events.on('sync:auth-changed', ({ auth }) => {
+    autoSyncAuthPrepared = auth === 'signed-in';
+    if (auth === 'signed-in') autoSyncAuthToastShown = false;
+  });
+
   const canAutoSync = (): boolean => {
     const syncSettings = settings.current().sync;
     if (!syncSettings.enabled || !syncSettings.autoSync || syncSettings.paused || !syncSettings.repository) {
+      return false;
+    }
+    if (requiresAutoSyncAuth() && !autoSyncAuthPrepared) {
       return false;
     }
     if (syncStore.status.operation !== 'idle' || syncStore.status.kind === 'syncing') {
@@ -1235,9 +1319,20 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
       clearAutoSyncTimer();
       return;
     }
+    if (requiresAutoSyncAuth() && !autoSyncAuthPrepared) {
+      clearAutoSyncTimer();
+      void prepareAutoSyncAuth().then((ready) => {
+        if (ready) scheduleAutoSync(delayMs);
+      });
+      return;
+    }
     clearAutoSyncTimer();
     autoSyncTimer = setTimeout(async () => {
       autoSyncTimer = null;
+      if (requiresAutoSyncAuth() && !autoSyncAuthPrepared) {
+        const ready = await prepareAutoSyncAuth();
+        if (!ready) return;
+      }
       if (!canAutoSync()) {
         scheduleAutoSync(30_000);
         return;
@@ -1259,14 +1354,17 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
         log.debug('Skipped background GitHub sync; no Git changes');
         return;
       }
-      const result = await sync.syncNow();
+      const result = await sync.syncNow({ mode: 'background' });
       if (!result.ok) {
         log.warn('Background GitHub sync failed', { error: result.error.message });
       }
     }, delayMs);
   };
 
-  events.on('document:saved', () => scheduleAutoSync());
+  events.on('document:saved', () => {
+    void syncStore.refreshStatus({ authProbe: 'passive' });
+    scheduleAutoSync();
+  });
   events.on('file:changed', () => scheduleAutoSync(60_000));
 
   events.on('settings:changed', ({ key }) => {
@@ -1292,6 +1390,7 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
   aiStore.initAgentOrchestration(agentOrchestration);
   aiStore.initAgentIntake(agentIntake);
   aiStore.initContextProvider(container.resolve<ContextProviderPort>(TOKENS.ContextProvider));
+  await aiStore.refreshAvailability();
   toolStore.init(toolRegistry);
   todoStore.init(todoService);
 
@@ -1313,6 +1412,8 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
     sidebarPreferences,
   });
   editorStore.init(editor);
+  inlineAIStore.init(inlineAI);
+  noteAIActivityStore.init(noteAIActivity);
   operationsStore.init(operationService);
   filesStore.init(files);
   credentialsStore.init(credentials);
@@ -1403,7 +1504,12 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
   void pulseStore.refresh();
   branchesStore.init(container.resolve<import('./ports/inbound/BranchService').BranchService>(TOKENS.BranchService));
   clipboardStore.init(clipboard);
-  void syncStore.refreshStatus();
+  void (async () => {
+    if (requiresAutoSyncAuth()) {
+      await prepareAutoSyncAuth();
+    }
+    await syncStore.refreshStatus({ authProbe: 'passive' });
+  })();
 
   // Start tracking command + note interactions.
   events.on('note:opened', ({ path }) => frecency.record('note', path));
@@ -1480,6 +1586,8 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
     captureManager,
     updater,
     sync,
+    inlineAI,
+    noteAIActivity,
   };
 
   // Track capture-related disposers so shutdown() can tear them down.
@@ -1544,6 +1652,8 @@ export async function reinitializeAI(): Promise<void> {
     codexPath: codexBinaryPath,
     aiReasoningEffort,
   });
+
+  await aiStore.refreshAvailability();
 }
 
 /**

@@ -39,6 +39,7 @@ Void is a desktop app that reads and writes local Markdown files and shells out 
 - **URL scheme allowlist** on `openUrl` — only `http:`, `https:`, `mailto:`. No `javascript:`, `file:`, or `data:` URIs.
 - **Concurrent-process cap** on spawned CLI children, plus an allowlist on binary names.
 - **Credentials in the macOS Keychain** via the `keyring` crate — never plain files or localStorage.
+- **Restricted GitHub contribution surface** — public PR creation is disabled, Actions use read-only default tokens, Actions cannot create or approve PRs, and CI refuses to execute code from forked PRs.
 - **No telemetry**. Void does not phone home.
 
 For details on what the Tauri side exposes, see `src-tauri/capabilities/default.json` and `src-tauri/src/commands/`.

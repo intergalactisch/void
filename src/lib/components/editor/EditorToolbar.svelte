@@ -22,6 +22,9 @@
     /** Callback when AI rewrite is invoked — called with selection text + range
      *  before focus leaves the editor (so we can preserve the range). */
     onAIPrompt?: (selectionText: string, selectionRange: Range) => void;
+    aiUnavailable?: boolean;
+    aiUnavailableMessage?: string;
+    onAIUnavailable?: () => void;
   }
 
   let {
@@ -32,6 +35,9 @@
     editorElement = null,
     onAction,
     onAIPrompt,
+    aiUnavailable = false,
+    aiUnavailableMessage = 'Install a local AI to use this feature.',
+    onAIUnavailable,
   }: Props = $props();
 
   /* ── Visibility & position ──────────────────────────────────────────── */
@@ -541,11 +547,16 @@
     <button
       type="button"
       class="tb-btn tb-btn-ai"
-      title="Rewrite with AI (⌘J)"
+      class:tb-btn-ai-unavailable={aiUnavailable}
+      title={aiUnavailable ? aiUnavailableMessage : 'Rewrite with AI (⌘J)'}
       aria-label="AI rewrite selection"
       onmousedown={(e) => {
         e.preventDefault();
         e.stopPropagation();
+        if (aiUnavailable) {
+          onAIUnavailable?.();
+          return;
+        }
         const sel = window.getSelection();
         if (sel && !sel.isCollapsed && sel.rangeCount > 0) {
           onAIPrompt?.(sel.toString(), sel.getRangeAt(0).cloneRange());
@@ -688,6 +699,12 @@
   .tb-btn-ai:hover {
     background: rgba(99, 102, 241, 0.16);
     color: var(--ai-accent-strong);
+  }
+
+  .tb-btn-ai-unavailable,
+  .tb-btn-ai-unavailable:hover {
+    background: var(--bg-hover);
+    color: var(--text-muted);
   }
   .tb-btn-ai .tb-btn-label {
     font-size: 12px;

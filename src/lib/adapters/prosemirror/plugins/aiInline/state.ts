@@ -17,6 +17,19 @@ export type AIInlineStatus = 'idle' | 'prompting' | 'processing' | 'preview' | '
  */
 export type AIInlineMode = 'generate' | 'selection';
 
+export type InlineAIComposerStatus = 'draft' | 'submitting';
+
+export interface InlineAIComposer {
+  id: string;
+  from: number;
+  to: number;
+  selectionText: string;
+  draftPrompt: string;
+  status: InlineAIComposerStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
 /**
  * State for the AI inline plugin.
  */
@@ -47,6 +60,10 @@ export interface AIInlineState {
   toolCount: number;
   /** Conversation containing the persisted inline AI turn. */
   conversationId: string | null;
+  /** Floating draft composers anchored to selected ranges. */
+  composers: InlineAIComposer[];
+  /** Composer currently expanded in the overlay UI. */
+  activeComposerId: string | null;
 }
 
 /**
@@ -66,6 +83,8 @@ export const INITIAL_STATE: AIInlineState = {
   didMutate: false,
   toolCount: 0,
   conversationId: null,
+  composers: [],
+  activeComposerId: null,
 };
 
 /**
@@ -79,8 +98,13 @@ export const aiInlineKey = new PluginKey<AIInlineState>('aiInline');
 export type AIInlineMeta =
   | { type: 'START'; prompt: string; from: number; to: number; originalContent?: string }
   | { type: 'PROMPT_OPEN'; from: number; to: number; selectionText: string }
-  | { type: 'PROMPT_SUBMIT'; prompt: string }
-  | { type: 'PROMPT_CANCEL' }
+  | { type: 'PROMPT_SUBMIT'; prompt: string; composerId?: string }
+  | { type: 'PROMPT_CANCEL'; composerId?: string }
+  | { type: 'COMPOSER_OPEN'; id?: string; from: number; to: number; selectionText: string }
+  | { type: 'COMPOSER_UPDATE_DRAFT'; id: string; prompt: string }
+  | { type: 'COMPOSER_SUBMIT'; id: string; prompt: string }
+  | { type: 'COMPOSER_CANCEL'; id: string }
+  | { type: 'COMPOSER_FOCUS'; id: string }
   | {
       type: 'PREVIEW';
       resultMarkdown: string;

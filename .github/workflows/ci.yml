@@ -2,13 +2,21 @@ name: CI
 
 on:
   pull_request:
+    branches:
+      - main
   push:
     branches:
       - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   check:
     name: Check & test
+    # External fork PRs are untrusted. Keep CI for collaborator branches only.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: macos-14
 
     steps:

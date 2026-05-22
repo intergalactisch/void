@@ -20,9 +20,11 @@ import type { ResourceLockSnapshot } from './queue/ResourceLock';
 import type {
   SyncAuthState,
   SyncConflict,
+  SyncMode,
   SyncOperation,
   SyncStatus,
 } from '$lib/domain/values/Sync';
+import type { EditorInlineAIComposerState } from '$lib/ports/outbound/EditorPort';
 
 export type { Settings };
 
@@ -80,6 +82,7 @@ export type EventMap = {
   'editor:block-ai-phase': { blockId: string; operation: string; phase: string };
   'editor:block-ai-active-target': { blockId: string | null };
   'editor:block-scrolled-into-view': { blockId: string; mode: 'nearest' | 'center' | 'smart' };
+  'editor:ai-inline-composers-change': EditorInlineAIComposerState;
 
   // Document events
   'document:opened': { document: Document };
@@ -94,10 +97,10 @@ export type EventMap = {
   'error:user-facing': { source: string; error: Error };
 
   // GitHub cloud sync events
-  'sync:started': { operation: SyncOperation };
+  'sync:started': { operation: SyncOperation; mode: SyncMode };
   'sync:status-changed': { status: SyncStatus };
-  'sync:completed': { status: SyncStatus };
-  'sync:failed': { error: Error };
+  'sync:completed': { status: SyncStatus; mode: SyncMode };
+  'sync:failed': { error: Error; mode: SyncMode; actionable: boolean };
   'sync:conflict': { conflicts: SyncConflict[] };
   'sync:auth-changed': { auth: SyncAuthState };
 

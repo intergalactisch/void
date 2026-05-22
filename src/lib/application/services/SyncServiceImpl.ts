@@ -34,11 +34,13 @@ import {
   type GitHubNameAvailability,
   type GitHubRepoSummary,
   type GitHubUser,
+  type SyncAuthProbe,
   type SyncAuthState,
   type SyncConflict,
   type SyncConflictPreview,
   type SyncConflictResolution,
   type SyncConflictSession,
+  type SyncMode,
   type SyncOperation,
   type SyncSettings,
   type SyncStatus,
@@ -83,6 +85,7 @@ export class SyncServiceImpl implements SyncService {
   private syncInFlight: Promise<Result<SyncStatus, Error>> | null = null;
   private currentUser: GitHubUser | null = null;
   private lastAuthError: Error | null = null;
+  private activeSyncMode: SyncMode = 'manual';
   private conflictSession: SyncConflictSession | null = null;
   private voidReadyCache = new Map<string, { checkedAt: number; value: GitHubVoidReadyProbe }>();
   /**
@@ -122,7 +125,8 @@ export class SyncServiceImpl implements SyncService {
     };
   }
 
-  async refreshStatus(): Promise<Result<SyncStatus, Error>> {
+  async refreshStatus(options: { authProbe?: SyncAuthProbe } = {}): Promise<Result<SyncStatus, Error>> {
+    const authProbe = options.authProbe ?? 'keychain';
     const settings = this.syncSettings();
     this.setOperation('detecting');
 
@@ -132,22 +136,27 @@ export class SyncServiceImpl implements SyncService {
         ...EMPTY_SYNC_STATUS,
         kind: 'error' as const,
         operation: 'idle' as const,
-        auth: await this.authState(),
+        auth: await this.authState(authProbe),
         message: repo.error.message,
       };
       this.updateStatus(next);
       return err(repo.error);
     }
 
-    const auth = await this.authState();
+    const auth = await this.authState(authProbe);
     // Lazily resolve the GitHub user once per session so the UI can show
     // "Signed in as @login" without forcing the user to re-authenticate.
     if (auth === 'signed-in' && !this.currentUser) {
-      const token = await this.getToken();
+      const token = await this.getToken({ allowKeychain: authProbe === 'keychain' });
       if (token) {
         const profile = await this.github.validateToken(token);
         if (profile.ok) {
           this.currentUser = profile.value;
+        }
+      } else if (authProbe === 'passive') {
+        const account = this.settings.current().githubAccount;
+        if (account?.login) {
+          this.currentUser = { login: account.login, name: account.name ?? null };
         }
       }
     }
@@ -155,13 +164,13 @@ export class SyncServiceImpl implements SyncService {
       this.currentUser = null;
     }
 
-    const next = syncStatusFromRepo({
+    const next = this.withEditorPending(syncStatusFromRepo({
       settings,
       repo: repo.value,
       auth,
       operation: 'idle',
       message: this.authErrorMessage(),
-    });
+    }));
     const session = await this.loadConflictSession();
     if (session.ok && session.value && isActiveConflictSession(session.value)) {
       const conflictStatus = {
@@ -185,6 +194,36 @@ export class SyncServiceImpl implements SyncService {
 
     this.updateStatus(next);
     return ok(next);
+  }
+
+  async prepareAutomaticSyncAuth(): Promise<Result<SyncAuthState, Error>> {
+    if (this.syncSettings().authMode === 'system-git') {
+      const next = { ...this.status, auth: 'unknown' as const, message: null };
+      this.updateStatus(next);
+      return ok('unknown');
+    }
+
+    const token = await this.getToken({ allowKeychain: true });
+    if (!token) {
+      const message = this.authErrorMessage() ?? 'GitHub sign-in is required before automatic sync can run';
+      this.updateStatus({
+        ...this.status,
+        operation: 'idle',
+        kind: 'auth-required',
+        auth: this.lastAuthError ? 'expired' : 'signed-out',
+        message,
+      });
+      return err(new Error(message));
+    }
+
+    this.lastAuthError = null;
+    this.updateStatus({
+      ...this.status,
+      operation: 'idle',
+      auth: 'signed-in',
+      message: this.status.kind === 'auth-required' ? null : this.status.message,
+    });
+    return ok('signed-in');
   }
 
   async connectWithToken(token: string): Promise<Result<GitHubUser, Error>> {
@@ -394,7 +433,7 @@ export class SyncServiceImpl implements SyncService {
       lastSyncAt: new Date().toISOString(),
     });
     await this.refreshStatus();
-    events.emit('sync:completed', { status: this.getStatus() });
+    events.emit('sync:completed', { status: this.getStatus(), mode: 'manual' });
     return next;
   }
 
@@ -457,15 +496,19 @@ export class SyncServiceImpl implements SyncService {
       artifactPolicy: current.artifactPolicy,
     });
     await this.saveConflictSession(null);
-    this.updateStatus({ ...EMPTY_SYNC_STATUS, auth: await this.authState() });
+    this.updateStatus({ ...EMPTY_SYNC_STATUS, auth: await this.authState('passive') });
     events.emit('sync:status-changed', { status: this.getStatus() });
     return next;
   }
 
-  async syncNow(): Promise<Result<SyncStatus, Error>> {
+  async syncNow(options: { mode?: SyncMode } = {}): Promise<Result<SyncStatus, Error>> {
     if (this.syncInFlight) return this.syncInFlight;
-    this.syncInFlight = this.syncNowUnlocked().finally(() => {
+    const mode = options.mode ?? 'manual';
+    const previousMode = this.activeSyncMode;
+    this.activeSyncMode = mode;
+    this.syncInFlight = this.syncNowUnlocked(mode).finally(() => {
       this.syncInFlight = null;
+      this.activeSyncMode = previousMode;
     });
     return this.syncInFlight;
   }
@@ -789,10 +832,10 @@ export class SyncServiceImpl implements SyncService {
     return next;
   }
 
-  private async syncNowUnlocked(): Promise<Result<SyncStatus, Error>> {
+  private async syncNowUnlocked(mode: SyncMode): Promise<Result<SyncStatus, Error>> {
     const settings = this.syncSettings();
     if (!settings.enabled || !settings.repository) {
-      const refreshed = await this.refreshStatus();
+      const refreshed = await this.refreshStatus({ authProbe: mode === 'background' ? 'passive' : 'keychain' });
       if (refreshed.ok) {
         const disabled = { ...refreshed.value, kind: 'disabled' as const, message: 'GitHub sync is not attached' };
         this.updateStatus(disabled);
@@ -808,9 +851,11 @@ export class SyncServiceImpl implements SyncService {
       return err(new Error('Resolve the current GitHub sync conflict before syncing again'));
     }
 
-    const token = await this.getToken();
+    const token = await this.getToken({ allowKeychain: mode !== 'background' });
     if (settings.authMode !== 'system-git' && !token) {
-      const message = this.authErrorMessage() ?? 'GitHub sign-in is required';
+      const message = this.authErrorMessage() ?? (mode === 'background'
+        ? 'GitHub sign-in is required before automatic sync can run'
+        : 'GitHub sign-in is required');
       const next = {
         ...this.status,
         kind: 'auth-required' as const,
@@ -818,10 +863,11 @@ export class SyncServiceImpl implements SyncService {
         message,
       };
       this.updateStatus(next);
+      events.emit('sync:failed', { error: new Error(message), mode, actionable: mode === 'manual' });
       return err(new Error(message));
     }
 
-    events.emit('sync:started', { operation: 'committing' });
+    events.emit('sync:started', { operation: 'committing', mode });
     this.setOperation('committing');
     const committed = await this.commitAllowed(`Sync Void notes ${new Date().toISOString()}`);
     if (!committed.ok) {
@@ -876,9 +922,9 @@ export class SyncServiceImpl implements SyncService {
     if (!saved.ok) return err(saved.error);
 
     await this.notes.refresh();
-    const refreshed = await this.refreshStatus();
+    const refreshed = await this.refreshStatus({ authProbe: 'passive' });
     if (!refreshed.ok) return refreshed;
-    events.emit('sync:completed', { status: refreshed.value });
+    events.emit('sync:completed', { status: refreshed.value, mode });
     return refreshed;
   }
 
@@ -1094,9 +1140,9 @@ export class SyncServiceImpl implements SyncService {
     });
     if (!saved.ok) return err(saved.error);
     await this.notes.refresh();
-    const refreshed = await this.refreshStatus();
+    const refreshed = await this.refreshStatus({ authProbe: 'passive' });
     if (!refreshed.ok) return err(refreshed.error);
-    events.emit('sync:completed', { status: refreshed.value });
+    events.emit('sync:completed', { status: refreshed.value, mode: this.activeSyncMode });
     return ok(refreshed.value);
   }
 
@@ -1376,7 +1422,7 @@ export class SyncServiceImpl implements SyncService {
   }
 
   private async requireToken(): Promise<Result<string, Error>> {
-    const token = await this.getToken();
+    const token = await this.getToken({ allowKeychain: true });
     if (token) return ok(token);
     if (this.lastAuthError) {
       return err(new Error(`Could not read GitHub token from keychain: ${this.lastAuthError.message}`));
@@ -1411,10 +1457,26 @@ export class SyncServiceImpl implements SyncService {
       : null;
   }
 
-  private async getToken(): Promise<string | null> {
+  private withEditorPending(status: SyncStatus): SyncStatus {
+    if (!this.editor || status.kind !== 'ready') return status;
+    const editorState = this.editor.getState();
+    const pendingTabs = editorState.tabs.filter((tab) => tab.isDirty || tab.isSaving);
+    if (pendingTabs.length === 0) return status;
+    const count = pendingTabs.length;
+    return {
+      ...status,
+      kind: 'pending',
+      message: `${count} open note${count === 1 ? '' : 's'} not synced to GitHub yet`,
+    };
+  }
+
+  private async getToken(options: { allowKeychain?: boolean } = {}): Promise<string | null> {
     if (this.cachedToken) {
       this.lastAuthError = null;
       return this.cachedToken;
+    }
+    if (options.allowKeychain === false) {
+      return null;
     }
     const result = await this.credentials.get(CREDENTIAL_KEYS.GITHUB_ACCESS_TOKEN);
     if (!result.ok) {
@@ -1440,9 +1502,13 @@ export class SyncServiceImpl implements SyncService {
     });
   }
 
-  private async authState(): Promise<SyncAuthState> {
+  private async authState(authProbe: SyncAuthProbe = 'keychain'): Promise<SyncAuthState> {
     if (this.syncSettings().authMode === 'system-git') return 'unknown';
-    return await this.getToken()
+    if (authProbe === 'passive' && !this.cachedToken) {
+      if (this.lastAuthError) return 'expired';
+      return this.settings.current().githubAccount ? 'signed-in' : 'signed-out';
+    }
+    return await this.getToken({ allowKeychain: true })
       ? 'signed-in'
       : this.lastAuthError
         ? 'expired'
@@ -1453,10 +1519,12 @@ export class SyncServiceImpl implements SyncService {
     this.updateStatus({ ...this.status, operation, kind: operation === 'idle' ? this.status.kind : 'syncing' });
   }
 
-  private setFailure(error: Error): void {
+  private setFailure(error: Error, options: { mode?: SyncMode; actionable?: boolean } = {}): void {
+    const mode = options.mode ?? this.activeSyncMode;
+    const actionable = options.actionable ?? mode !== 'background';
     log.error(error.message);
     this.updateStatus({ ...this.status, operation: 'idle', kind: 'error', message: error.message });
-    events.emit('sync:failed', { error });
+    events.emit('sync:failed', { error, mode, actionable });
   }
 
   private async setFailureWithAttachedRepository(error: Error): Promise<void> {

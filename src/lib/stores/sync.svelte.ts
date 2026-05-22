@@ -15,9 +15,11 @@ import {
   type GitHubNameAvailability,
   type GitHubRepoSummary,
   type GitHubUser,
+  type SyncAuthProbe,
   type SyncConflictPreview,
   type SyncConflictResolution,
   type SyncConflictSession,
+  type SyncMode,
   type SyncSettings,
   type SyncStatus,
 } from '$lib/domain/values';
@@ -39,8 +41,10 @@ interface DeviceAuthSession {
 class SyncStore {
   #service: SyncService | null = null;
   #unsubscribe: (() => void) | null = null;
+  #eventUnsubscribe: (() => void) | null = null;
   #devicePollTimer: ReturnType<typeof setTimeout> | null = null;
   #deviceCountdownTimer: ReturnType<typeof setInterval> | null = null;
+  #recentSyncTimer: ReturnType<typeof setTimeout> | null = null;
 
   status = $state<SyncStatus>({ ...EMPTY_SYNC_STATUS, conflicts: [] });
   user = $state<GitHubUser | null>(null);
@@ -64,22 +68,38 @@ class SyncStore {
   lastPreview = $state<RemoteNotePreview | null>(null);
   conflictSession = $state<SyncConflictSession | null>(null);
   activeConflictPreview = $state<SyncConflictPreview | null>(null);
+  lastCompletedAt = $state<number | null>(null);
+  lastFailureAt = $state<number | null>(null);
+  lastSyncMode = $state<SyncMode | null>(null);
+  recentSyncLabel = $state<string | null>(null);
 
   init(service: SyncService): void {
     this.#unsubscribe?.();
+    this.#eventUnsubscribe?.();
     this.#service = service;
     this.#unsubscribe = service.subscribe((status) => {
       this.status = status;
+      if (status.kind !== 'ready') {
+        this.clearRecentSyncLabel();
+      }
       // Keep the cached user in sync with the service-tracked one. Service
       // clears it when auth turns 'signed-out'; we mirror that here.
       this.user = service.getCurrentUser();
     });
     this.user = service.getCurrentUser();
+    this.#eventUnsubscribe = this.registerSyncEvents();
   }
 
-  async refreshStatus(): Promise<boolean> {
+  async refreshStatus(options?: { authProbe?: SyncAuthProbe }): Promise<boolean> {
     if (!this.#service) return false;
-    const result = await this.run(async () => this.#service!.refreshStatus());
+    const result = await this.run(async () => this.#service!.refreshStatus(options));
+    if (result) this.user = this.#service.getCurrentUser();
+    return !!result;
+  }
+
+  async prepareAutomaticSyncAuth(): Promise<boolean> {
+    if (!this.#service) return false;
+    const result = await this.run(async () => this.#service!.prepareAutomaticSyncAuth());
     if (result) this.user = this.#service.getCurrentUser();
     return !!result;
   }
@@ -232,9 +252,9 @@ class SyncStore {
     return result.ok ? result.value : null;
   }
 
-  async syncNow(): Promise<boolean> {
+  async syncNow(options?: { mode?: SyncMode }): Promise<boolean> {
     if (!this.#service) return false;
-    return !!(await this.run(async () => this.#service!.syncNow()));
+    return !!(await this.run(async () => this.#service!.syncNow(options)));
   }
 
   // ─── Branches ───
@@ -407,26 +427,70 @@ class SyncStore {
   get label(): string {
     switch (this.status.kind) {
       case 'ready':
-        return 'Up to date';
+        return 'GitHub synced';
       case 'syncing':
-        return 'Syncing';
+        return 'GitHub syncing';
       case 'pending':
-        return 'Pending changes';
+        return 'GitHub pending';
       case 'auth-required':
-        return 'Auth needed';
+        return 'GitHub auth needed';
       case 'conflicted':
-        return 'Conflicts';
+        return 'GitHub conflicts';
       case 'paused':
-        return 'Paused';
+        return 'GitHub paused';
       case 'error':
-        return 'Sync error';
+        return 'GitHub sync failed';
       case 'disabled':
       default:
         return 'GitHub off';
     }
   }
 
+  get displayLabel(): string {
+    return this.recentSyncLabel ?? this.label;
+  }
+
   // ─── Internals ───
+
+  private registerSyncEvents(): () => void {
+    const started = (payload: { mode: SyncMode }) => {
+      this.lastSyncMode = payload.mode;
+      this.clearRecentSyncLabel();
+    };
+    const completed = (payload: { mode: SyncMode }) => {
+      this.lastSyncMode = payload.mode;
+      this.lastCompletedAt = Date.now();
+      this.recentSyncLabel = 'GitHub synced just now';
+      if (this.#recentSyncTimer) clearTimeout(this.#recentSyncTimer);
+      this.#recentSyncTimer = setTimeout(() => {
+        this.recentSyncLabel = null;
+        this.#recentSyncTimer = null;
+      }, 7000);
+    };
+    const failed = (payload: { mode: SyncMode }) => {
+      this.lastSyncMode = payload.mode;
+      this.lastFailureAt = Date.now();
+      this.clearRecentSyncLabel();
+    };
+
+    events.on('sync:started', started);
+    events.on('sync:completed', completed);
+    events.on('sync:failed', failed);
+    return () => {
+      events.off('sync:started', started);
+      events.off('sync:completed', completed);
+      events.off('sync:failed', failed);
+      this.clearRecentSyncLabel();
+    };
+  }
+
+  private clearRecentSyncLabel(): void {
+    this.recentSyncLabel = null;
+    if (this.#recentSyncTimer) {
+      clearTimeout(this.#recentSyncTimer);
+      this.#recentSyncTimer = null;
+    }
+  }
 
   private cancelDevicePoll(): void {
     if (this.#devicePollTimer) clearTimeout(this.#devicePollTimer);

@@ -8,6 +8,8 @@
 export { settingsStore } from './settings.svelte';
 export { workspaceStore } from './workspace.svelte';
 export { editorStore } from './editor.svelte';
+export { inlineAIStore } from './inlineAI.svelte';
+export { noteAIActivityStore } from './noteAIActivity.svelte';
 export { commandsStore } from './commands.svelte';
 export { uiStore } from './ui.svelte';
 export { keymapStore } from './keymap.svelte';

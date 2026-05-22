@@ -67,6 +67,8 @@ export {
 export type { ToolId, ToolNamespace } from './ToolId';
 
 export type { AIOperation } from './AIOperation';
+export { AI_UNAVAILABLE_MESSAGE } from './AIAvailability';
+export type { AIAvailabilityStatus } from './AIAvailability';
 
 export {
   DEFAULT_AI_CONFIGS,
@@ -320,6 +322,7 @@ export {
   provenancePath,
   conversationDir,
   branchDir,
+  inlineAIPath,
   indexPath,
   insightsPath,
   noteNameFromPath,
@@ -363,6 +366,7 @@ export type {
   GitRepositoryState,
   SyncArtifactPolicy,
   SyncAuthMode,
+  SyncAuthProbe,
   SyncAuthState,
   SyncConflict,
   SyncConflictHunk,
@@ -373,6 +377,7 @@ export type {
   SyncConflictSession,
   SyncConflictSessionStatus,
   SyncConfig,
+  SyncMode,
   SyncOperation,
   SyncProvider,
   SyncRepositoryRef,

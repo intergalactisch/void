@@ -26,6 +26,7 @@
 
 import type { EditorView } from 'prosemirror-view';
 import type { Node as PmNode } from 'prosemirror-model';
+import { TextSelection } from 'prosemirror-state';
 
 import { voidSchema } from './schema';
 import {
@@ -33,6 +34,7 @@ import {
   startAIInlineProcessing,
   showAIInlinePreview,
   reportAIInlineError,
+  cancelAIInlineProcessing,
   type AIInlineMeta,
   type AIInlineMode,
 } from './plugins/aiInline';
@@ -86,8 +88,8 @@ export class AIInlineCoordinator {
   // ─────────────────────────────────────────────────────────────────
 
   /**
-   * Open the inline prompt over the current ProseMirror selection. No-op
-   * if nothing is selected or if a generation is already in progress.
+   * Open a floating inline prompt over the current ProseMirror selection.
+   * Multiple composers may coexist in the same note.
    */
   executeAIPromptSelection(): void {
     const view = this.getView();
@@ -95,17 +97,16 @@ export class AIInlineCoordinator {
     const { from, to } = view.state.selection;
     if (from === to) return;
 
-    const pluginState = aiInlineKey.getState(view.state);
-    if (pluginState && pluginState.status !== 'idle') return;
-
     const selectionText = view.state.doc.textBetween(from, to, '\n');
     view.dispatch(
-      view.state.tr.setMeta(aiInlineKey, {
-        type: 'PROMPT_OPEN',
-        from,
-        to,
-        selectionText,
-      } as AIInlineMeta),
+      view.state.tr
+        .setSelection(TextSelection.create(view.state.doc, to))
+        .setMeta(aiInlineKey, {
+          type: 'COMPOSER_OPEN',
+          from,
+          to,
+          selectionText,
+        } as AIInlineMeta),
     );
   }
 
@@ -118,16 +119,15 @@ export class AIInlineCoordinator {
     const view = this.getView();
     if (!view || from === to) return;
 
-    const pluginState = aiInlineKey.getState(view.state);
-    if (pluginState && pluginState.status !== 'idle') return;
-
     view.dispatch(
-      view.state.tr.setMeta(aiInlineKey, {
-        type: 'PROMPT_OPEN',
-        from,
-        to,
-        selectionText,
-      } as AIInlineMeta),
+      view.state.tr
+        .setSelection(TextSelection.create(view.state.doc, to))
+        .setMeta(aiInlineKey, {
+          type: 'COMPOSER_OPEN',
+          from,
+          to,
+          selectionText,
+        } as AIInlineMeta),
     );
   }
 
@@ -174,6 +174,7 @@ export class AIInlineCoordinator {
     selectionText: string,
     from: number,
     to: number,
+    composerId?: string,
   ): void {
     const view = this.getView();
     if (!view) return;
@@ -182,20 +183,45 @@ export class AIInlineCoordinator {
     if (!target) return;
 
     const originalContent = selectionText;
-    startAIInlineProcessing(view, prompt, from, to, originalContent);
+    const useFloatingComposer = Boolean(composerId);
+    if (!useFloatingComposer) {
+      startAIInlineProcessing(view, prompt, from, to, originalContent);
+      this.focusProtectedSelectionEnd(view, to);
+    }
     this.scrollBlockIntoView(view, target.blockId);
 
     this.onGenerate?.(prompt, selectionText, {
       onComplete: (markdown) => {
         const v = this.getView();
         if (!v) return;
+        if (useFloatingComposer) {
+          startAIInlineProcessing(v, prompt, from, to, originalContent);
+        }
         const html = renderMarkdownToHtml(markdown);
         showAIInlinePreview(v, markdown, html);
       },
       onResult: (result) => {
         const v = this.getView();
         if (!v) return;
+        if (result.suppressLegacyPreview) {
+          if (!useFloatingComposer) {
+            cancelAIInlineProcessing(v);
+          }
+          if (result.inlineThreadId) {
+            setTimeout(() => {
+              const currentView = this.getView();
+              const el = currentView?.dom.querySelector(
+                `[data-inline-ai-thread-id="${CSS.escape(result.inlineThreadId!)}"]`,
+              ) as HTMLElement | null;
+              el?.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' });
+            }, 80);
+          }
+          return;
+        }
         const markdown = result.message.trim() || (result.didMutate ? 'Done.' : '');
+        if (useFloatingComposer) {
+          startAIInlineProcessing(v, prompt, from, to, originalContent);
+        }
         const html = renderMarkdownToHtml(markdown);
         const options: { didMutate: boolean; toolCount: number; conversationId?: string } = {
           didMutate: result.didMutate,
@@ -207,6 +233,9 @@ export class AIInlineCoordinator {
       onError: (msg) => {
         const v = this.getView();
         if (!v) return;
+        if (useFloatingComposer) {
+          startAIInlineProcessing(v, prompt, from, to, originalContent);
+        }
         reportAIInlineError(v, msg);
       },
     }, this.createRequest(view, prompt, selectionText, from, to, 'selection'));
@@ -267,6 +296,19 @@ export class AIInlineCoordinator {
       onResult: (result) => {
         const v = this.getView();
         if (!v) return;
+        if (result.suppressLegacyPreview) {
+          cancelAIInlineProcessing(v);
+          if (result.inlineThreadId) {
+            setTimeout(() => {
+              const currentView = this.getView();
+              const el = currentView?.dom.querySelector(
+                `[data-inline-ai-thread-id="${CSS.escape(result.inlineThreadId!)}"]`,
+              ) as HTMLElement | null;
+              el?.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' });
+            }, 80);
+          }
+          return;
+        }
         const markdown = result.message.trim() || (result.didMutate ? 'Done.' : '');
         const html = renderMarkdownToHtml(markdown);
         const options: { didMutate: boolean; toolCount: number; conversationId?: string } = {
@@ -415,6 +457,14 @@ export class AIInlineCoordinator {
       `[data-block-id="${blockId}"]`
     ) as HTMLElement | null;
     blockEl?.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' });
+  }
+
+  private focusProtectedSelectionEnd(view: EditorView, to: number): void {
+    const cursorPos = Math.max(0, Math.min(to, view.state.doc.content.size));
+    view.dispatch(
+      view.state.tr.setSelection(TextSelection.create(view.state.doc, cursorPos))
+    );
+    view.focus();
   }
 
   private replaceBlockContent(view: EditorView, blockId: string, markdown: string): void {

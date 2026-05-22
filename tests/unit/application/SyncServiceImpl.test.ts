@@ -3,7 +3,7 @@ import mitt from 'mitt';
 import type { EventMap } from '$lib/events/types';
 import { MemoryCredentialAdapter, MemoryGitHubAdapter, MemoryGitRepositoryAdapter, MemorySettingsAdapter, MemoryVoidStorageAdapter } from '$lib/adapters/memory';
 import { CredentialServiceImpl, SettingsServiceImpl, SyncServiceImpl } from '$lib/application/services';
-import { EMPTY_SELECTION, createVoidRepoManifest } from '$lib/domain/values';
+import { EMPTY_SELECTION, createVoidRepoManifest, type SyncSettings } from '$lib/domain/values';
 import { CREDENTIAL_KEYS, type CredentialService, type DocumentService, type EditorService, type EditorState, type NotesService } from '$lib/ports/inbound';
 
 vi.mock('$lib/events', () => {
@@ -45,6 +45,27 @@ describe('SyncServiceImpl', () => {
 
   function service(): SyncServiceImpl {
     return new SyncServiceImpl(git, github, settings, credentials, notesPath, notes, undefined, documents, voidStorage);
+  }
+
+  async function configureAttachedSync(): Promise<void> {
+    const next: SyncSettings = {
+      ...settings.current().sync,
+      enabled: true,
+      autoSync: true,
+      paused: false,
+      authMode: 'token',
+      repository: {
+        provider: 'github',
+        owner: 'me',
+        name: 'notes',
+        fullName: 'me/notes',
+        remoteUrl: 'https://github.com/me/notes.git',
+        htmlUrl: 'https://github.com/me/notes',
+        branch: 'main',
+      },
+    };
+    await settings.set('sync', next);
+    git.attachGitHubRemote(notesPath, next.repository!.remoteUrl, next.repository!.branch);
   }
 
   function createEditor(state: EditorState): EditorService {
@@ -96,6 +117,84 @@ describe('SyncServiceImpl', () => {
       expect(status.value.auth).toBe('signed-in');
     }
     expect(nextSession.getCurrentUser()?.login).toBe('void-dev');
+  });
+
+  it('can refresh status passively without reading stored credentials', async () => {
+    await settings.set('githubAccount', {
+      provider: 'github',
+      login: 'void-dev',
+      name: null,
+      lastAuthenticatedAt: '2026-01-01T00:00:00.000Z',
+    });
+    const getCredential = vi.spyOn(credentials, 'get');
+
+    const status = await service().refreshStatus({ authProbe: 'passive' });
+
+    expect(status.ok).toBe(true);
+    expect(getCredential).not.toHaveBeenCalled();
+    if (status.ok) {
+      expect(status.value.auth).toBe('signed-in');
+    }
+  });
+
+  it('warms automatic sync auth and then background sync uses the cached token', async () => {
+    await configureAttachedSync();
+    await credentials.store(CREDENTIAL_KEYS.GITHUB_ACCESS_TOKEN, 'ghp_test');
+    git.seed(notesPath, {
+      changedFiles: [{ path: 'plan.md', status: 'M', staged: false, conflicted: false }],
+    });
+    const sync = service();
+    const getCredential = vi.spyOn(credentials, 'get');
+
+    const prepared = await sync.prepareAutomaticSyncAuth();
+    expect(prepared.ok).toBe(true);
+    expect(getCredential).toHaveBeenCalledTimes(1);
+
+    getCredential.mockClear();
+    const result = await sync.syncNow({ mode: 'background' });
+
+    expect(result.ok).toBe(true);
+    expect(getCredential).not.toHaveBeenCalled();
+  });
+
+  it('does not read Keychain for background sync when auth was not prepared', async () => {
+    await configureAttachedSync();
+    await credentials.store(CREDENTIAL_KEYS.GITHUB_ACCESS_TOKEN, 'ghp_test');
+    const getCredential = vi.spyOn(credentials, 'get');
+
+    const sync = service();
+    const result = await sync.syncNow({ mode: 'background' });
+
+    expect(result.ok).toBe(false);
+    expect(getCredential).not.toHaveBeenCalled();
+    expect(sync.getStatus().kind).toBe('auth-required');
+  });
+
+  it('reports pending status when open editor tabs have unsynced changes', async () => {
+    await configureAttachedSync();
+    await credentials.store(CREDENTIAL_KEYS.GITHUB_ACCESS_TOKEN, 'ghp_test');
+    const editor = createEditor({
+      document: null,
+      tabs: [
+        { path: 'plan.md', title: 'Plan', isDirty: true, isSaving: false, conflictState: 'clean' },
+      ],
+      activePath: 'plan.md',
+      selection: EMPTY_SELECTION,
+      isReady: true,
+      isDirty: true,
+      isSaving: false,
+      conflictState: 'clean',
+      aiProcessing: null,
+    });
+    const sync = new SyncServiceImpl(git, github, settings, credentials, notesPath, notes, editor, documents, voidStorage);
+
+    const status = await sync.refreshStatus();
+
+    expect(status.ok).toBe(true);
+    if (status.ok) {
+      expect(status.value.kind).toBe('pending');
+      expect(status.value.message).toContain('1 open note');
+    }
   });
 
   it('fails sign-in when the saved GitHub token cannot be read back', async () => {

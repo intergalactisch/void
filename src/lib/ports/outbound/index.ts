@@ -25,6 +25,11 @@ export type {
   EditorInlineGenerateCallbacks,
   EditorInlineGenerateRequest,
   EditorInlineGenerateResult,
+  EditorInlineAIComposerStatus,
+  EditorInlineAIComposerView,
+  EditorInlineAIComposerState,
+  EditorInlineAIRangeAnchorInput,
+  EditorInlineAIRangeAnchorResult,
 } from './EditorPort';
 export type {
   EditorPortFactory,

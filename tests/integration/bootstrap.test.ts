@@ -19,16 +19,21 @@ import {
   shouldRunAutomaticUpdateCheck,
 } from '$lib/bootstrap';
 import { TOKENS } from '$lib/core';
+import { EMPTY_SYNC_STATUS } from '$lib/domain/values';
+import { events } from '$lib/events';
 import type { SettingsService, FileService, CredentialService } from '$lib/ports/inbound';
 import type { AIProviderPort, CLIProviderPort } from '$lib/ports/outbound';
 import { CLITextTransformAdapter } from '$lib/adapters/ai';
+import { toastStore } from '$lib/stores/toast.svelte';
 
 describe('Bootstrap', () => {
   beforeEach(() => {
     resetBootstrap();
+    toastStore.clear();
   });
 
   afterEach(() => {
+    toastStore.clear();
     resetBootstrap();
   });
 
@@ -209,6 +214,48 @@ describe('Bootstrap', () => {
 
     it('is a no-op when never bootstrapped', async () => {
       await expect(shutdown()).resolves.not.toThrow();
+    });
+  });
+
+  describe('sync notification routing', () => {
+    it('does not toast routine sync completion', async () => {
+      await bootstrap({ useMocks: true });
+      toastStore.clear();
+
+      events.emit('sync:completed', {
+        status: { ...EMPTY_SYNC_STATUS, kind: 'ready' },
+        mode: 'background',
+      });
+
+      expect(toastStore.toasts).toEqual([]);
+    });
+
+    it('surfaces manual sync failure as a toast', async () => {
+      await bootstrap({ useMocks: true });
+      toastStore.clear();
+
+      events.emit('sync:failed', {
+        error: new Error('network down'),
+        mode: 'manual',
+        actionable: true,
+      });
+
+      expect(toastStore.toasts.some((toast) => (
+        toast.type === 'error' && toast.message === 'GitHub sync failed: network down'
+      ))).toBe(true);
+    });
+
+    it('keeps non-actionable background sync failures quiet', async () => {
+      await bootstrap({ useMocks: true });
+      toastStore.clear();
+
+      events.emit('sync:failed', {
+        error: new Error('cached token missing'),
+        mode: 'background',
+        actionable: false,
+      });
+
+      expect(toastStore.toasts).toEqual([]);
     });
   });
 

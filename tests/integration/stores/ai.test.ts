@@ -19,7 +19,9 @@ import type {
   AgentIntakeDecision,
   AgentOrchestrationService,
   AgentRunState,
+  OperationService,
 } from '$lib/ports/inbound';
+import { AI_UNAVAILABLE_MESSAGE } from '$lib/domain/values/AIAvailability';
 import type { Conversation } from '$lib/domain/entities/Conversation';
 import { createConversation } from '$lib/domain/entities/Conversation';
 import { createAgentRun } from '$lib/domain/entities/AgentRun';
@@ -1110,6 +1112,53 @@ describe('AI Store Integration', () => {
       const result = await aiStore.isAvailable();
 
       expect(result).toBe(false);
+    });
+
+    it('refreshes reactive availability state', async () => {
+      mockService = createMockAIService({ isAvailableResult: false });
+      aiStore.init(mockService);
+
+      const result = await aiStore.refreshAvailability();
+
+      expect(result).toBe(false);
+      expect(aiStore.availabilityStatus).toBe('unavailable');
+      expect(aiStore.isAIAvailable).toBe(false);
+      expect(aiStore.availabilityMessage).toBe(AI_UNAVAILABLE_MESSAGE);
+    });
+
+    it('blocks prompts without invoking the service when unavailable', async () => {
+      mockService = createMockAIService({ isAvailableResult: false });
+      aiStore.init(mockService);
+      await aiStore.refreshAvailability();
+
+      const result = await aiStore.prompt('Write something');
+
+      expect(result).toBeNull();
+      expect(mockService.prompt).not.toHaveBeenCalled();
+      expect(aiStore.error?.message).toBe(AI_UNAVAILABLE_MESSAGE);
+    });
+
+    it('blocks agent runs and operation templates when unavailable', async () => {
+      mockService = createMockAIService({ isAvailableResult: false });
+      const orchestration = createMockAgentOrchestration();
+      const operationService = {
+        getTemplates: vi.fn(() => []),
+        queueFromTemplate: vi.fn(),
+      } as unknown as OperationService;
+
+      aiStore.init(mockService);
+      aiStore.initAgentOrchestration(orchestration);
+      aiStore.initOperations(operationService);
+      await aiStore.refreshAvailability();
+
+      const run = await aiStore.startAgentRun('Research this');
+      const operation = await aiStore.queueFromTemplate('daily-review', {});
+
+      expect(run).toBeNull();
+      expect(operation).toBeNull();
+      expect(orchestration.startRun).not.toHaveBeenCalled();
+      expect(operationService.queueFromTemplate).not.toHaveBeenCalled();
+      expect(aiStore.error?.message).toBe(AI_UNAVAILABLE_MESSAGE);
     });
   });
 

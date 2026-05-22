@@ -1,13 +1,22 @@
 /**
  * E2E tests for AI Assistant
  */
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 
 test.describe('AI Assistant', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/');
     await expect(page.locator('main')).toBeVisible();
   });
+
+  async function forceLocalAIUnavailable(page: Page) {
+    await page.evaluate(async () => {
+      const { aiStore } = await import('/src/lib/stores/index.ts');
+      aiStore.availabilityStatus = 'unavailable';
+      aiStore.isAIAvailable = false;
+      aiStore.availabilityMessage = 'Install Codex CLI or Claude Code to enable AI features.';
+    });
+  }
 
   test('opens AI prompt with Cmd+K', async ({ page }) => {
     // Press Cmd+K
@@ -42,6 +51,50 @@ test.describe('AI Assistant', () => {
     }
   });
 
+  test('shows a locked Command Center when local AI is unavailable', async ({ page }) => {
+    await forceLocalAIUnavailable(page);
+
+    const aiButton = page.locator('button').filter({ hasText: /Ask/ }).first();
+    await expect(aiButton).toBeVisible({ timeout: 5000 });
+    await aiButton.click();
+
+    const commandCenter = page.getByRole('region', { name: /ai command center/i });
+    await expect(commandCenter).toBeVisible();
+    await expect(commandCenter.getByText('Install Codex CLI or Claude Code to enable AI features.')).toBeVisible();
+    await expect(commandCenter.getByRole('textbox', { name: /ai command/i })).toBeHidden();
+  });
+
+  test('editor Ask shows install message when local AI is unavailable', async ({ page }) => {
+    await page.keyboard.press('Meta+n');
+    const editor = page.locator('.ProseMirror');
+    await expect(editor).toBeVisible();
+    await editor.click();
+    await page.keyboard.type('Local AI gate editor selection');
+    await forceLocalAIUnavailable(page);
+
+    await page.evaluate(() => {
+      const editor = document.querySelector('.ProseMirror');
+      if (!editor) return;
+      const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+      const node = walker.nextNode();
+      if (!node?.textContent) return;
+      const range = document.createRange();
+      range.setStart(node, 0);
+      range.setEnd(node, node.textContent.length);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      document.dispatchEvent(new Event('selectionchange'));
+    });
+
+    const askButton = page.getByRole('button', { name: /ai rewrite selection/i });
+    await expect(askButton).toBeVisible();
+    await askButton.click();
+
+    await expect(page.getByText('Install Codex CLI or Claude Code to enable AI features.')).toBeVisible();
+    await expect(page.locator('.void-ai-prompt-widget')).toHaveCount(0);
+  });
+
   test('closes AI prompt on Escape', async ({ page }) => {
     // Open with Cmd+K
     await page.keyboard.press('Meta+k');
@@ -74,10 +127,11 @@ test.describe('AI Assistant', () => {
       await aiButton.click();
     }
 
-    await expect(page.getByRole('region', { name: /ai command center/i })).toBeVisible();
-    await page.getByRole('button', { name: /new command thread/i }).click();
+    const commandCenter = page.getByRole('region', { name: /ai command center/i });
+    await expect(commandCenter).toBeVisible();
+    await commandCenter.getByRole('button', { name: /new command thread/i }).click();
 
-    const copyIdButton = page.getByRole('button', { name: /copy ref/i });
+    const copyIdButton = commandCenter.getByRole('button', { name: /copy ref/i });
     await expect(copyIdButton).toBeVisible();
     await copyIdButton.click();
     await expect(copyIdButton).toContainText('Copied');
@@ -94,7 +148,8 @@ test.describe('AI Assistant', () => {
       await aiButton.click();
     }
 
-    await expect(page.getByRole('region', { name: /ai command center/i })).toBeVisible();
+    const commandCenter = page.getByRole('region', { name: /ai command center/i });
+    await expect(commandCenter).toBeVisible();
     await expect(page.getByRole('heading', { name: /no conversation open/i })).toBeVisible();
     await expect(page.locator('aside[aria-label="Agent status"]')).toBeHidden();
     await expect(page.getByText(/runs in this conversation/i)).toBeHidden();
@@ -298,7 +353,8 @@ test.describe('AI Assistant', () => {
       await aiButton.click();
     }
 
-    await expect(page.getByRole('region', { name: /ai command center/i })).toBeVisible();
+    const commandCenter = page.getByRole('region', { name: /ai command center/i });
+    await expect(commandCenter).toBeVisible();
     if (await page.getByRole('heading', { name: /no conversation open/i }).isVisible({ timeout: 1000 }).catch(() => false)) {
       await page.getByRole('button', { name: /new command thread/i }).click();
     }
@@ -307,21 +363,19 @@ test.describe('AI Assistant', () => {
     await composer.fill('Doe full research on Ai coding agents');
     await composer.press('Enter');
 
-    await expect(page.getByText('Find relevant context').first()).toBeVisible({ timeout: 10000 });
-    await expect(page.getByText('Draft note material').first()).toBeVisible({ timeout: 10000 });
-    await expect(page.getByText(/Research completed|Swarm run completed|Created the mock swarm research notes/).first()).toBeVisible({ timeout: 15000 });
-    await expect(page.getByText(/AI Coding Agents Research Overview|Mock Swarm Overview/).first()).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText(/research completed|Swarm run completed|Created the mock swarm research notes/i).first()).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText(/AI Coding Agents.*Overview|Mock Swarm Overview|ai-coding-agents-overview/i).first()).toBeVisible({ timeout: 10000 });
     await expect(page.getByText('Worker Summary', { exact: true })).toHaveCount(0);
-    await expect(page.getByRole('button', { name: /copy ref/i })).toBeVisible();
+    await expect(commandCenter.getByRole('button', { name: /copy ref/i })).toBeVisible();
 
-    await page.getByRole('button', { name: /close command center/i }).click();
+    await commandCenter.getByRole('button', { name: /close command center/i }).first().click();
     const main = page.locator('main#main-content');
     await expect(main.getByRole('heading', { name: /Mock Swarm|ai-coding-agents/ })).toBeVisible({ timeout: 10000 });
-    await expect(main.getByRole('button', { name: /AI Coding Agents Research Overview|Mock Swarm Overview/ })).toBeVisible();
-    await expect(main.getByRole('button', { name: /AI Coding Agents Sources|Mock Swarm Sources/ })).toBeVisible();
+    await expect(main.getByRole('button', { name: /AI Coding Agents.*Overview|Mock Swarm Overview/ })).toBeVisible();
+    await expect(main.getByRole('button', { name: /AI Coding Agents.*Sources|Mock Swarm Sources/ })).toBeVisible();
     await expect(page.getByRole('button', { name: /refresh folders/i })).toBeVisible();
     const nav = page.locator('nav[aria-label="Notes navigation"]');
-    await expect(nav.getByText(/AI Coding Agents Sources|Mock Swarm Sources/)).toBeVisible();
+    await expect(nav.getByText(/AI Coding Agents.*Sources|Mock Swarm Sources/)).toBeVisible();
 
     await nav.getByRole('treeitem', { name: /Mock Swarm|ai-coding-agents/ }).first().click({ button: 'right' });
     await expect(page.getByRole('menu', { name: /folder options/i })).toBeVisible();

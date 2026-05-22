@@ -42,6 +42,14 @@ export interface ProvenanceEvent {
   result?: string;
   /** AI model used */
   model?: string;
+  /** Links this receipt to a persisted inline AI thread. */
+  inlineThreadId?: string;
+  /** Links this receipt to a specific inline AI turn. */
+  inlineTurnId?: string;
+  /** Links this receipt to a specific staged inline AI proposal. */
+  inlineProposalId?: string;
+  /** Links this receipt to the related AI conversation. */
+  conversationId?: string;
   /** Links to the Operation that caused this (batch tracking) */
   operationId?: string;
   /** Links to the canonical lineage patch that caused this receipt. */

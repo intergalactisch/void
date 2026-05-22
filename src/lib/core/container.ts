@@ -224,6 +224,8 @@ export const TOKENS = {
 
   // Active editor / AI collaboration service
   NoteCollaborationService: Symbol.for('void:NoteCollaborationService'),
+  InlineAIThreadService: Symbol.for('void:InlineAIThreadService'),
+  NoteAIActivityService: Symbol.for('void:NoteAIActivityService'),
 
   // Operation system
   OperationService: Symbol.for('void:OperationService'),

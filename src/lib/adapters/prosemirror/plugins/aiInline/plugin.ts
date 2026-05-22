@@ -9,7 +9,7 @@
  * - 'selection': Rewrites selected text via Cmd+J (keeps original visible during loading)
  */
 
-import { Plugin } from 'prosemirror-state';
+import { Plugin, TextSelection } from 'prosemirror-state';
 import type { Transaction } from 'prosemirror-state';
 import { EditorView } from 'prosemirror-view';
 import {
@@ -18,8 +18,14 @@ import {
   type AIInlineState,
   type AIInlineMeta,
   type AIInlineMode,
+  type InlineAIComposer,
 } from './state';
 import { createAIInlineDecorations } from './decorations';
+import {
+  insertAIContinuation,
+  resolveAIContinuationTargetForRange,
+  shouldActivateAIContinuationFromKey,
+} from '../aiContinuation';
 
 /**
  * Configuration options for the AI inline plugin.
@@ -33,8 +39,14 @@ export interface AIInlinePluginOptions {
   onRetry?: (prompt: string) => void;
   /** Callback when user denies and original text needs restoring (selection mode) */
   onDeny?: (data: { blockFrom: number; blockTo: number; originalContent: string }) => void;
-  /** Callback when user submits a prompt from Cmd+J prompt input */
-  onPromptSubmit?: (prompt: string, selectionText: string, selectionFrom: number, selectionTo: number) => void;
+  /** Callback when user submits a prompt from a floating selection composer */
+  onPromptSubmit?: (data: {
+    composerId: string;
+    prompt: string;
+    selectionText: string;
+    selectionFrom: number;
+    selectionTo: number;
+  }) => void;
 }
 
 /**
@@ -51,6 +63,7 @@ export function createAIInlinePlugin(options: AIInlinePluginOptions = {}): Plugi
         const meta = tr.getMeta(aiInlineKey) as AIInlineMeta | undefined;
 
         if (meta) {
+          const submittedComposer = getSubmittedComposer(state, meta);
           const newState = applyMeta(state, meta);
 
           // Handle side effects for ACCEPT and RETRY
@@ -88,15 +101,16 @@ export function createAIInlinePlugin(options: AIInlinePluginOptions = {}): Plugi
             }, 0);
           }
 
-          // Handle prompt submit — start selection AI flow
-          if (meta.type === 'PROMPT_SUBMIT' && state.status === 'prompting' && state.blockPos) {
+          // Handle composer submit — start selection AI flow for this anchor only.
+          if (submittedComposer && (meta.type === 'COMPOSER_SUBMIT' || meta.type === 'PROMPT_SUBMIT')) {
             setTimeout(() => {
-              options.onPromptSubmit?.(
-                meta.prompt,
-                state.selectionText,
-                state.blockPos!.from,
-                state.blockPos!.to,
-              );
+              options.onPromptSubmit?.({
+                composerId: submittedComposer.id,
+                prompt: meta.prompt,
+                selectionText: submittedComposer.selectionText,
+                selectionFrom: submittedComposer.from,
+                selectionTo: submittedComposer.to,
+              });
             }, 0);
           }
 
@@ -107,21 +121,55 @@ export function createAIInlinePlugin(options: AIInlinePluginOptions = {}): Plugi
           return newState;
         }
 
-        // Map block positions through document changes
-        if (state.blockPos && tr.docChanged) {
+        // Map block positions and composer anchors through document changes.
+        if (tr.docChanged) {
+          const mappedComposers = state.composers.map((composer) => ({
+            ...composer,
+            from: tr.mapping.map(composer.from),
+            to: tr.mapping.map(composer.to),
+          }));
+
+          const composersChanged = mappedComposers.some((composer, index) => {
+            const previous = state.composers[index];
+            return !previous || composer.from !== previous.from || composer.to !== previous.to;
+          });
+
+          if (!state.blockPos) {
+            if (!composersChanged) return state;
+            const nextState = { ...state, composers: mappedComposers };
+            if (options.onStateChange) {
+              setTimeout(() => options.onStateChange!(nextState), 0);
+            }
+            return nextState;
+          }
+
           const newFrom = tr.mapping.map(state.blockPos.from);
           const newTo = tr.mapping.map(state.blockPos.to);
 
-          if (newFrom !== state.blockPos.from || newTo !== state.blockPos.to) {
-            return {
+          if (newFrom !== state.blockPos.from || newTo !== state.blockPos.to || composersChanged) {
+            const nextState = {
               ...state,
               blockPos: { from: newFrom, to: newTo },
+              composers: mappedComposers,
             };
+            if (options.onStateChange) {
+              setTimeout(() => options.onStateChange!(nextState), 0);
+            }
+            return nextState;
           }
         }
 
         return state;
       },
+    },
+
+    filterTransaction(tr: Transaction, state): boolean {
+      if (!tr.docChanged) return true;
+
+      const pluginState = aiInlineKey.getState(state);
+      if (!isProtectedInlineState(pluginState)) return true;
+
+      return !transactionTouchesRange(tr, pluginState.blockPos.from, pluginState.blockPos.to);
     },
 
     props: {
@@ -134,19 +182,32 @@ export function createAIInlinePlugin(options: AIInlinePluginOptions = {}): Plugi
         // Cmd+J with selection → open AI prompt input
         if (isMod && event.key === 'j') {
           const { from, to } = view.state.selection;
-          if (from !== to && (!state || state.status === 'idle')) {
+          if (from !== to) {
             event.preventDefault();
             const selectionText = view.state.doc.textBetween(from, to, '\n');
             view.dispatch(
-              view.state.tr.setMeta(aiInlineKey, {
-                type: 'PROMPT_OPEN',
-                from,
-                to,
-                selectionText,
-              } satisfies AIInlineMeta)
+              view.state.tr
+                .setSelection(TextSelection.create(view.state.doc, to))
+                .setMeta(aiInlineKey, {
+                  type: 'COMPOSER_OPEN',
+                  from,
+                  to,
+                  selectionText,
+                } satisfies AIInlineMeta)
             );
             return true;
           }
+        }
+
+        if (state?.activeComposerId && event.key === 'Escape') {
+          event.preventDefault();
+          view.dispatch(
+            view.state.tr.setMeta(aiInlineKey, {
+              type: 'COMPOSER_CANCEL',
+              id: state.activeComposerId,
+            } satisfies AIInlineMeta)
+          );
+          return true;
         }
 
         if (!state || state.status === 'idle') return false;
@@ -156,8 +217,11 @@ export function createAIInlinePlugin(options: AIInlinePluginOptions = {}): Plugi
         if (state.status === 'prompting') {
           if (event.key === 'Escape') {
             event.preventDefault();
+            const meta: AIInlineMeta = state.activeComposerId
+              ? { type: 'PROMPT_CANCEL', composerId: state.activeComposerId }
+              : { type: 'PROMPT_CANCEL' };
             view.dispatch(
-              view.state.tr.setMeta(aiInlineKey, { type: 'PROMPT_CANCEL' } satisfies AIInlineMeta)
+              view.state.tr.setMeta(aiInlineKey, meta)
             );
             return true;
           }
@@ -203,12 +267,20 @@ export function createAIInlinePlugin(options: AIInlinePluginOptions = {}): Plugi
           return true;
         }
 
-        // Only block editing keys when cursor is inside the AI placeholder block
+        // Keep navigation free. Only intercept ArrowDown when it can express
+        // "continue below"; document edits are protected by filterTransaction.
         if (state.status === 'processing' || state.status === 'preview') {
           if (state.blockPos && isCursorInsideBlock(view, state.blockPos)) {
-            if (isEditingKey(event)) {
-              event.preventDefault();
-              return true;
+            if (shouldActivateAIContinuationFromKey(view, event)) {
+              const target = resolveAIContinuationTargetForRange(
+                view.state,
+                state.blockPos.from,
+                state.blockPos.to
+              );
+              if (target && insertAIContinuation(view, target)) {
+                event.preventDefault();
+                return true;
+              }
             }
           }
         }
@@ -226,7 +298,7 @@ function applyMeta(state: AIInlineState, meta: AIInlineMeta): AIInlineState {
   switch (meta.type) {
     case 'START':
       return {
-        ...INITIAL_STATE,
+        ...resetLegacyState(state),
         status: 'processing',
         mode: state.mode,
         prompt: meta.prompt,
@@ -238,22 +310,32 @@ function applyMeta(state: AIInlineState, meta: AIInlineMeta): AIInlineState {
       };
 
     case 'PROMPT_OPEN':
-      return {
-        ...INITIAL_STATE,
-        status: 'prompting',
-        mode: 'selection',
-        blockPos: { from: meta.from, to: meta.to },
-        selectionText: meta.selectionText,
-      };
+      return addComposer(state, meta.from, meta.to, meta.selectionText);
 
     case 'PROMPT_SUBMIT':
-      return {
-        ...state,
-        prompt: meta.prompt,
-      };
+      return submitComposer(state, meta.composerId ?? state.activeComposerId, meta.prompt);
 
     case 'PROMPT_CANCEL':
-      return INITIAL_STATE;
+      return meta.composerId || state.activeComposerId
+        ? cancelComposer(state, meta.composerId ?? state.activeComposerId)
+        : resetLegacyState(state);
+
+    case 'COMPOSER_OPEN':
+      return addComposer(state, meta.from, meta.to, meta.selectionText, '', meta.id);
+
+    case 'COMPOSER_UPDATE_DRAFT':
+      return updateComposerDraft(state, meta.id, meta.prompt);
+
+    case 'COMPOSER_SUBMIT':
+      return submitComposer(state, meta.id, meta.prompt);
+
+    case 'COMPOSER_CANCEL':
+      return cancelComposer(state, meta.id);
+
+    case 'COMPOSER_FOCUS':
+      return state.composers.some((composer) => composer.id === meta.id)
+        ? { ...state, activeComposerId: meta.id }
+        : state;
 
     case 'PREVIEW':
       return {
@@ -273,11 +355,11 @@ function applyMeta(state: AIInlineState, meta: AIInlineMeta): AIInlineState {
       };
 
     case 'ACCEPT':
-      return INITIAL_STATE;
+      return resetLegacyState(state);
 
     case 'DENY':
     case 'CANCEL':
-      return INITIAL_STATE;
+      return resetLegacyState(state);
 
     case 'RETRY':
       return {
@@ -304,6 +386,113 @@ function applyMeta(state: AIInlineState, meta: AIInlineMeta): AIInlineState {
   }
 }
 
+function resetLegacyState(state: AIInlineState): AIInlineState {
+  return {
+    ...INITIAL_STATE,
+    composers: state.composers,
+    activeComposerId: state.activeComposerId,
+  };
+}
+
+function addComposer(
+  state: AIInlineState,
+  from: number,
+  to: number,
+  selectionText: string,
+  draftPrompt = '',
+  id = createComposerId(),
+): AIInlineState {
+  const now = new Date().toISOString();
+  const composer: InlineAIComposer = {
+    id,
+    from,
+    to,
+    selectionText,
+    draftPrompt,
+    status: 'draft',
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  return {
+    ...state,
+    status: state.status === 'prompting' ? 'idle' : state.status,
+    mode: 'selection',
+    blockPos: state.status === 'prompting' ? null : state.blockPos,
+    selectionText,
+    composers: [...state.composers, composer],
+    activeComposerId: id,
+  };
+}
+
+function updateComposerDraft(state: AIInlineState, id: string, prompt: string): AIInlineState {
+  let changed = false;
+  const now = new Date().toISOString();
+  const composers = state.composers.map((composer) => {
+    if (composer.id !== id) return composer;
+    changed = true;
+    return { ...composer, draftPrompt: prompt, updatedAt: now };
+  });
+  return changed ? { ...state, composers } : state;
+}
+
+function submitComposer(
+  state: AIInlineState,
+  id: string | null | undefined,
+  prompt: string,
+): AIInlineState {
+  if (!id) return state;
+  let found = false;
+  const composers = state.composers
+    .map((composer) => {
+      if (composer.id !== id) return composer;
+      found = true;
+      return {
+        ...composer,
+        draftPrompt: prompt,
+        status: 'submitting' as const,
+        updatedAt: new Date().toISOString(),
+      };
+    })
+    .filter((composer) => composer.id !== id);
+
+  if (!found) return state;
+  return {
+    ...state,
+    composers,
+    activeComposerId: state.activeComposerId === id ? composers.at(-1)?.id ?? null : state.activeComposerId,
+  };
+}
+
+function cancelComposer(state: AIInlineState, id: string | null | undefined): AIInlineState {
+  if (!id) return state;
+  const composers = state.composers.filter((composer) => composer.id !== id);
+  if (composers.length === state.composers.length) return state;
+  return {
+    ...state,
+    composers,
+    activeComposerId: state.activeComposerId === id ? composers.at(-1)?.id ?? null : state.activeComposerId,
+  };
+}
+
+function getSubmittedComposer(
+  state: AIInlineState,
+  meta: AIInlineMeta,
+): InlineAIComposer | null {
+  const composerId =
+    meta.type === 'COMPOSER_SUBMIT'
+      ? meta.id
+      : meta.type === 'PROMPT_SUBMIT'
+        ? meta.composerId ?? state.activeComposerId
+        : null;
+  if (!composerId) return null;
+  return state.composers.find((composer) => composer.id === composerId) ?? null;
+}
+
+function createComposerId(): string {
+  return `inline-ai-composer-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 /**
  * Check if the cursor (selection head) is inside the given block range.
  */
@@ -315,21 +504,33 @@ function isCursorInsideBlock(
   return from >= blockPos.from && to <= blockPos.to;
 }
 
-/**
- * Check if a key event is an editing key that should be blocked.
- */
-function isEditingKey(event: KeyboardEvent): boolean {
-  const allowedKeys = [
-    'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
-    'Home', 'End', 'PageUp', 'PageDown',
-    'Tab', 'Escape',
-    'Control', 'Alt', 'Meta', 'Shift',
-  ];
+function isProtectedInlineState(
+  state: AIInlineState | undefined
+): state is AIInlineState & { blockPos: { from: number; to: number } } {
+  return Boolean(
+    state?.blockPos &&
+    (state.status === 'processing' || state.status === 'preview' || state.status === 'error')
+  );
+}
 
-  if (allowedKeys.includes(event.key)) return false;
-  if (event.metaKey || event.ctrlKey) return false;
+function transactionTouchesRange(tr: Transaction, from: number, to: number): boolean {
+  let touches = false;
 
-  return true;
+  tr.mapping.maps.forEach((stepMap) => {
+    if (touches) return;
+    stepMap.forEach((oldStart, oldEnd) => {
+      if (touches) return;
+
+      if (oldStart === oldEnd) {
+        touches = oldStart > from && oldStart < to;
+        return;
+      }
+
+      touches = oldStart < to && oldEnd > from;
+    });
+  });
+
+  return touches;
 }
 
 // =========================================================================
@@ -456,5 +657,51 @@ export function reportAIInlineError(view: EditorView, message: string): void {
 export function cancelAIInlineProcessing(view: EditorView): void {
   view.dispatch(
     view.state.tr.setMeta(aiInlineKey, { type: 'CANCEL' } satisfies AIInlineMeta)
+  );
+}
+
+export function updateAIInlineComposerDraft(
+  view: EditorView,
+  id: string,
+  prompt: string,
+): void {
+  view.dispatch(
+    view.state.tr.setMeta(aiInlineKey, {
+      type: 'COMPOSER_UPDATE_DRAFT',
+      id,
+      prompt,
+    } satisfies AIInlineMeta)
+  );
+}
+
+export function submitAIInlineComposer(
+  view: EditorView,
+  id: string,
+  prompt: string,
+): void {
+  view.dispatch(
+    view.state.tr.setMeta(aiInlineKey, {
+      type: 'COMPOSER_SUBMIT',
+      id,
+      prompt,
+    } satisfies AIInlineMeta)
+  );
+}
+
+export function cancelAIInlineComposer(view: EditorView, id: string): void {
+  view.dispatch(
+    view.state.tr.setMeta(aiInlineKey, {
+      type: 'COMPOSER_CANCEL',
+      id,
+    } satisfies AIInlineMeta)
+  );
+}
+
+export function focusAIInlineComposer(view: EditorView, id: string): void {
+  view.dispatch(
+    view.state.tr.setMeta(aiInlineKey, {
+      type: 'COMPOSER_FOCUS',
+      id,
+    } satisfies AIInlineMeta)
   );
 }

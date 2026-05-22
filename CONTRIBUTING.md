@@ -1,6 +1,6 @@
 # Contributing to Void
 
-Thanks for thinking about contributing. Void is a small, opinionated project — clear contributions and small PRs land fastest.
+Thanks for thinking about contributing. Void is a small, opinionated project. Public pull requests are disabled, so please start with an issue or discussion unless you are already an invited collaborator.
 
 ## Prerequisites
 
@@ -31,6 +31,12 @@ To produce and install a local build into `/Applications`:
 ```bash
 npm run tauri:install
 ```
+
+For GitHub sync testing on macOS, prefer a stable Apple Development or Developer ID
+signing identity. Ad-hoc-signed local builds can make Keychain treat each rebuild
+as a changed app, so "Always Allow" access to the GitHub token may not persist.
+After switching to a stable signing identity, sign out of GitHub in Void and sign
+back in once so the Keychain item is recreated for that app identity.
 
 ## Architecture in 5 lines
 
@@ -80,7 +86,7 @@ cd src-tauri && cargo test
 
 A green `npm run test:all` plus `cd src-tauri && cargo test` is the minimum bar for a PR.
 
-## PR workflow
+## Maintainer PR workflow
 
 1. Branch from `main`: `git switch -c feat/your-feature` (or `fix/...`, `docs/...`).
 2. Write tests alongside the code. Memory adapters make this cheap.
@@ -92,9 +98,9 @@ A green `npm run test:all` plus `cd src-tauri && cargo test` is the minimum bar 
    - `chore:` tooling, deps, CI.
    - `test:` test-only.
 4. Add a line under `[Unreleased]` in `CHANGELOG.md`.
-5. Open a PR with a 1–3 sentence summary + the issue it closes. Keep one concern per PR.
+5. Open an internal PR with a 1–3 sentence summary + the issue it closes. Keep one concern per PR.
 
-CI runs `npm run check`, `npm run test:run`, `cargo check`, and `cargo clippy -- -D warnings`. Anything red blocks merge.
+CI runs `npm run check`, `npm run test:run`, `cargo check`, and `cargo clippy -- -D warnings`. It only executes for pushes to `main`, manual maintainer runs, and PRs whose source branch lives in this repository; fork PR code is intentionally skipped.
 
 ## Release signing keys
 
@@ -153,7 +159,7 @@ Without one of the above, the `Release` workflow fails fast with a clear error.
 
 ## Good first issues
 
-Browse open issues with the [`good first issue`](https://github.com/intergalactisch/void/issues?q=is:open+label:%22good+first+issue%22) label. If a topic interests you and there's no issue yet, open one before sinking time into a PR — it saves churn.
+Browse open issues with the [`good first issue`](https://github.com/intergalactisch/void/issues?q=is:open+label:%22good+first+issue%22) label. If a topic interests you and there's no issue yet, open one before sinking time into a patch — it saves churn.
 
 ## Reporting bugs and asking questions
 

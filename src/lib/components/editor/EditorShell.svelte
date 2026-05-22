@@ -6,20 +6,31 @@
    * floating menus, title editing, and toolbar actions.
    */
 
-  import { onDestroy } from 'svelte';
-  import { editorStore, settingsStore, toastStore, aiStore, notesStore } from '$lib/stores';
+  import { onDestroy, onMount, tick } from 'svelte';
+  import {
+    editorStore,
+    settingsStore,
+    toastStore,
+    aiStore,
+    notesStore,
+    inlineAIStore,
+    lineageStore,
+    noteAIActivityStore,
+    uiStore,
+  } from '$lib/stores';
   import type { Document } from '$lib/domain/entities/Document';
   import { normalizeNoteTag } from '$lib/domain/values';
   import { events } from '$lib/events';
   import { buildRefId } from '$lib/domain/values';
+  import { AI_UNAVAILABLE_MESSAGE } from '$lib/domain/values/AIAvailability';
   import { copyTextToClipboard } from '$lib/utils/clipboard';
   import type { SlashMenuState } from '$lib/adapters/prosemirror/plugins/slashMenu';
   import type { PageLinkNote, PageLinkState } from '$lib/adapters/prosemirror/plugins/pageLink';
   import { SlashMenu, BlockMenu, EditorToolbar, PageLinkPopup, FindReplaceBar, RelationsPanel, LineageHistoryWorkspace, BranchPicker, SessionRibbon } from '$lib/components/editor';
   import type { BlockMenuAction } from '$lib/components/editor/BlockMenu.svelte';
-  import type { RegisteredCommand } from '$lib/ports/outbound';
+  import type { EditorInlineAIComposerView, RegisteredCommand } from '$lib/ports/outbound';
   import type { BlockType } from '$lib/domain/values/BlockType';
-  import { LocateFixed, Plus, X } from '@lucide/svelte';
+  import { LocateFixed, MessageSquare, Plus, Send, Sparkles, X } from '@lucide/svelte';
 
   interface Props {
     document: Document;
@@ -67,6 +78,16 @@
   let lastAIActiveBlockId: string | null = null;
   let aiFollowProgrammatic = false;
   let aiFollowClearTimer: ReturnType<typeof setTimeout> | null = null;
+  let inlineAILoadedPath: string | null = null;
+  let inlineAIObserver: IntersectionObserver | null = null;
+  let inlineAIMarkers = $state<Array<{ id: string; top: number; unread: boolean }>>([]);
+  let inlineAIComposerPositions = $state<Record<string, {
+    top: number;
+    left: number;
+    maxWidth: number;
+    visible: boolean;
+  }>>({});
+  let focusedComposerInputId: string | null = null;
 
   const slashMenuState = $derived.by(() =>
     (editorStore.slashMenuState as SlashMenuState | null) ?? DEFAULT_SLASH_MENU_STATE
@@ -94,6 +115,13 @@
 
   const noteTags = $derived(editorStore.document?.meta.tags ?? doc.meta.tags);
   const aiActiveBlockId = $derived(editorStore.aiActiveBlockId);
+  const inlineAIComposers = $derived(editorStore.aiInlineComposers);
+  const offscreenInlineAIComposers = $derived.by(() =>
+    inlineAIComposers.filter((composer) => {
+      const position = inlineAIComposerPositions[composer.id];
+      return position && !position.visible;
+    })
+  );
 
   function updateCounts() {
     const text = editorStore.getTextContent();
@@ -175,10 +203,117 @@
   }
 
   function handleAIPrompt(text: string, range: Range) {
+    if (!aiStore.ensureAIAvailable()) {
+      toastStore.info(aiStore.availabilityMessage ?? AI_UNAVAILABLE_MESSAGE);
+      return;
+    }
     const resolved = editorStore.resolveSelectionFromDOM(range);
     if (resolved) {
       editorStore.aiPromptSelectionAt(resolved.from, resolved.to, text);
     }
+  }
+
+  function getInlineAIComposerHighlight(composerId: string): HTMLElement | null {
+    if (!editorContainer) return null;
+    return editorContainer.querySelector(
+      `[data-ai-composer-id="${CSS.escape(composerId)}"]`
+    ) as HTMLElement | null;
+  }
+
+  function refreshInlineAIComposerPositions() {
+    if (!editorScrollElement || !editorContainer) {
+      inlineAIComposerPositions = {};
+      return;
+    }
+
+    const scrollRect = editorScrollElement.getBoundingClientRect();
+    const next: typeof inlineAIComposerPositions = {};
+    for (const composer of inlineAIComposers) {
+      const highlight = getInlineAIComposerHighlight(composer.id);
+      if (!highlight) continue;
+
+      const rects = Array.from(highlight.getClientRects());
+      const anchorRect = rects.at(-1) ?? highlight.getBoundingClientRect();
+      const visible = anchorRect.bottom >= scrollRect.top && anchorRect.top <= scrollRect.bottom;
+      if (!visible) {
+        next[composer.id] = { top: 0, left: 0, maxWidth: 0, visible: false };
+        continue;
+      }
+
+      const expanded = composer.isActive;
+      const estimatedHeight = expanded ? 50 : 32;
+      const preferredTop = anchorRect.bottom + 8;
+      const top = preferredTop + estimatedHeight > scrollRect.bottom - 12
+        ? Math.max(scrollRect.top + 12, anchorRect.top - estimatedHeight - 8)
+        : preferredTop;
+      const idealWidth = expanded ? 520 : 190;
+      const minLeft = scrollRect.left + 14;
+      const maxLeft = Math.max(minLeft, scrollRect.right - idealWidth - 14);
+      const left = Math.min(Math.max(anchorRect.left, minLeft), maxLeft);
+      const maxWidth = Math.max(220, Math.min(560, scrollRect.right - left - 14));
+
+      next[composer.id] = { top, left, maxWidth, visible: true };
+    }
+
+    inlineAIComposerPositions = next;
+  }
+
+  async function focusInlineAIComposerInput(composerId: string) {
+    await tick();
+    refreshInlineAIComposerPositions();
+    const input = document.querySelector(
+      `[data-inline-ai-composer="${CSS.escape(composerId)}"] input`
+    ) as HTMLInputElement | null;
+    input?.focus({ preventScroll: true });
+  }
+
+  function handleComposerInput(composer: EditorInlineAIComposerView, event: Event) {
+    const target = event.target as HTMLInputElement | null;
+    editorStore.updateAIInlineComposerDraft(composer.id, target?.value ?? '');
+  }
+
+  function submitComposer(composer: EditorInlineAIComposerView) {
+    const prompt = composer.draftPrompt.trim();
+    if (!prompt) return;
+    focusedComposerInputId = null;
+    editorStore.submitAIInlineComposer(composer.id, prompt);
+    requestAnimationFrame(refreshInlineAIComposerPositions);
+  }
+
+  function cancelComposer(composerId: string) {
+    focusedComposerInputId = null;
+    editorStore.cancelAIInlineComposer(composerId);
+    requestAnimationFrame(refreshInlineAIComposerPositions);
+  }
+
+  function focusComposer(composerId: string) {
+    editorStore.focusAIInlineComposer(composerId);
+    void focusInlineAIComposerInput(composerId);
+  }
+
+  function handleComposerKeyDown(
+    event: KeyboardEvent,
+    composer: EditorInlineAIComposerView,
+  ) {
+    event.stopPropagation();
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      submitComposer(composer);
+      return;
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      cancelComposer(composer.id);
+    }
+  }
+
+  function stopComposerEvent(event: Event) {
+    event.stopPropagation();
+  }
+
+  function showAIUnavailableMessage() {
+    aiStore.ensureAIAvailable();
+    toastStore.info(aiStore.availabilityMessage ?? AI_UNAVAILABLE_MESSAGE);
   }
 
   function handleToolbarAction(action: string, value?: string) {
@@ -348,12 +483,184 @@
 
   function handleEditorScroll() {
     pauseAIFollow();
+    refreshInlineAIMarkers();
+    refreshInlineAIComposerPositions();
   }
 
   function handleEditorUserIntent(event: Event) {
     const target = event.target as HTMLElement | null;
-    if (target?.closest('.ai-follow-jump')) return;
+    if (target?.closest('.ai-follow-jump, .inline-ai-jump-pill, .inline-ai-composer-jump-pill, .inline-ai-scroll-marker, .floating-inline-ai-composer')) return;
     pauseAIFollow();
+  }
+
+  function getInlineAIThreadElement(threadId: string): HTMLElement | null {
+    if (!editorContainer) return null;
+    const direct = editorContainer.querySelector(
+      `[data-inline-ai-thread-id="${CSS.escape(threadId)}"]`
+    ) as HTMLElement | null;
+    if (direct) return direct;
+    return editorContainer.querySelector(
+      `[data-inline-ai-thread-ids~="${CSS.escape(threadId)}"]`
+    ) as HTMLElement | null;
+  }
+
+  function refreshInlineAIMarkers() {
+    if (!editorScrollElement) {
+      inlineAIMarkers = [];
+      return;
+    }
+    const scrollHeight = Math.max(editorScrollElement.scrollHeight, 1);
+    const markersByElement = new Map<string, { id: string; top: number; unread: boolean }>();
+    for (const thread of inlineAIStore.visibleThreads) {
+      const element = getInlineAIThreadElement(thread.id);
+      if (!element) continue;
+      const top = Math.min(96, Math.max(4, (element.offsetTop / scrollHeight) * 100));
+      const key = element.dataset.inlineAiThreadIds || element.dataset.inlineAiThreadId || thread.id;
+      const existing = markersByElement.get(key);
+      markersByElement.set(key, {
+        id: existing?.id ?? thread.id,
+        top,
+        unread: Boolean(existing?.unread || (!thread.seenAt && thread.status !== 'generating')),
+      });
+    }
+    inlineAIMarkers = [...markersByElement.values()];
+  }
+
+  function setupInlineAIObserver() {
+    inlineAIObserver?.disconnect();
+    inlineAIObserver = null;
+    if (!editorScrollElement || !editorContainer) return;
+
+    inlineAIObserver = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        const element = entry.target as HTMLElement;
+        const threadIds = (element.dataset.inlineAiThreadIds || element.dataset.inlineAiThreadId || '')
+          .split(/\s+/)
+          .filter(Boolean);
+        for (const threadId of threadIds) void inlineAIStore.markSeen(threadId);
+      }
+    }, {
+      root: editorScrollElement,
+      threshold: 0.45,
+    });
+
+    const observed = new Set<HTMLElement>();
+    for (const thread of inlineAIStore.visibleThreads) {
+      const element = getInlineAIThreadElement(thread.id);
+      if (!element || observed.has(element)) continue;
+      observed.add(element);
+      inlineAIObserver.observe(element);
+    }
+  }
+
+  function jumpToInlineAIThread(threadId: string) {
+    const element = getInlineAIThreadElement(threadId);
+    if (element) {
+      element.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' });
+      const threadIds = (element.dataset.inlineAiThreadIds || element.dataset.inlineAiThreadId || threadId)
+        .split(/\s+/)
+        .filter(Boolean);
+      for (const id of threadIds) void inlineAIStore.markSeen(id);
+      return;
+    }
+    editorStore.scrollInlineAIThreadIntoView(threadId);
+  }
+
+  function jumpToNearestUnreadInlineAI() {
+    const target = inlineAIStore.unreadThreads[0] ?? inlineAIStore.visibleThreads[0];
+    if (target) jumpToInlineAIThread(target.id);
+  }
+
+  function jumpToInlineAIComposer(composerId: string) {
+    const highlight = getInlineAIComposerHighlight(composerId);
+    if (highlight) {
+      highlight.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' });
+    }
+    requestAnimationFrame(() => {
+      refreshInlineAIComposerPositions();
+      focusComposer(composerId);
+    });
+  }
+
+  function jumpToNearestInlineAIComposer() {
+    const activeOffscreen = offscreenInlineAIComposers.find((composer) => composer.isActive);
+    const target = activeOffscreen ?? offscreenInlineAIComposers[0];
+    if (target) jumpToInlineAIComposer(target.id);
+  }
+
+  async function handleInlineAIAction(event: Event) {
+    const detail = (event as CustomEvent<{
+      action: string;
+      threadId: string;
+      threadIds?: string[];
+      prompt?: string;
+    }>).detail;
+    if (!detail?.threadId) return;
+
+    const thread = inlineAIStore.visibleThreads.find((candidate) => candidate.id === detail.threadId);
+    const threadIds = detail.threadIds?.length ? detail.threadIds : [detail.threadId];
+    switch (detail.action) {
+      case 'accept':
+        if (!(await inlineAIStore.accept(detail.threadId))) {
+          toastStore.warning(inlineAIStore.error?.message ?? 'Inline AI proposal is stale');
+        }
+        break;
+      case 'cancel':
+        if (await inlineAIStore.cancel(detail.threadId)) toastStore.info('Inline AI proposal canceled');
+        break;
+      case 'retry':
+        if (!(await inlineAIStore.retry(detail.threadId))) {
+          toastStore.error(inlineAIStore.error?.message ?? 'Retry failed');
+        }
+        break;
+      case 'follow-up':
+        if (!(await inlineAIStore.followUp(detail.threadId, detail.prompt ?? ''))) {
+          toastStore.error(inlineAIStore.error?.message ?? 'Follow-up failed');
+        }
+        break;
+      case 'dismiss':
+        await inlineAIStore.dismiss(detail.threadId);
+        break;
+      case 'dismiss-cluster':
+        await Promise.all(threadIds.map((threadId) => inlineAIStore.dismiss(threadId)));
+        break;
+      case 'copy':
+        if (thread?.turns.at(-1)?.response) {
+          const copied = await copyTextToClipboard(thread.turns.at(-1)!.response);
+          if (copied) toastStore.info('AI response copied');
+          else toastStore.error('Failed to copy AI response');
+        }
+        break;
+      case 'open-chat':
+        if (thread?.conversationId) {
+          window.dispatchEvent(new CustomEvent('void:open-ai-chat', {
+            detail: { conversationId: thread.conversationId },
+          }));
+        } else {
+          toastStore.info('No chat is linked to this response');
+        }
+        break;
+      case 'open-history': {
+        const notePath = thread?.notePath ?? editorStore.document?.path ?? null;
+        if (!notePath) {
+          toastStore.info('No note history is linked to this marker');
+          break;
+        }
+        uiStore.openLineageWorkspace();
+        await lineageStore.openWorkspace(notePath);
+        await noteAIActivityStore.loadForDocument(notePath);
+        noteAIActivityStore.selectItem(detail.threadId);
+        window.dispatchEvent(new CustomEvent('void:lineage-workspace-view', {
+          detail: { view: 'ai', threadId: detail.threadId },
+        }));
+        break;
+      }
+      case 'undo':
+        editorStore.undo();
+        toastStore.info('Applied edit undone');
+        break;
+    }
   }
 
   export async function triggerSave() {
@@ -397,6 +704,47 @@
   });
 
   $effect(() => {
+    const path = doc.path;
+    if (path && path !== inlineAILoadedPath) {
+      inlineAILoadedPath = path;
+      void inlineAIStore.loadForDocument(path);
+    }
+  });
+
+  $effect(() => {
+    const threads = inlineAIStore.visibleThreads;
+    const isReady = editorStore.isReady;
+    if (isReady) {
+      editorStore.setInlineAIThreads(threads);
+    }
+    requestAnimationFrame(() => {
+      setupInlineAIObserver();
+      refreshInlineAIMarkers();
+    });
+  });
+
+  $effect(() => {
+    const composers = inlineAIComposers;
+    const activeComposerId = editorStore.activeAIInlineComposerId;
+    if (!editorStore.isReady) {
+      inlineAIComposerPositions = {};
+      return;
+    }
+
+    void tick().then(() => {
+      refreshInlineAIComposerPositions();
+      if (activeComposerId && activeComposerId !== focusedComposerInputId) {
+        focusedComposerInputId = activeComposerId;
+        void focusInlineAIComposerInput(activeComposerId);
+      }
+      if (!activeComposerId) {
+        focusedComposerInputId = null;
+      }
+    });
+    void composers;
+  });
+
+  $effect(() => {
     const blockId = aiActiveBlockId;
     if (!blockId) {
       lastAIActiveBlockId = null;
@@ -414,9 +762,19 @@
     }
   });
 
+  onMount(() => {
+    window.addEventListener('resize', refreshInlineAIComposerPositions);
+    window.addEventListener('void:inline-ai-thread-action', handleInlineAIAction);
+    return () => {
+      window.removeEventListener('resize', refreshInlineAIComposerPositions);
+      window.removeEventListener('void:inline-ai-thread-action', handleInlineAIAction);
+    };
+  });
+
   onDestroy(() => {
     if (countTimeout) clearTimeout(countTimeout);
     if (aiFollowClearTimer) clearTimeout(aiFollowClearTimer);
+    inlineAIObserver?.disconnect();
   });
 </script>
 
@@ -522,13 +880,138 @@
     </button>
   {/if}
 
+  {#if inlineAIStore.unreadCount > 0}
+    <button
+      type="button"
+      class="inline-ai-jump-pill"
+      onclick={jumpToNearestUnreadInlineAI}
+      onpointerdown={(event) => event.preventDefault()}
+      title="Jump to AI response"
+      aria-label="Jump to unread AI response"
+    >
+      <MessageSquare size={14} strokeWidth={2} aria-hidden="true" />
+      <span>AI response</span>
+      <strong>{inlineAIStore.unreadCount}</strong>
+    </button>
+  {/if}
+
+  {#if offscreenInlineAIComposers.length > 0}
+    <button
+      type="button"
+      class="inline-ai-composer-jump-pill"
+      class:has-response-pill={inlineAIStore.unreadCount > 0}
+      onclick={jumpToNearestInlineAIComposer}
+      onpointerdown={(event) => event.preventDefault()}
+      title="Jump to AI draft"
+      aria-label="Jump to off-screen AI draft"
+    >
+      <Sparkles size={14} strokeWidth={2} aria-hidden="true" />
+      <span>AI draft</span>
+      <strong>{offscreenInlineAIComposers.length}</strong>
+    </button>
+  {/if}
+
+  {#if inlineAIMarkers.length > 0}
+    <div class="inline-ai-scroll-markers" aria-label="AI response markers">
+      {#each inlineAIMarkers as marker (marker.id)}
+        <button
+          type="button"
+          class:unread={marker.unread}
+          class="inline-ai-scroll-marker"
+          style={`top: ${marker.top}%`}
+          onclick={() => jumpToInlineAIThread(marker.id)}
+          title="Jump to AI response"
+          aria-label="Jump to AI response"
+        ></button>
+      {/each}
+    </div>
+  {/if}
+
+  {#each inlineAIComposers as composer (composer.id)}
+    {@const position = inlineAIComposerPositions[composer.id]}
+    {#if position?.visible}
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <div
+        class:active={composer.isActive}
+        class="floating-inline-ai-composer"
+        data-inline-ai-composer={composer.id}
+        style={`top: ${position.top}px; left: ${position.left}px; max-width: ${position.maxWidth}px;`}
+        onpointerdown={stopComposerEvent}
+        onmousedown={stopComposerEvent}
+        onclick={stopComposerEvent}
+      >
+        {#if composer.isActive}
+          <div class="floating-inline-ai-composer-shell">
+            <Sparkles size={15} strokeWidth={2} aria-hidden="true" />
+            <input
+              name={`inline-ai-composer-${composer.id}`}
+              type="text"
+              aria-label="Describe what AI should do with this text"
+              placeholder="Describe what to do with this text..."
+              autocomplete="off"
+              spellcheck="false"
+              value={composer.draftPrompt}
+              oninput={(event) => handleComposerInput(composer, event)}
+              onkeydown={(event) => handleComposerKeyDown(event, composer)}
+              oncopy={stopComposerEvent}
+              oncut={stopComposerEvent}
+              onpaste={stopComposerEvent}
+            />
+            <button
+              type="button"
+              class="floating-inline-ai-send"
+              disabled={!composer.draftPrompt.trim()}
+              onclick={() => submitComposer(composer)}
+              title="Send"
+              aria-label="Send inline AI request"
+            >
+              <Send size={14} strokeWidth={2} aria-hidden="true" />
+              <span>Send</span>
+            </button>
+            <button
+              type="button"
+              class="floating-inline-ai-close"
+              onclick={() => cancelComposer(composer.id)}
+              title="Close"
+              aria-label="Close inline AI composer"
+            >
+              <X size={14} strokeWidth={2} aria-hidden="true" />
+            </button>
+          </div>
+        {:else}
+          <button
+            type="button"
+            class="floating-inline-ai-composer-chip"
+            onclick={() => focusComposer(composer.id)}
+            title="Continue inline Ask"
+            aria-label="Open inline AI composer"
+          >
+            <Sparkles size={14} strokeWidth={2} aria-hidden="true" />
+            <span>Ask</span>
+          </button>
+        {/if}
+      </div>
+    {/if}
+  {/each}
+
   <EditorToolbar
     editorElement={editorContainer}
     onAction={handleToolbarAction}
     onAIPrompt={handleAIPrompt}
+    aiUnavailable={!aiStore.canStartAIWork}
+    aiUnavailableMessage={aiStore.availabilityMessage ?? AI_UNAVAILABLE_MESSAGE}
+    onAIUnavailable={showAIUnavailableMessage}
   />
 
-  <SlashMenu menuState={slashMenuState} onSelect={handleSlashMenuSelect} onClose={handleSlashMenuClose} />
+  <SlashMenu
+    menuState={slashMenuState}
+    onSelect={handleSlashMenuSelect}
+    onClose={handleSlashMenuClose}
+    aiUnavailable={!aiStore.canStartAIWork}
+    aiUnavailableMessage={aiStore.availabilityMessage ?? AI_UNAVAILABLE_MESSAGE}
+    onAIUnavailable={showAIUnavailableMessage}
+  />
 
   {#if pageLinkState}
     <PageLinkPopup
@@ -618,6 +1101,253 @@
 
   .ai-follow-jump:active {
     transform: translateY(1px);
+  }
+
+  .inline-ai-jump-pill {
+    position: absolute;
+    top: 52px;
+    right: 22px;
+    z-index: 36;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 30px;
+    padding: 5px 8px 5px 10px;
+    border: 1px solid color-mix(in srgb, var(--accent-primary) 42%, var(--border-light));
+    border-radius: var(--radius-full);
+    background: var(--bg-card);
+    color: var(--text-primary);
+    font: inherit;
+    font-size: var(--text-caption);
+    font-weight: 650;
+    box-shadow: var(--shadow-md);
+    cursor: pointer;
+    transition:
+      background var(--transition-fast),
+      border-color var(--transition-fast),
+      transform var(--transition-fast);
+  }
+
+  .inline-ai-jump-pill strong {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    border-radius: var(--radius-full);
+    background: var(--accent-primary);
+    color: var(--text-inverse);
+    font-size: 11px;
+    line-height: 1;
+  }
+
+  .inline-ai-jump-pill:hover,
+  .inline-ai-jump-pill:focus-visible {
+    background: var(--bg-hover);
+    border-color: var(--accent-primary);
+    outline: none;
+  }
+
+  .inline-ai-jump-pill:active {
+    transform: translateY(1px);
+  }
+
+  .inline-ai-composer-jump-pill {
+    position: absolute;
+    top: 52px;
+    right: 22px;
+    z-index: 36;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 30px;
+    padding: 5px 8px 5px 10px;
+    border: 1px solid color-mix(in srgb, var(--accent-primary) 32%, var(--border-light));
+    border-radius: var(--radius-full);
+    background: var(--bg-card);
+    color: var(--accent-primary);
+    font: inherit;
+    font-size: var(--text-caption);
+    font-weight: 650;
+    box-shadow: var(--shadow-md);
+    cursor: pointer;
+  }
+
+  .inline-ai-composer-jump-pill.has-response-pill {
+    top: 88px;
+  }
+
+  .inline-ai-composer-jump-pill strong {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    border-radius: var(--radius-full);
+    background: color-mix(in srgb, var(--accent-primary) 12%, transparent);
+    color: var(--accent-primary);
+    font-size: 11px;
+    line-height: 1;
+  }
+
+  .inline-ai-composer-jump-pill:hover,
+  .inline-ai-composer-jump-pill:focus-visible {
+    background: var(--bg-hover);
+    border-color: var(--accent-primary);
+    outline: none;
+  }
+
+  .inline-ai-scroll-markers {
+    position: absolute;
+    top: 72px;
+    right: 7px;
+    bottom: 72px;
+    z-index: 34;
+    width: 10px;
+    pointer-events: none;
+  }
+
+  .inline-ai-scroll-marker {
+    position: absolute;
+    right: 0;
+    width: 8px;
+    height: 20px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-full);
+    background: var(--border-medium);
+    cursor: pointer;
+    pointer-events: auto;
+    transition:
+      background var(--transition-fast),
+      transform var(--transition-fast),
+      width var(--transition-fast);
+  }
+
+  .inline-ai-scroll-marker.unread {
+    width: 10px;
+    background: var(--accent-primary);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-primary) 18%, transparent);
+  }
+
+  .inline-ai-scroll-marker:hover,
+  .inline-ai-scroll-marker:focus-visible {
+    width: 12px;
+    background: var(--accent-primary);
+    outline: none;
+  }
+
+  .floating-inline-ai-composer {
+    position: fixed;
+    z-index: 48;
+    pointer-events: auto;
+  }
+
+  .floating-inline-ai-composer-shell {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    width: min(520px, calc(100vw - 32px));
+    max-width: inherit;
+    min-height: 38px;
+    padding: 4px 5px 4px 10px;
+    border: 1px solid color-mix(in srgb, var(--accent-primary) 32%, var(--border-light));
+    border-radius: var(--radius-md);
+    background: var(--bg-card);
+    color: var(--accent-primary);
+    box-shadow: 0 10px 28px rgba(15, 23, 42, 0.12);
+  }
+
+  .floating-inline-ai-composer-shell input {
+    flex: 1;
+    min-width: 0;
+    height: 30px;
+    padding: 0 4px;
+    border: 0;
+    background: transparent;
+    color: var(--text-primary);
+    font: inherit;
+    font-size: var(--text-small);
+    outline: none;
+  }
+
+  .floating-inline-ai-composer-shell input::placeholder {
+    color: var(--text-tertiary);
+  }
+
+  .floating-inline-ai-send,
+  .floating-inline-ai-close,
+  .floating-inline-ai-composer-chip {
+    border: 0;
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .floating-inline-ai-send {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    min-height: 30px;
+    padding: 0 9px 0 7px;
+    border-radius: var(--radius-sm);
+    background: var(--accent-primary);
+    color: var(--text-inverse);
+    font-size: var(--text-caption);
+    font-weight: 650;
+  }
+
+  .floating-inline-ai-send:disabled {
+    cursor: default;
+    opacity: 0.45;
+  }
+
+  .floating-inline-ai-send:not(:disabled):hover,
+  .floating-inline-ai-send:not(:disabled):focus-visible {
+    background: color-mix(in srgb, var(--accent-primary) 86%, black);
+    outline: none;
+  }
+
+  .floating-inline-ai-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-tertiary);
+  }
+
+  .floating-inline-ai-close:hover,
+  .floating-inline-ai-close:focus-visible {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+    outline: none;
+  }
+
+  .floating-inline-ai-composer-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 30px;
+    padding: 4px 10px 4px 8px;
+    border: 1px solid color-mix(in srgb, var(--accent-primary) 28%, var(--border-light));
+    border-radius: var(--radius-full);
+    background: var(--bg-card);
+    color: var(--accent-primary);
+    font-size: var(--text-caption);
+    font-weight: 650;
+    box-shadow: var(--shadow-sm);
+  }
+
+  .floating-inline-ai-composer-chip:hover,
+  .floating-inline-ai-composer-chip:focus-visible {
+    border-color: var(--accent-primary);
+    background: var(--bg-hover);
+    outline: none;
   }
 
   .editor-content-wrapper {
