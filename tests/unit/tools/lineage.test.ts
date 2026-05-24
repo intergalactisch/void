@@ -123,6 +123,7 @@ describe('lineage tools', () => {
   it('synthesizes an answer and best-note draft from lineage evidence', async () => {
     const { services } = await createLineageFixture();
     services.documents = {
+      readMeta: vi.fn().mockResolvedValue({ ok: true, value: { title: 'Launch', tags: [], protection: null } }),
       readContent: vi.fn().mockResolvedValue({ ok: true, value: 'Alpha updated' }),
     } as unknown as ToolServices['documents'];
     services.ai = {
@@ -317,6 +318,10 @@ async function createLineageFixture() {
   const services = {
     notes: { getSelectedPath: () => 'launch.md' },
     lineage,
+    documents: {
+      readMeta: vi.fn().mockResolvedValue({ ok: true, value: { title: 'Launch', tags: [], protection: null } }),
+      readContent: vi.fn().mockResolvedValue({ ok: true, value: 'Alpha updated' }),
+    },
     collaboration: { applyNoteContent },
     branches: {},
   } as unknown as ToolServices;

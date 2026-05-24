@@ -13,13 +13,16 @@ function createContext(services: Partial<ToolServices>): ToolExecutionContext {
       notesPath: '/Users/testuser/notes',
     })),
   } as unknown as ToolServices['settings'];
+  const defaultDocuments = {
+    readMeta: vi.fn().mockResolvedValue(ok({ title: 'Test note', tags: [], protection: null })),
+  } as unknown as ToolServices['documents'];
 
   return {
     invocation: {} as ToolExecutionContext['invocation'],
     reportProgress: vi.fn(),
     isCancelled: () => false,
     signal: new AbortController().signal,
-    services: { settings: defaultSettings, ...services } as ToolServices,
+    services: { settings: defaultSettings, documents: defaultDocuments, ...services } as ToolServices,
   };
 }
 

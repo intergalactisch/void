@@ -12,6 +12,7 @@ describe('editor:disable-line', () => {
     const services = {
       notes: { getSelectedPath: () => 'active.md' },
       documents: {
+        readMeta: vi.fn().mockResolvedValue(ok({ title: 'Active', tags: [], protection: null })),
         readContent: vi.fn().mockResolvedValue(ok('Keep this\nDisable this')),
         writeContent,
       },

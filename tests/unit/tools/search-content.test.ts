@@ -22,6 +22,7 @@ describe('search:content', () => {
         }),
       },
       documents: {
+        readMeta: vi.fn().mockResolvedValue(ok({ title: 'Launch Plan', tags: [], protection: null })),
         readContent: vi.fn().mockResolvedValue(ok('Intro\nDeadline is Friday\nOwner: Sara')),
       },
     } as unknown as ToolServices;
