@@ -13,6 +13,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 ### Security
 
+## [0.1.4] - 2026-05-24
+
+### Added
+- Multi-pane note workspace with split panes, workspace tabs, drag/move interactions, and note previews.
+- Protected note and locked-line flows, including unlock UI, protection runtime/adapters, and note metadata support.
+- Folder access reconnect support for macOS-scoped notes directories.
+- External markdown import and richer code block handling.
+
+### Changed
+- Reworked AI command center, command history, worker details, and operation previews.
+- Expanded todo workspace UI and state handling for denser task management.
+- Improved editor service lifecycle around mounted panes, saves, session state, and pane-specific metadata.
+
+### Fixed
+- Note title edits now propagate instantly to tabs, sidebars, recents, search results, and breadcrumbs.
+- Editor title typing no longer reverses characters while optimistic title previews update the rest of the app.
+- Multi-pane note title metadata saves back to the current document without opening duplicate tabs or renaming the file path.
+- Several sidebar, folder access, sync, markdown parsing, and protected-content edge cases.
+
 ## [0.1.3] - 2026-05-22
 
 ### Added
@@ -72,7 +91,8 @@ Initial public alpha release.
 - URL scheme allowlist on `openUrl` (http, https, mailto only).
 - Concurrent-process cap on CLI spawns.
 
-[Unreleased]: https://github.com/intergalactisch/void/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/intergalactisch/void/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/intergalactisch/void/releases/tag/v0.1.4
 [0.1.3]: https://github.com/intergalactisch/void/releases/tag/v0.1.3
 [0.1.2]: https://github.com/intergalactisch/void/releases/tag/v0.1.2
 [0.1.1]: https://github.com/intergalactisch/void/releases/tag/v0.1.1
