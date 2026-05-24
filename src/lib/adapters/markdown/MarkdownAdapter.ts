@@ -162,6 +162,11 @@ export class MarkdownAdapter implements DocumentPort {
         }
         content = decrypted.value;
       }
+      if (this.protection) {
+        const prepared = await this.protection.prepareMarkdownForLoad(content);
+        if (!prepared.ok) return err(prepared.error);
+        content = prepared.value;
+      }
 
       // Parse markdown content to ProseMirror document
       const prosemirrorDoc = parseMarkdown(content, voidSchema);
@@ -205,7 +210,12 @@ export class MarkdownAdapter implements DocumentPort {
       const prosemirrorDoc = blocksToProsemirrorDoc(document.blocks);
 
       // Serialize to markdown
-      const markdownContent = serializeToMarkdown(prosemirrorDoc);
+      let markdownContent = serializeToMarkdown(prosemirrorDoc);
+      if (this.protection) {
+        const sealed = await this.protection.sealMarkdownForSave(markdownContent);
+        if (!sealed.ok) return err(sealed.error);
+        markdownContent = sealed.value;
+      }
 
       // Update the updatedAt timestamp
       const updatedMeta: DocumentMeta = {

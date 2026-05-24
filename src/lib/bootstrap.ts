@@ -30,6 +30,9 @@ import { registerCLIProvider } from './bootstrap/registerCLI';
 // Adapters (infrastructure) - concrete implementations
 import {
   TauriFileSystemAdapter,
+  TauriFolderAccessAdapter,
+  FolderAccessFileSystemAdapter,
+  FolderAccessVoidStorageAdapter,
   TauriSettingsAdapter,
   TauriCredentialAdapter,
   TauriCryptoAdapter,
@@ -50,6 +53,7 @@ import {
 } from './adapters/tauri';
 import {
   MemoryFileSystemAdapter,
+  MemoryFolderAccessAdapter,
   MemorySettingsAdapter,
   MemoryCredentialAdapter,
   MemoryCryptoAdapter,
@@ -213,6 +217,7 @@ import {
   sessionsStore,
   syncStore,
   updaterStore,
+  folderAccessStore,
 } from './stores';
 
 // Logging
@@ -262,6 +267,7 @@ import type {
 } from './ports/inbound';
 import type {
   FileSystemPort,
+  FolderAccessPort,
   CryptoPort,
   KeyCustodyPort,
   ProtectionCodecPort,
@@ -499,6 +505,9 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
   const notesPath = settingsResult.ok
     ? settingsResult.value.notesPath || defaultNotesPath
     : defaultNotesPath;
+  const workspaceId = settingsResult.ok
+    ? settingsResult.value.activeWorkspaceId || 'legacy-workspace'
+    : 'legacy-workspace';
   const cliProviderSetting = normalizeCLIProvider(
     settingsResult.ok ? settingsResult.value.cliProvider : undefined
   );
@@ -506,10 +515,40 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
     settingsResult.ok ? settingsResult.value.aiReasoningEffort : undefined
   );
 
+  container.register(TOKENS.FolderAccess, () =>
+    useMocks
+      ? new MemoryFolderAccessAdapter()
+      : new TauriFolderAccessAdapter(container.resolve<SettingsStoragePort>(TOKENS.SettingsStorage))
+  );
+
+  if (!useMocks) {
+    container.register(TOKENS.FileSystem, () =>
+      new FolderAccessFileSystemAdapter(
+        new TauriFileSystemAdapter(),
+        container.resolve<FolderAccessPort>(TOKENS.FolderAccess),
+        workspaceId,
+        notesPath,
+      )
+    );
+  }
+
+  const folderAccess = container.resolve<FolderAccessPort>(TOKENS.FolderAccess);
+  const folderAccessResult = await folderAccess.checkAccess(workspaceId, notesPath);
+  const initialFolderAccessStatus = folderAccessResult.ok ? folderAccessResult.value : null;
+  const notesFolderAccessible = folderAccessResult.ok
+    && (folderAccessResult.value.state === 'available' || folderAccessResult.value.state === 'unsupported');
+
   // 3. Ensure notes directory exists before loading notes
   const fileSystem = container.resolve<FileSystemPort>(TOKENS.FileSystem);
-  const dirResult = await fileSystem.createDirectory(notesPath);
-  if (!dirResult.ok) {
+  const dirResult = notesFolderAccessible
+    ? await fileSystem.createDirectory(notesPath)
+    : null;
+  if (!notesFolderAccessible) {
+    log.warn('Notes directory access needs user confirmation', {
+      path: notesPath,
+      error: folderAccessResult.ok ? folderAccessResult.value.message : String(folderAccessResult.error),
+    });
+  } else if (dirResult && !dirResult.ok) {
     log.error('Failed to create notes directory', { path: notesPath, error: String(dirResult.error) });
   } else {
     log.info('Notes directory ready', { path: notesPath });
@@ -564,13 +603,15 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
     );
   } else {
     container.register(TOKENS.VoidStorage, () =>
-      new ProtectedVoidStorageAdapter(new TauriVoidStorageAdapter())
+      new ProtectedVoidStorageAdapter(
+        new FolderAccessVoidStorageAdapter(
+          new TauriVoidStorageAdapter(),
+          container.resolve<FolderAccessPort>(TOKENS.FolderAccess),
+          workspaceId,
+        )
+      )
     );
   }
-
-  const workspaceId = settingsResult.ok
-    ? settingsResult.value.activeWorkspaceId || 'legacy-workspace'
-    : 'legacy-workspace';
 
   container.register(TOKENS.ProtectionCodec, () =>
     new ProtectionRuntime(
@@ -1399,6 +1440,13 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
     return autoSyncAuthPreflight;
   };
 
+  const warmStartupAutoSyncAuth = () => {
+    if (!notesFolderAccessible || !requiresAutoSyncAuth()) return;
+    void prepareAutoSyncAuth().then((ready) => {
+      if (ready) scheduleAutoSync(5_000);
+    });
+  };
+
   events.on('sync:auth-changed', ({ auth }) => {
     autoSyncAuthPrepared = auth === 'signed-in';
     if (auth === 'signed-in') autoSyncAuthToastShown = false;
@@ -1552,6 +1600,12 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
 
   // 6. Initialize stores (UI primary adapters)
   settingsStore.init(settings);
+  folderAccessStore.init(
+    folderAccess,
+    workspaceId,
+    notesPath,
+    initialFolderAccessStatus,
+  );
   protectionStore.init(protection);
   installProtectionAutoLock();
   updaterStore.init(updater);
@@ -1612,27 +1666,35 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
   await toolStore.load();
 
   // 10. Initialize TODO store (loads todos and starts watching)
-  await todoStore.load();
-  if (todoStore.error) {
-    toastStore.error(`Watcher init failed: ${todoStore.error.message}`, { duration: 8000 });
+  if (notesFolderAccessible) {
+    await todoStore.load();
+    if (todoStore.error) {
+      toastStore.error(`Watcher init failed: ${todoStore.error.message}`, { duration: 8000 });
+    }
   }
 
   // 11. Initialize Notes store (loads folder tree)
   log.info('Loading notes', { path: notesPath });
-  await notesStore.load();
-  if (notesStore.error) {
-    log.error('Failed to load notes', { error: String(notesStore.error) });
+  if (notesFolderAccessible) {
+    await notesStore.load();
+    if (notesStore.error) {
+      log.error('Failed to load notes', { error: String(notesStore.error) });
+    } else {
+      log.info('Notes loaded', { count: notesStore.noteCount });
+    }
   } else {
-    log.info('Notes loaded', { count: notesStore.noteCount });
+    log.info('Notes load paused until folder reconnect completes');
   }
 
   // 12. Ensure .void/ directory structure exists
   const voidStorage = container.resolve<VoidStoragePort>(TOKENS.VoidStorage);
-  const voidResult = await voidStorage.ensureStructure(notesPath);
-  if (!voidResult.ok) {
-    log.error('Failed to create .void/ structure', { error: String(voidResult.error) });
-  } else {
-    log.info('.void/ structure ready');
+  if (notesFolderAccessible) {
+    const voidResult = await voidStorage.ensureStructure(notesPath);
+    if (!voidResult.ok) {
+      log.error('Failed to create .void/ structure', { error: String(voidResult.error) });
+    } else {
+      log.info('.void/ structure ready');
+    }
   }
 
   // 13. Wire the power-user command spine.
@@ -1688,9 +1750,6 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
   branchesStore.init(container.resolve<import('./ports/inbound/BranchService').BranchService>(TOKENS.BranchService));
   clipboardStore.init(clipboard);
   void (async () => {
-    if (requiresAutoSyncAuth()) {
-      await prepareAutoSyncAuth();
-    }
     await syncStore.refreshStatus({ authProbe: 'passive' });
   })();
 
@@ -1715,6 +1774,7 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
 
   // 14. Emit ready event
   events.emit('app:ready');
+  warmStartupAutoSyncAuth();
 
   // Fire-and-forget silent update check. Opting out disables this automatic
   // network call only; manual checks remain available from Settings and the

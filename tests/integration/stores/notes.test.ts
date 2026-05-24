@@ -875,6 +875,125 @@ describe('Notes Store Integration', () => {
     });
   });
 
+  describe('previewNoteTitle()', () => {
+    it('immediately updates tree, tags, recents, search results, and title lookup', () => {
+      const now = new Date('2026-05-11T15:18:00Z');
+      const item: NotesListItem = {
+        path: 'notes/old-title.md',
+        title: 'Old Title',
+        isFolder: false,
+        modifiedAt: now,
+        tags: ['project'],
+      };
+      mockService._state.items = [item];
+      mockService._state.tagGroups = [
+        {
+          id: 'project',
+          tag: 'project',
+          title: '#project',
+          notes: [item],
+          count: 1,
+          isUntagged: false,
+        },
+      ];
+      notesStore.init(mockService);
+      mockService._triggerSubscribers();
+      notesStore.recentNotes = [{ path: item.path, title: item.title, accessedAt: now }];
+      notesStore.searchResults = [item];
+
+      notesStore.previewNoteTitle(item.path, 'New Title');
+
+      expect(notesStore.items[0]?.title).toBe('New Title');
+      expect(notesStore.allNotes[0]?.title).toBe('New Title');
+      expect(notesStore.tagGroups[0]?.notes[0]?.title).toBe('New Title');
+      expect(notesStore.recentNotes[0]?.title).toBe('New Title');
+      expect(notesStore.searchResults[0]?.title).toBe('New Title');
+      expect(notesStore.titleForPath(item.path)).toBe('New Title');
+    });
+
+    it('keeps pending title previews across stale service updates and refreshes', async () => {
+      const now = new Date('2026-05-11T15:18:00Z');
+      const oldItem: NotesListItem = {
+        path: 'notes/old-title.md',
+        title: 'Old Title',
+        isFolder: false,
+        modifiedAt: now,
+        tags: [],
+      };
+      mockService._state.items = [oldItem];
+      mockService.refresh = vi.fn().mockImplementation(async () => {
+        mockService._state.items = [oldItem];
+        mockService._triggerSubscribers();
+        return ok([oldItem]);
+      });
+      notesStore.init(mockService);
+      mockService._triggerSubscribers();
+
+      notesStore.previewNoteTitle(oldItem.path, 'New Title');
+      mockService._triggerSubscribers();
+      await notesStore.refresh();
+
+      expect(notesStore.items[0]?.title).toBe('New Title');
+      expect(notesStore.titleForPath(oldItem.path)).toBe('New Title');
+    });
+
+    it('clears the pending preview after a successful same-path rename', async () => {
+      const now = new Date('2026-05-11T15:18:00Z');
+      mockService._state.items = [
+        { path: 'same-path.md', title: 'Old Title', isFolder: false, modifiedAt: now, tags: [] },
+      ];
+      mockService.renameNote = vi.fn().mockImplementation(async () => {
+        mockService._state.items = [
+          { path: 'same-path.md', title: 'New Title', isFolder: false, modifiedAt: now, tags: [] },
+        ];
+        mockService._triggerSubscribers();
+        return ok('same-path.md');
+      });
+      notesStore.init(mockService);
+      mockService._triggerSubscribers();
+      notesStore.previewNoteTitle('same-path.md', 'New Title');
+
+      const result = await notesStore.renameNote('same-path.md', 'New Title');
+
+      expect(result).toBe('same-path.md');
+      expect(notesStore.titleForPath('same-path.md')).toBe('New Title');
+
+      mockService._state.items = [
+        { path: 'same-path.md', title: 'Service Title', isFolder: false, modifiedAt: now, tags: [] },
+      ];
+      mockService._triggerSubscribers();
+      expect(notesStore.titleForPath('same-path.md')).toBe('Service Title');
+    });
+
+    it('rolls back the pending preview when rename fails', async () => {
+      const now = new Date('2026-05-11T15:18:00Z');
+      const item: NotesListItem = {
+        path: 'notes/old-title.md',
+        title: 'Old Title',
+        isFolder: false,
+        modifiedAt: now,
+        tags: [],
+      };
+      const testError = new Error('Rename failed');
+      mockService._state.items = [item];
+      mockService.renameNote = vi.fn().mockResolvedValue(err(testError));
+      notesStore.init(mockService);
+      mockService._triggerSubscribers();
+      notesStore.recentNotes = [{ path: item.path, title: item.title, accessedAt: now }];
+      notesStore.searchResults = [item];
+      notesStore.previewNoteTitle(item.path, 'New Title');
+
+      const result = await notesStore.renameNote(item.path, 'New Title');
+
+      expect(result).toBeNull();
+      expect(notesStore.error).toEqual(testError);
+      expect(notesStore.items[0]?.title).toBe('Old Title');
+      expect(notesStore.recentNotes[0]?.title).toBe('Old Title');
+      expect(notesStore.searchResults[0]?.title).toBe('Old Title');
+      expect(notesStore.titleForPath(item.path)).toBe('Old Title');
+    });
+  });
+
   describe('renameNote()', () => {
     it('calls service.renameNote() and returns new path', async () => {
       notesStore.init(mockService);

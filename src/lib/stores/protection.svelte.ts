@@ -10,11 +10,19 @@ class ProtectionStore {
   #service: ProtectionService | null = null;
   #cleanup: (() => void) | null = null;
   #authorizationTimer: ReturnType<typeof setInterval> | null = null;
+  #unlockSheetPromise: Promise<boolean> | null = null;
+  #resolveUnlockSheet: ((value: boolean) => void) | null = null;
 
   status = $state<ProtectionStatus | null>(null);
   authorizations = $state<AIContextAuthorization[]>([]);
   loading = $state(false);
   error = $state<Error | null>(null);
+  unlockSheet = $state({
+    open: false,
+    recoveryMode: false,
+    reason: 'Void asks macOS only when protected content is opened.',
+    error: null as string | null,
+  });
 
   init(service: ProtectionService) {
     this.#cleanup?.();
@@ -88,12 +96,45 @@ class ProtectionStore {
     if (unlocked) return true;
 
     const message = this.error?.message ?? '';
-    const needsRecovery = /recovery passphrase|workspace protection key|recovery material/i.test(message);
-    if (!needsRecovery || typeof window === 'undefined') return false;
+    if (typeof window === 'undefined') return false;
 
-    const passphrase = window.prompt('Enter the recovery passphrase for this Void workspace');
-    if (!passphrase) return false;
-    return this.unlock(passphrase);
+    return this.openUnlockSheet({
+      error: message || 'Could not unlock protected notes.',
+      recoveryMode: /recovery passphrase|workspace protection key|recovery material/i.test(message),
+    });
+  }
+
+  openUnlockSheet(options: { reason?: string; error?: string | null; recoveryMode?: boolean } = {}): Promise<boolean> {
+    if (this.#unlockSheetPromise) return this.#unlockSheetPromise;
+    this.unlockSheet.open = true;
+    this.unlockSheet.recoveryMode = options.recoveryMode ?? false;
+    this.unlockSheet.reason = options.reason ?? 'Void asks macOS only when protected content is opened.';
+    this.unlockSheet.error = options.error ?? null;
+    this.#unlockSheetPromise = new Promise((resolve) => {
+      this.#resolveUnlockSheet = resolve;
+    });
+    return this.#unlockSheetPromise;
+  }
+
+  closeUnlockSheet(result = false): void {
+    this.unlockSheet.open = false;
+    this.unlockSheet.recoveryMode = false;
+    this.unlockSheet.error = null;
+    this.#resolveUnlockSheet?.(result);
+    this.#resolveUnlockSheet = null;
+    this.#unlockSheetPromise = null;
+  }
+
+  async unlockFromSheet(passphrase?: string): Promise<boolean> {
+    const unlocked = await this.unlock(passphrase);
+    if (unlocked) {
+      this.closeUnlockSheet(true);
+      return true;
+    }
+    this.unlockSheet.error = this.error?.message ?? 'Could not unlock protected notes.';
+    this.unlockSheet.recoveryMode = !!passphrase
+      || /recovery passphrase|workspace protection key|recovery material/i.test(this.unlockSheet.error);
+    return false;
   }
 
   async setupRecovery(passphrase: string): Promise<boolean> {
@@ -102,6 +143,18 @@ class ProtectionStore {
     await this.refresh();
     if (!result.ok) this.error = result.error;
     return result.ok;
+  }
+
+  async protectBlock(markdown: string, lineCount: number): Promise<string | null> {
+    if (!this.#service) return null;
+    this.loading = true;
+    const result = await this.#service.protectBlock(markdown, lineCount);
+    this.loading = false;
+    if (!result.ok) {
+      this.error = result.error;
+      return null;
+    }
+    return result.value;
   }
 
   async protectNote(path: string): Promise<ProtectedNoteMeta | null> {

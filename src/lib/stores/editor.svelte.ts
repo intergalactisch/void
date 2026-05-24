@@ -678,6 +678,11 @@ class EditorStore {
     return this.#service.getTextContent(paneId);
   }
 
+  getTextBetween(from: number, to: number): string {
+    if (!this.#service) return '';
+    return this.#service.getTextBetween(from, to);
+  }
+
   getMarkdown() {
     if (!this.#service) throw new Error('EditorStore not initialized');
     return this.#service.getMarkdown();

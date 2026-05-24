@@ -11,6 +11,8 @@
 import type { Node as ProseMirrorNode, Mark } from 'prosemirror-model';
 import { buildCodeFence } from '$lib/core/codeFence';
 
+const PROTECTED_LINES_FENCE = 'void-protected-lines-v1';
+
 /**
  * Serializer state for tracking context during serialization
  */
@@ -55,6 +57,7 @@ function serializeNode(node: ProseMirrorNode, state: SerializerState): void {
     todoItem: serializeTodoItem,
     blockquote: serializeBlockquote,
     codeBlock: serializeCodeBlock,
+    protectedBlock: serializeProtectedBlock,
     horizontalRule: serializeHorizontalRule,
     image: serializeImage,
     callout: serializeCallout,
@@ -260,6 +263,42 @@ function serializeCodeBlock(node: ProseMirrorNode, state: SerializerState): void
   const meta = (node.attrs.meta as string | null) || null;
   state.output += buildCodeFence({ code: node.textContent, language, meta });
   state.output += '\n\n';
+}
+
+function serializeProtectedBlock(node: ProseMirrorNode, state: SerializerState): void {
+  const lineCount = Number(node.attrs.lineCount) || 1;
+  const envelope = parseProtectedBlockEnvelope(String(node.attrs.envelope ?? '{}'));
+  const unlocked = node.attrs.lockState === 'unlocked';
+  if (unlocked) {
+    const childState: SerializerState = {
+      output: '',
+      listDepth: 0,
+      tightList: false,
+    };
+    node.forEach((child) => serializeNode(child, childState));
+    const plaintext = childState.output.trim();
+    envelope.__void = {
+      lockState: 'unlocked',
+      plaintext,
+    };
+    envelope.lineCount = Math.max(1, plaintext.split(/\r?\n/).filter(Boolean).length || lineCount);
+  } else {
+    delete envelope.__void;
+  }
+
+  state.output += `> Locked encrypted lines · ${lineCount} line${lineCount === 1 ? '' : 's'} · Open in Void to unlock.\n\n`;
+  state.output += `\`\`\`${PROTECTED_LINES_FENCE}\n`;
+  state.output += `${JSON.stringify(envelope, null, 2)}\n`;
+  state.output += '```\n\n';
+}
+
+function parseProtectedBlockEnvelope(value: string): Record<string, unknown> & { __void?: unknown; lineCount?: unknown } {
+  try {
+    const parsed = JSON.parse(value) as Record<string, unknown> & { __void?: unknown; lineCount?: unknown };
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
 }
 
 /**

@@ -999,7 +999,23 @@ export class EditorServiceImpl implements EditorService {
       isDirty: true,
     };
 
-    this.editorPort?.updateMetadata(meta);
+    const updatedPorts = new Set<EditorPort>();
+    for (const pane of this.mountedPanes.values()) {
+      if (pane.path !== document.path) continue;
+      pane.port.updateMetadata(meta);
+      updatedPorts.add(pane.port);
+    }
+    if (this.editorPort && !updatedPorts.has(this.editorPort)) {
+      this.editorPort.updateMetadata(meta);
+    }
+
+    const session = this.sessions.get(document.path);
+    if (session) {
+      session.document = document;
+      session.isDirty = true;
+      session.editCounter += 1;
+    }
+
     this.updateState({ document, isDirty: true });
     events.emit('editor:change', { document });
     this.scheduleAutosave();

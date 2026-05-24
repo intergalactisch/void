@@ -133,6 +133,25 @@ export const fileCommands = {
     invoke<void>('rename_path', { from, to }),
 };
 
+export interface FolderAccessBookmark {
+  path: string;
+  bookmarkData: string;
+  stale: boolean;
+}
+
+export const folderAccessCommands = {
+  createBookmark: (path: string): Promise<FolderAccessBookmark> =>
+    invoke<FolderAccessBookmark>('folder_access_create_bookmark', { path }),
+  requestAccess: (suggestedPath: string): Promise<FolderAccessBookmark> =>
+    invoke<FolderAccessBookmark>('folder_access_request_access', { suggestedPath }),
+  resolveBookmark: (bookmarkData: string): Promise<FolderAccessBookmark> =>
+    invoke<FolderAccessBookmark>('folder_access_resolve_bookmark', { bookmarkData }),
+  start: (bookmarkData: string): Promise<FolderAccessBookmark> =>
+    invoke<FolderAccessBookmark>('folder_access_start', { bookmarkData }),
+  stop: (bookmarkData: string): Promise<void> =>
+    invoke<void>('folder_access_stop', { bookmarkData }),
+};
+
 /**
  * Settings commands
  */

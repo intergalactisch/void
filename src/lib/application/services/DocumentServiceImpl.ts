@@ -25,6 +25,7 @@ import { resourceLock } from '$lib/events/queue/ResourceLock';
 import { getLogger } from '$lib/logging';
 
 const log = getLogger('DocumentService');
+const PROTECTED_LINES_FENCE = 'void-protected-lines-v1';
 
 export class DocumentServiceImpl implements DocumentService {
   constructor(
@@ -48,7 +49,7 @@ export class DocumentServiceImpl implements DocumentService {
     if (isLockedProtectedMeta(doc.meta)) {
       return err(new Error('Protected note is locked.'));
     }
-    const markdown = this.markdown.serializeBlocks(doc.blocks);
+    const markdown = redactProtectedLineCapsules(this.markdown.serializeBlocks(doc.blocks));
 
     log.debug('readContent success', { path, length: markdown.length });
     return ok(markdown);
@@ -107,7 +108,7 @@ export class DocumentServiceImpl implements DocumentService {
     }
     return ok({
       document: doc,
-      markdown: this.markdown.serializeBlocks(doc.blocks),
+      markdown: redactProtectedLineCapsules(this.markdown.serializeBlocks(doc.blocks)),
     });
   }
 
@@ -134,6 +135,10 @@ export class DocumentServiceImpl implements DocumentService {
     markdown: string,
     lineage?: LineageRecordOptions
   ): Promise<Result<string, Error>> {
+    if (lineage?.actor?.kind === 'ai-agent' && documentHasProtectedBlocks(document)) {
+      return err(new Error('Protected encrypted lines require explicit AI access before AI can edit this note.'));
+    }
+
     // Parse markdown into domain blocks via the serializer port
     document.blocks = this.markdown.parseToBlocks(markdown);
 
@@ -269,6 +274,28 @@ export class DocumentServiceImpl implements DocumentService {
     const normalizedTitle = title.trim().replace(/\s+/g, ' ').toLowerCase();
     return `note:create:${normalizedFolder}:${normalizedTitle}`;
   }
+}
+
+function documentHasProtectedBlocks(document: Document): boolean {
+  const visit = (blocks: Document['blocks']): boolean =>
+    blocks.some((block) => block.type === 'protectedBlock' || visit(block.children));
+  return visit(document.blocks);
+}
+
+function redactProtectedLineCapsules(markdown: string): string {
+  const pattern = new RegExp(
+    `\\\`\\\`\\\`${PROTECTED_LINES_FENCE}\\s*\\n([\\s\\S]*?)\\n\\\`\\\`\\\`(?=\\n|$)`,
+    'g',
+  );
+  return markdown.replace(pattern, (match, json: string) => {
+    try {
+      const envelope = JSON.parse(String(json)) as Record<string, unknown> & { __void?: unknown };
+      delete envelope.__void;
+      return `\`\`\`${PROTECTED_LINES_FENCE}\n${JSON.stringify(envelope, null, 2)}\n\`\`\``;
+    } catch {
+      return match;
+    }
+  });
 }
 
 function lineageFromOperationSource(source: OperationSource): LineageRecordOptions {

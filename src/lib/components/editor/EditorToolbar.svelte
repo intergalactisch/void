@@ -8,7 +8,7 @@
    */
 
   import { onMount, onDestroy } from 'svelte';
-  import { FileText, Highlighter, Link2 } from '@lucide/svelte';
+  import { FileText, Highlighter, Link2, Lock } from '@lucide/svelte';
 
   interface Props {
     canUndo?: boolean;
@@ -22,6 +22,8 @@
     /** Callback when AI rewrite is invoked — called with selection text + range
      *  before focus leaves the editor (so we can preserve the range). */
     onAIPrompt?: (selectionText: string, selectionRange: Range) => void;
+    /** Callback when line protection is invoked from the active selection. */
+    onProtectSelection?: (selectionText: string, selectionRange: Range) => void;
     aiUnavailable?: boolean;
     aiUnavailableMessage?: string;
     onAIUnavailable?: () => void;
@@ -35,6 +37,7 @@
     editorElement = null,
     onAction,
     onAIPrompt,
+    onProtectSelection,
     aiUnavailable = false,
     aiUnavailableMessage = 'Install a local AI to use this feature.',
     onAIUnavailable,
@@ -140,7 +143,7 @@
     // translateX(-50%). Estimate width for viewport clamping only — once
     // rendered we re-measure, but the estimate keeps the first paint stable.
     const measured = toolbarElement?.offsetWidth ?? 0;
-    const estimatedWidth = measured > 0 ? measured : 360;
+    const estimatedWidth = measured > 0 ? measured : onProtectSelection ? 440 : 360;
     const halfWidth = estimatedWidth / 2;
     const minLeft = 8 + halfWidth;
     const maxLeft = window.innerWidth - 8 - halfWidth;
@@ -286,6 +289,13 @@
     onAction('removeLink');
     isLinkPopupOpen = false;
     linkUrl = '';
+  }
+  function handleProtectSelection(event: MouseEvent) {
+    event.preventDefault();
+    event.stopPropagation();
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) return;
+    onProtectSelection?.(selection.toString(), selection.getRangeAt(0).cloneRange());
   }
   function handleLinkKeyDown(event: KeyboardEvent) {
     if (event.key === 'Enter') {
@@ -543,6 +553,21 @@
 
     <span class="tb-divider" aria-hidden="true"></span>
 
+    {#if onProtectSelection}
+      <button
+        type="button"
+        class="tb-btn tb-btn-protect"
+        title="Protect selected lines"
+        aria-label="Protect selected lines"
+        onmousedown={handleProtectSelection}
+      >
+        <Lock size={14} strokeWidth={1.9} aria-hidden="true" />
+        <span class="tb-btn-label">Protect</span>
+      </button>
+
+      <span class="tb-divider" aria-hidden="true"></span>
+    {/if}
+
     <!-- AI rewrite — primary affordance, indigo, labeled -->
     <button
       type="button"
@@ -707,6 +732,24 @@
     color: var(--text-muted);
   }
   .tb-btn-ai .tb-btn-label {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: -0.005em;
+    line-height: 1;
+  }
+
+  .tb-btn-protect {
+    width: auto;
+    padding: 0 9px 0 7px;
+    gap: 5px;
+    color: var(--accent-primary);
+    background: color-mix(in srgb, var(--accent-primary) 10%, transparent);
+  }
+  .tb-btn-protect:hover {
+    background: color-mix(in srgb, var(--accent-primary) 15%, transparent);
+    color: var(--accent-primary);
+  }
+  .tb-btn-protect .tb-btn-label {
     font-size: 12px;
     font-weight: 600;
     letter-spacing: -0.005em;

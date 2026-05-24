@@ -235,6 +235,35 @@ describe('DocumentServiceImpl', () => {
 
       expect(result.ok).toBe(false);
     });
+
+    it('redacts unlocked protected line plaintext from headless reads', async () => {
+      await documentPort.create('test.md', 'Test Note');
+      (markdown.serializeBlocks as ReturnType<typeof vi.fn>).mockReturnValue([
+        '```void-protected-lines-v1',
+        JSON.stringify({
+          id: 'pblk_1',
+          version: 1,
+          algorithm: 'AES-256-GCM',
+          keyId: 'pkey_1',
+          nonce: 'nonce',
+          ciphertext: 'ciphertext',
+          wrappedDek: { version: 1, algorithm: 'AES-256-GCM', kdf: 'none', nonce: 'n', ciphertext: 'c' },
+          lineCount: 1,
+          protectedAt: '2026-05-24T00:00:00.000Z',
+          titleVisible: true,
+          __void: { lockState: 'unlocked', plaintext: 'API_KEY=secret' },
+        }, null, 2),
+        '```',
+      ].join('\n'));
+
+      const result = await service.readContent('test.md');
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value).not.toContain('API_KEY=secret');
+      expect(result.value).not.toContain('__void');
+      expect(result.value).toContain('void-protected-lines-v1');
+    });
   });
 
   describe('writeContent', () => {
@@ -284,6 +313,40 @@ describe('DocumentServiceImpl', () => {
           summary: 'AI rewrite',
         }),
       );
+    });
+
+    it('blocks AI writes to notes containing protected line capsules', async () => {
+      const created = await documentPort.create('test.md', 'Test Note');
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+      created.value.blocks = [{
+        id: 'block-protected',
+        type: 'protectedBlock',
+        content: '',
+        marks: [],
+        children: [],
+        attrs: {
+          type: 'protectedBlock',
+          protectionId: 'pblk_1',
+          keyId: 'pkey_1',
+          algorithm: 'AES-256-GCM',
+          envelopeVersion: 1,
+          protectedAt: '2026-05-24T00:00:00.000Z',
+          titleVisible: true,
+          lineCount: 1,
+          lockState: 'unlocked',
+          envelope: '{}',
+        },
+      }];
+
+      const result = await service.writeContent('test.md', '# Updated', {
+        actor: { kind: 'ai-agent' },
+        intentKind: 'rewrite',
+        summary: 'AI rewrite',
+      });
+
+      expect(result.ok).toBe(false);
+      expect(documentPort.save).not.toHaveBeenCalled();
     });
 
     it('exposes lineage ownership while a generated write holds the note lane', async () => {

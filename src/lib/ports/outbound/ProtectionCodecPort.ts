@@ -18,9 +18,19 @@ export interface ProtectedDocumentEnvelope {
   };
 }
 
+export interface ProtectedBlockEnvelope extends ProtectedDocumentEnvelope {
+  id: string;
+  lineCount: number;
+  protectedAt: string;
+  titleVisible: boolean;
+}
+
 export interface ProtectionCodecPort {
   lockState(): LockState;
   metaForLoad(meta: DocumentMeta): DocumentMeta;
+  prepareMarkdownForLoad(markdown: string): Promise<Result<string, Error>>;
+  sealMarkdownForSave(markdown: string): Promise<Result<string, Error>>;
+  encryptProtectedBlock(markdown: string, lineCount: number): Promise<Result<string, Error>>;
   encryptDocument(
     path: string,
     meta: DocumentMeta,

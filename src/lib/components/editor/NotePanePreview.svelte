@@ -16,7 +16,7 @@
   }
 
   const noteTitle = $derived(
-    notesStore.allNotes.find((note) => note.path === notePath)?.title ?? basename(notePath)
+    notesStore.titleForPath(notePath, basename(notePath))
   );
 
   const folderCrumb = $derived.by(() => {

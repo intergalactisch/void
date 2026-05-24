@@ -11,10 +11,6 @@
   };
 
   let contextMenu = $state<ContextMenuState | null>(null);
-  let paneDragOverTabId = $state<string | null>(null);
-  let paneTabHoverTargetId: string | null = null;
-  let paneTabHoverTimer: ReturnType<typeof setTimeout> | null = null;
-  const PANE_TAB_HOVER_MS = 450;
 
   function basename(path: string): string {
     const last = path.split('/').pop() ?? path;
@@ -23,7 +19,7 @@
 
   function titleForPath(path: string | null): string {
     if (!path) return 'Choose note';
-    return notesStore.allNotes.find((note) => note.path === path)?.title ?? basename(path);
+    return notesStore.titleForPath(path, basename(path));
   }
 
   function pathsForTab(tab: NoteWorkspaceTab): string[] {
@@ -134,61 +130,6 @@
     handleSwitch(tab);
   }
 
-  function hasPaneDrag(event: DragEvent): boolean {
-    const types = event.dataTransfer?.types;
-    if (!types) return false;
-    return Array.from(types).includes('application/x-void-pane');
-  }
-
-  function clearPaneTabHover(): void {
-    if (paneTabHoverTimer) {
-      clearTimeout(paneTabHoverTimer);
-      paneTabHoverTimer = null;
-    }
-    paneTabHoverTargetId = null;
-    paneDragOverTabId = null;
-  }
-
-  function schedulePaneTabActivation(tab: NoteWorkspaceTab): void {
-    if (tab.id === noteWorkspaceStore.activeTabId) return;
-    if (paneTabHoverTargetId === tab.id) return;
-    if (paneTabHoverTimer) clearTimeout(paneTabHoverTimer);
-    paneTabHoverTargetId = tab.id;
-    paneTabHoverTimer = setTimeout(() => {
-      handleSwitch(tab);
-      paneTabHoverTimer = null;
-      paneTabHoverTargetId = null;
-    }, PANE_TAB_HOVER_MS);
-  }
-
-  function handlePaneTabDragOver(event: DragEvent, tab: NoteWorkspaceTab): void {
-    if (!hasPaneDrag(event)) return;
-    event.preventDefault();
-    event.dataTransfer!.dropEffect = 'move';
-    paneDragOverTabId = tab.id;
-    schedulePaneTabActivation(tab);
-  }
-
-  function handlePaneTabDragLeave(event: DragEvent, tab: NoteWorkspaceTab): void {
-    if (!hasPaneDrag(event)) return;
-    const nextTarget = event.relatedTarget;
-    if (nextTarget instanceof Node && (event.currentTarget as HTMLElement).contains(nextTarget)) {
-      return;
-    }
-    if (paneDragOverTabId === tab.id) paneDragOverTabId = null;
-    if (paneTabHoverTargetId === tab.id) {
-      if (paneTabHoverTimer) clearTimeout(paneTabHoverTimer);
-      paneTabHoverTimer = null;
-      paneTabHoverTargetId = null;
-    }
-  }
-
-  function handlePaneTabDrop(event: DragEvent, tab: NoteWorkspaceTab): void {
-    if (!hasPaneDrag(event)) return;
-    event.preventDefault();
-    handleSwitch(tab);
-    clearPaneTabHover();
-  }
 </script>
 
 {#if noteWorkspaceStore.tabs.length > 0}
@@ -202,7 +143,7 @@
         class="workspace-tab"
         class:active
         class:dirty
-        class:pane-drag-over={paneDragOverTabId === tab.id}
+        data-tab-id={tab.id}
         role="tab"
         aria-selected={active}
         tabindex={active ? 0 : -1}
@@ -210,10 +151,6 @@
         onclick={() => handleSwitch(tab)}
         oncontextmenu={(event) => handleContextMenu(event, tab)}
         onkeydown={(event) => handleKeydown(event, tab)}
-        ondragenter={(event) => handlePaneTabDragOver(event, tab)}
-        ondragover={(event) => handlePaneTabDragOver(event, tab)}
-        ondragleave={(event) => handlePaneTabDragLeave(event, tab)}
-        ondrop={(event) => handlePaneTabDrop(event, tab)}
       >
         <span class="workspace-tab-label">{tabLabel(tab)}</span>
         {#if paneCount > 1}
@@ -321,7 +258,7 @@
     border-top-color: var(--accent-primary);
   }
 
-  .workspace-tab.pane-drag-over {
+  :global(.workspace-tab[data-pane-move-hover='true']) {
     background: var(--surface-base);
     color: var(--text-primary);
     box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-primary) 38%, transparent);

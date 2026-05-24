@@ -120,6 +120,8 @@ import { createBlockNodeViewFactory, createContextAwareFactory, type BlockNodeVi
 import type { CommandRegistryPort, RegisteredCommand, CommandContext } from '$lib/ports/outbound';
 import { EMPTY_SCOPE } from '$lib/domain/values';
 
+const PROTECTED_LINES_FENCE = 'void-protected-lines-v1';
+
 /**
  * Event handler type for EditorPort events.
  */
@@ -1617,8 +1619,9 @@ export class ProseMirrorAdapter implements EditorPort {
 
     const pmDoc = parseMarkdown(markdown);
     if (!pmDoc.content.childCount) return Slice.empty;
+    const isProtectedLinesCapsule = containsProtectedLinesCapsule(markdown);
 
-    if (inlineOnly) {
+    if (inlineOnly && !isProtectedLinesCapsule) {
       const firstChild = pmDoc.content.firstChild;
       if (firstChild?.isTextblock) {
         return new Slice(firstChild.content, 0, 0);
@@ -1626,7 +1629,7 @@ export class ProseMirrorAdapter implements EditorPort {
       return new Slice(Fragment.from(this.view!.state.schema.text(markdown)), 0, 0);
     }
 
-    if (!markdown.includes('\n') && pmDoc.content.childCount === 1) {
+    if (!isProtectedLinesCapsule && !markdown.includes('\n') && pmDoc.content.childCount === 1) {
       const firstChild = pmDoc.content.firstChild;
       if (firstChild?.isTextblock) {
         return new Slice(firstChild.content, 0, 0);
@@ -2175,6 +2178,10 @@ export class ProseMirrorAdapter implements EditorPort {
     }
     return proseMirrorToDomain(pmDoc, this.currentDocument);
   }
+}
+
+function containsProtectedLinesCapsule(markdown: string): boolean {
+  return new RegExp(`(^|\\n)\\s*\\\`\\\`\\\`${PROTECTED_LINES_FENCE}(\\s|\\n)`).test(markdown);
 }
 
 interface InlineTextRangeCandidate {

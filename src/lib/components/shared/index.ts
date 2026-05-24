@@ -22,3 +22,5 @@ export { default as AppTitlebar } from './AppTitlebar.svelte';
 export { default as PulseInbox } from './PulseInbox.svelte';
 export { default as ClipboardHistoryPicker } from './ClipboardHistoryPicker.svelte';
 export { default as VirtualList } from './VirtualList.svelte';
+export { default as ProtectionUnlockSheet } from './ProtectionUnlockSheet.svelte';
+export { default as FolderReconnectSheet } from './FolderReconnectSheet.svelte';

@@ -63,6 +63,9 @@ export function blockToPmNode(block: Block): PmNode {
   if (block.type === 'toggle') {
     return toggleBlockToPmNode(block);
   }
+  if (block.type === 'protectedBlock') {
+    return protectedBlockToPmNode(block);
+  }
   if (block.type === 'table') {
     return tableBlockToPmNode(block);
   }
@@ -224,6 +227,8 @@ export function getNodeTypeForBlockType(type: BlockType) {
       return voidSchema.nodes.blockquote;
     case 'codeBlock':
       return voidSchema.nodes.codeBlock;
+    case 'protectedBlock':
+      return voidSchema.nodes.protectedBlock;
     case 'horizontalRule':
       return voidSchema.nodes.horizontalRule;
     case 'callout':
@@ -344,6 +349,8 @@ export function nodeTypeToBlockType(node: PmNode): BlockType | null {
       return 'blockquote';
     case 'codeBlock':
       return 'codeBlock';
+    case 'protectedBlock':
+      return 'protectedBlock';
     case 'horizontalRule':
       return 'horizontalRule';
     case 'callout':
@@ -400,6 +407,19 @@ export function buildBlockAttrs(node: PmNode, blockType: BlockType): BlockAttrs 
         type: 'codeBlock',
         language: node.attrs.language as string | null,
         meta: node.attrs.meta as string | null,
+      };
+    case 'protectedBlock':
+      return {
+        type: 'protectedBlock',
+        protectionId: node.attrs.protectionId as string,
+        keyId: node.attrs.keyId as string,
+        algorithm: node.attrs.algorithm as string,
+        envelopeVersion: node.attrs.envelopeVersion as number,
+        protectedAt: node.attrs.protectedAt as string,
+        titleVisible: node.attrs.titleVisible !== false,
+        lineCount: node.attrs.lineCount as number,
+        lockState: node.attrs.lockState === 'unlocked' ? 'unlocked' : 'locked',
+        envelope: node.attrs.envelope as string,
       };
     case 'todoItem':
       return {
@@ -577,6 +597,31 @@ function toggleBlockToPmNode(block: Block): PmNode {
         : false,
     },
     Fragment.from([summary, body]),
+  );
+}
+
+function protectedBlockToPmNode(block: Block): PmNode {
+  const protectedBlockType = voidSchema.nodes.protectedBlock;
+  if (!protectedBlockType) {
+    throw new Error('Schema missing protectedBlock node type');
+  }
+  const attrs = block.attrs.type === 'protectedBlock'
+    ? block.attrs as Extract<BlockAttrs, { type: 'protectedBlock' }>
+    : null;
+  return protectedBlockType.create(
+    {
+      id: block.id,
+      protectionId: attrs?.protectionId ?? '',
+      keyId: attrs?.keyId ?? '',
+      algorithm: attrs?.algorithm ?? 'AES-256-GCM',
+      envelopeVersion: attrs?.envelopeVersion ?? 1,
+      protectedAt: attrs?.protectedAt ?? '',
+      titleVisible: attrs?.titleVisible ?? true,
+      lineCount: attrs?.lineCount ?? 1,
+      lockState: attrs?.lockState ?? 'locked',
+      envelope: attrs?.envelope ?? '',
+    },
+    Fragment.from(block.children.map((child) => blockToPmNode(child))),
   );
 }
 

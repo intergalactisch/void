@@ -18,6 +18,9 @@
 
 // Adapters
 export { TauriFileSystemAdapter } from './TauriFileSystemAdapter';
+export { TauriFolderAccessAdapter } from './TauriFolderAccessAdapter';
+export { FolderAccessFileSystemAdapter } from './FolderAccessFileSystemAdapter';
+export { FolderAccessVoidStorageAdapter } from './FolderAccessVoidStorageAdapter';
 export { TauriSettingsAdapter } from './TauriSettingsAdapter';
 export { TauriCredentialAdapter } from './TauriCredentialAdapter';
 export { TauriCryptoAdapter } from './TauriCryptoAdapter';
@@ -45,6 +48,7 @@ export {
   settingsCommands,
   updaterCommands,
   credentialCommands,
+  folderAccessCommands,
   protectionCommands,
   gitCommands,
   githubCommands,

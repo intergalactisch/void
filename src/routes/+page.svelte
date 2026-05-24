@@ -13,7 +13,7 @@
   import CreateFolderModal from '$lib/components/navigation/CreateFolderModal.svelte';
   import DeleteFolderModal from '$lib/components/navigation/DeleteFolderModal.svelte';
   import { NotePaneWorkspace, WorkspaceTabs } from '$lib/components/editor';
-  import { StatusBar, SettingsPanel, LogPanel, ToastContainer, PulseInbox, ClipboardHistoryPicker, SyncConflictWorkspace } from '$lib/components/shared';
+  import { StatusBar, SettingsPanel, LogPanel, ToastContainer, PulseInbox, ClipboardHistoryPicker, SyncConflictWorkspace, ProtectionUnlockSheet, FolderReconnectSheet } from '$lib/components/shared';
   import { logStore } from '$lib/stores';
   import { AICommandCenter } from '$lib/components/ai-command';
   import { TodoWorkspace } from '$lib/components/todo';
@@ -281,22 +281,26 @@
     await editorStore.saveDocument();
   }
 
-  async function handleTitleRename(newTitle: string) {
-    const path = notesStore.selectedPath;
+  function handleTitleRename(newTitle: string, notePath?: string) {
+    const title = newTitle.trim();
+    if (!title) return;
+
+    const path = notePath ?? editorStore.activePath ?? notesStore.selectedPath;
     if (!path) return;
 
-    if (editorStore.activePath === path && editorStore.isDirty) {
-      const saveResult = await editorStore.saveDocument();
-      if (!saveResult.ok) {
-        error = saveResult.error.message;
-        return;
-      }
+    const previousTitle = editorStore.activePath === path
+      ? editorStore.document?.meta.title ?? notesStore.titleForPath(path)
+      : notesStore.titleForPath(path);
+    notesStore.previewNoteTitle(path, title);
+
+    const result = editorStore.updateDocumentMeta({ title });
+    if (!result.ok) {
+      notesStore.previewNoteTitle(path, previousTitle);
+      error = result.error.message;
+      return;
     }
 
-    const newPath = await notesStore.renameNote(path, newTitle);
-    if (newPath) {
-      noteWorkspaceStore.renameNotePath(path, newPath);
-    }
+    error = null;
   }
 
   async function revealCurrentNote() {
@@ -1302,7 +1306,7 @@
         {#if currentDocument && notesStore.selectedPath}
           <Breadcrumbs
             path={notesStore.selectedPath}
-            title={currentDocument.meta.title}
+            title={notesStore.titleForPath(notesStore.selectedPath, currentDocument.meta.title)}
             onNavigate={handleBreadcrumbNavigate}
           />
         {:else if activeTagView}
@@ -1564,9 +1568,7 @@
           onSaveStatusChange={(status) => { saveStatus = status; }}
           onCountsChange={(wc, cc) => { wordCount = wc; charCount = cc; }}
           onError={(err) => { error = err; }}
-          onTitleRename={(newTitle) => {
-            void handleTitleRename(newTitle);
-          }}
+          onTitleRename={handleTitleRename}
           {editorStyle}
         />
       {/if}
@@ -1613,6 +1615,12 @@
 
   <!-- GitHub sync conflict workspace -->
   <SyncConflictWorkspace />
+
+  <!-- Protected notes unlock -->
+  <ProtectionUnlockSheet />
+
+  <!-- macOS notes folder reconnect -->
+  <FolderReconnectSheet />
 
   {#if pendingNoteDelete}
     <!-- svelte-ignore a11y_no_static_element_interactions -->

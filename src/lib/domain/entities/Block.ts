@@ -40,6 +40,7 @@ export type BlockAttrs =
   | ParagraphAttrs
   | HeadingAttrs
   | CodeBlockAttrs
+  | ProtectedBlockAttrs
   | ImageAttrs
   | TodoAttrs
   | CalloutAttrs
@@ -65,6 +66,19 @@ export interface CodeBlockAttrs {
   type: 'codeBlock';
   language: string | null;
   meta?: string | null;
+}
+
+export interface ProtectedBlockAttrs {
+  type: 'protectedBlock';
+  protectionId: string;
+  keyId: string;
+  algorithm: string;
+  envelopeVersion: number;
+  protectedAt: string;
+  titleVisible: boolean;
+  lineCount: number;
+  lockState: 'locked' | 'unlocked';
+  envelope: string;
 }
 
 export interface ImageAttrs {

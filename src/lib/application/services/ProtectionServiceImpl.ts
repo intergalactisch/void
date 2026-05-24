@@ -52,6 +52,10 @@ export class ProtectionServiceImpl implements ProtectionService {
     return this.runtime.setupRecovery(passphrase);
   }
 
+  protectBlock(markdown: string, lineCount: number): Promise<Result<string, Error>> {
+    return this.runtime.encryptProtectedBlock(markdown, lineCount);
+  }
+
   async protectNote(path: string): Promise<Result<ProtectedNoteMeta, Error>> {
     const loaded = await this.documentPort.load(path);
     if (!loaded.ok) return err(loaded.error);

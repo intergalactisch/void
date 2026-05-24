@@ -14,6 +14,8 @@ import { voidSchema } from '$lib/adapters/prosemirror/schema';
 import { generateBlockId } from '$lib/domain/entities/Block';
 import { parseCodeFenceInfo, renderCodeFenceHtml } from '$lib/core/codeFence';
 
+const PROTECTED_LINES_FENCE = 'void-protected-lines-v1';
+
 /**
  * Configure markdown-it with appropriate options
  */
@@ -162,8 +164,10 @@ interface Token {
  * @returns A ProseMirror document node
  */
 export function parseMarkdown(markdown: string, schema: Schema = voidSchema): ProseMirrorNode {
+  const normalizedMarkdown = normalizeProtectedLineCapsules(markdown);
+
   // Parse markdown into tokens
-  const tokens = md.parse(markdown, {});
+  const tokens = md.parse(normalizedMarkdown, {});
 
   // Convert tokens to ProseMirror nodes
   const blocks = parseTokens(tokens, schema);
@@ -183,6 +187,14 @@ export function parseMarkdown(markdown: string, schema: Schema = voidSchema): Pr
     throw new Error('Schema must have a doc node type');
   }
   return docType.create(null, blocks);
+}
+
+function normalizeProtectedLineCapsules(markdown: string): string {
+  return markdown.replace(
+    new RegExp(`(^|\\n)> Locked encrypted lines[^\\n]*\\s*\\\`\\\`\\\`${PROTECTED_LINES_FENCE}\\s*\\n?([\\s\\S]*?)\\n?\\\`\\\`\\\`(?=\\n|$)`, 'g'),
+    (_match, prefix: string, envelope: string) =>
+      `${prefix}\`\`\`${PROTECTED_LINES_FENCE}\n${envelope.trim()}\n\`\`\``,
+  );
 }
 
 /**
@@ -721,12 +733,19 @@ function parseCodeBlock(
   index: number,
   schema: Schema
 ): { node: ProseMirrorNode; nextIndex: number } {
+  const token = tokens[index];
+  if (token) {
+    const info = parseCodeFenceInfo(token.info);
+    if (info.language === PROTECTED_LINES_FENCE) {
+      return parseProtectedBlock(token, schema, index);
+    }
+  }
+
   const codeBlockType = schema.nodes['codeBlock'];
   if (!codeBlockType) {
     throw new Error('Schema must have a codeBlock node type');
   }
 
-  const token = tokens[index];
   if (!token) {
     return { node: codeBlockType.create({ id: generateBlockId(), language: null, meta: null }), nextIndex: index + 1 };
   }
@@ -748,6 +767,62 @@ function parseCodeBlock(
     ),
     nextIndex: index + 1,
   };
+}
+
+function parseProtectedBlock(
+  token: Token,
+  schema: Schema,
+  index: number,
+): { node: ProseMirrorNode; nextIndex: number } {
+  const protectedBlockType = schema.nodes['protectedBlock'];
+  if (!protectedBlockType) {
+    throw new Error('Schema must have a protectedBlock node type');
+  }
+
+  const parsed = parseProtectedLinesEnvelope(token.content || '');
+  const runtime = parsed.__void && typeof parsed.__void === 'object'
+    ? parsed.__void as { lockState?: unknown; plaintext?: unknown; error?: unknown }
+    : {};
+  const lockState = runtime.lockState === 'unlocked' ? 'unlocked' : 'locked';
+  const plaintext = lockState === 'unlocked' && typeof runtime.plaintext === 'string'
+    ? runtime.plaintext
+    : '';
+  const children: ProseMirrorNode[] = [];
+  if (plaintext.trim()) {
+    const doc = parseMarkdown(plaintext, schema);
+    doc.forEach((child) => children.push(child));
+  }
+
+  const cleanEnvelope = { ...parsed };
+  delete cleanEnvelope.__void;
+
+  return {
+    node: protectedBlockType.create(
+      {
+        id: generateBlockId(),
+        protectionId: parsed.id ?? '',
+        keyId: parsed.keyId ?? '',
+        algorithm: parsed.algorithm ?? 'AES-256-GCM',
+        envelopeVersion: parsed.version ?? 1,
+        protectedAt: parsed.protectedAt ?? '',
+        titleVisible: parsed.titleVisible !== false,
+        lineCount: Number(parsed.lineCount) || 1,
+        lockState,
+        envelope: JSON.stringify(cleanEnvelope),
+      },
+      children,
+    ),
+    nextIndex: index + 1,
+  };
+}
+
+function parseProtectedLinesEnvelope(content: string): Record<string, unknown> & { __void?: unknown } {
+  try {
+    const parsed = JSON.parse(content) as Record<string, unknown> & { __void?: unknown };
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
 }
 
 /**

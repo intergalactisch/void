@@ -17,6 +17,14 @@ export interface Workspace {
   createdAt: string;
   lastOpenedAt: string;
   sync: SyncSettings;
+  folderAccess?: WorkspaceFolderAccess;
+}
+
+export interface WorkspaceFolderAccess {
+  path: string;
+  bookmarkData: string;
+  grantedAt: string;
+  stale?: boolean;
 }
 
 export interface GitHubAccountRef {
@@ -55,6 +63,7 @@ export function validateWorkspace(input: unknown, fallback: Workspace): Workspac
   const notesPath = typeof value.notesPath === 'string' && value.notesPath.trim()
     ? value.notesPath
     : fallback.notesPath;
+  const folderAccess = normalizeWorkspaceFolderAccess(value.folderAccess);
   return {
     id: typeof value.id === 'string' && value.id.trim()
       ? value.id.trim()
@@ -68,6 +77,7 @@ export function validateWorkspace(input: unknown, fallback: Workspace): Workspac
       ? value.lastOpenedAt
       : fallback.lastOpenedAt,
     sync: validateSyncSettings(value.sync ?? fallback.sync),
+    ...(folderAccess ? { folderAccess } : {}),
   };
 }
 
@@ -83,6 +93,27 @@ export function cloneWorkspace(workspace: Workspace): Workspace {
         excludePatterns: [...workspace.sync.artifactPolicy.excludePatterns],
       },
     },
+    ...(workspace.folderAccess ? { folderAccess: { ...workspace.folderAccess } } : {}),
+  };
+}
+
+function normalizeWorkspaceFolderAccess(value: unknown): WorkspaceFolderAccess | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const candidate = value as Partial<WorkspaceFolderAccess>;
+  if (
+    typeof candidate.path !== 'string' ||
+    !candidate.path.trim() ||
+    typeof candidate.bookmarkData !== 'string'
+  ) {
+    return undefined;
+  }
+  return {
+    path: candidate.path.trim(),
+    bookmarkData: candidate.bookmarkData,
+    grantedAt: typeof candidate.grantedAt === 'string' && candidate.grantedAt
+      ? candidate.grantedAt
+      : new Date(0).toISOString(),
+    stale: candidate.stale === true,
   };
 }
 

@@ -9,6 +9,11 @@
  */
 
 export type { FileSystemPort } from './FileSystemPort';
+export type {
+  FolderAccessGrant,
+  FolderAccessPort,
+  FolderAccessStatus,
+} from './FolderAccessPort';
 export type { SettingsStoragePort } from './SettingsStoragePort';
 export type { CredentialPort } from './CredentialPort';
 export type { UpdaterPort } from './UpdaterPort';

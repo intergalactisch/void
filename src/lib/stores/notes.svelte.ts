@@ -148,6 +148,11 @@ function isSafeRelativeFolderPath(path: string): boolean {
   return path.split('/').every((segment) => !!segment && segment !== '.' && segment !== '..');
 }
 
+function basenameTitle(path: string): string {
+  const last = path.split('/').pop() ?? path;
+  return last.replace(/\.(md|markdown)$/i, '');
+}
+
 /**
  * Notes Store class with reactive state using Svelte 5 runes.
  *
@@ -162,6 +167,8 @@ class NotesStore {
   #frecency: FrecencyService | null = null;
   #sidebarPreferences: SidebarPreferencesService | null = null;
   #sidebarPreferencesUnsubscribe: (() => void) | null = null;
+  #pendingTitlePreviews = $state<Record<string, string>>({});
+  #titlePreviewOriginals = new Map<string, string>();
 
   /** Maximum number of recent notes to track */
   static readonly MAX_RECENT_NOTES = 5;
@@ -287,8 +294,9 @@ class NotesStore {
     // and notes were missed when the service drove the selection.
     this.#unsubscribe = service.subscribe((state: NotesState) => {
       const previouslySelected = this.selectedPath;
-      this.items = state.items;
-      this.tagGroups = state.tagGroups;
+      this.#reconcileTitlePreviews(state.items);
+      this.items = this.#applyTitlePreviewsToItems(state.items);
+      this.tagGroups = this.#applyTitlePreviewsToTagGroups(state.tagGroups);
       this.selectedPath = state.selectedPath;
       this.isLoading = state.isLoading;
       this.expandedFolders = new Set(state.expandedFolders);
@@ -304,8 +312,9 @@ class NotesStore {
 
     // Initialize with current state
     const initialState = service.getState();
-    this.items = initialState.items;
-    this.tagGroups = initialState.tagGroups;
+    this.#reconcileTitlePreviews(initialState.items);
+    this.items = this.#applyTitlePreviewsToItems(initialState.items);
+    this.tagGroups = this.#applyTitlePreviewsToTagGroups(initialState.tagGroups);
     this.selectedPath = initialState.selectedPath;
     if (initialState.selectedPath) {
       this.activeTagView = null;
@@ -396,6 +405,7 @@ class NotesStore {
         this.error = result.error;
         events.emit('error:user-facing', { source: 'Loading notes', error: result.error });
       } else {
+        this.#applyPendingTitlePreviews();
         this.#hydrateRecentNotes();
       }
     } catch (e) {
@@ -420,6 +430,7 @@ class NotesStore {
         this.error = result.error;
         events.emit('error:user-facing', { source: 'Refreshing notes', error: result.error });
       } else {
+        this.#applyPendingTitlePreviews();
         this.#hydrateRecentNotes();
       }
     } catch (e) {
@@ -834,14 +845,56 @@ class NotesStore {
 
     const result = await this.#service.renameNote(path, newTitle);
     if (!result.ok) {
+      this.#rollbackTitlePreview(path);
       this.error = result.error;
       events.emit('error:user-facing', { source: `Renaming ${path}`, error: result.error });
       return null;
     }
 
+    this.#removeTitlePreview(path);
     this.#moveRenamedNoteReferences(path, result.value, newTitle);
     await this.#renameSidebarPath(path, result.value, 'note');
     return result.value;
+  }
+
+  /**
+   * Optimistically update a note title across store-backed navigation surfaces.
+   * The service remains authoritative; this overlay is reconciled when rename
+   * succeeds or rolled back if persistence rejects the title.
+   */
+  previewNoteTitle(path: string, title: string): void {
+    const trimmed = title.trim();
+    if (!path || !trimmed) return;
+
+    const originalTitle = this.#titlePreviewOriginals.get(path);
+    if (originalTitle !== undefined && trimmed === originalTitle) {
+      this.#rollbackTitlePreview(path);
+      return;
+    }
+
+    if (!this.#titlePreviewOriginals.has(path)) {
+      this.#titlePreviewOriginals.set(path, this.titleForPath(path));
+    }
+
+    this.#pendingTitlePreviews = {
+      ...this.#pendingTitlePreviews,
+      [path]: trimmed,
+    };
+    this.#refreshLocalNoteTitle(path, trimmed);
+  }
+
+  /**
+   * Resolve the current display title for a note path, including optimistic
+   * title previews that may not have persisted to the service state yet.
+   */
+  titleForPath(path: string | null, fallback?: string): string {
+    if (!path) return fallback ?? 'Untitled';
+    return (
+      this.#titlePreviewForPath(path)
+      ?? this.#findNoteByPath(this.items, path)?.title
+      ?? fallback
+      ?? basenameTitle(path)
+    );
   }
 
   // =========================================================================
@@ -1738,10 +1791,127 @@ class NotesStore {
     this.expandedTagGroups = next;
   }
 
+  #titlePreviewForPath(path: string): string | null {
+    const title = this.#pendingTitlePreviews[path]?.trim();
+    return title ? title : null;
+  }
+
+  #reconcileTitlePreviews(items: NotesListItem[]): void {
+    if (Object.keys(this.#pendingTitlePreviews).length === 0) return;
+
+    let next = this.#pendingTitlePreviews;
+    let changed = false;
+    for (const [path, title] of Object.entries(this.#pendingTitlePreviews)) {
+      const item = this.#findNoteByPath(items, path);
+      if (item?.title !== title) continue;
+      if (!changed) next = { ...next };
+      delete next[path];
+      this.#titlePreviewOriginals.delete(path);
+      changed = true;
+    }
+
+    if (changed) {
+      this.#pendingTitlePreviews = next;
+    }
+  }
+
+  #applyPendingTitlePreviews(): void {
+    if (Object.keys(this.#pendingTitlePreviews).length === 0) return;
+    this.items = this.#applyTitlePreviewsToItems(this.items);
+    this.tagGroups = this.#applyTitlePreviewsToTagGroups(this.tagGroups);
+    this.searchResults = this.#applyTitlePreviewsToItems(this.searchResults);
+    this.recentNotes = this.#applyTitlePreviewsToRecentNotes(this.recentNotes);
+  }
+
+  #applyTitlePreviewsToItems(items: NotesListItem[]): NotesListItem[] {
+    return this.#applyTitleMapToItems(items, this.#pendingTitlePreviews);
+  }
+
+  #applyTitlePreviewsToTagGroups(groups: TagGroup[]): TagGroup[] {
+    return this.#applyTitleMapToTagGroups(groups, this.#pendingTitlePreviews);
+  }
+
+  #applyTitlePreviewsToRecentNotes(notes: RecentNote[]): RecentNote[] {
+    return this.#applyTitleMapToRecentNotes(notes, this.#pendingTitlePreviews);
+  }
+
+  #applyTitleMapToItems(items: NotesListItem[], titlesByPath: Record<string, string>): NotesListItem[] {
+    if (Object.keys(titlesByPath).length === 0) return items;
+
+    let changed = false;
+    const next = items.map((item) => {
+      let nextItem = item;
+      const previewTitle = titlesByPath[item.path]?.trim();
+
+      if (previewTitle && previewTitle !== item.title) {
+        nextItem = { ...nextItem, title: previewTitle };
+        changed = true;
+      }
+
+      if (item.children) {
+        const children = this.#applyTitleMapToItems(item.children, titlesByPath);
+        if (children !== item.children) {
+          nextItem = { ...nextItem, children };
+          changed = true;
+        }
+      }
+
+      return nextItem;
+    });
+
+    return changed ? next : items;
+  }
+
+  #applyTitleMapToTagGroups(groups: TagGroup[], titlesByPath: Record<string, string>): TagGroup[] {
+    if (Object.keys(titlesByPath).length === 0) return groups;
+
+    let changed = false;
+    const next = groups.map((group) => {
+      const notes = this.#applyTitleMapToItems(group.notes, titlesByPath);
+      if (notes === group.notes) return group;
+      changed = true;
+      return { ...group, notes };
+    });
+
+    return changed ? next : groups;
+  }
+
+  #applyTitleMapToRecentNotes(notes: RecentNote[], titlesByPath: Record<string, string>): RecentNote[] {
+    if (Object.keys(titlesByPath).length === 0) return notes;
+
+    let changed = false;
+    const next = notes.map((note) => {
+      const previewTitle = titlesByPath[note.path]?.trim();
+      if (!previewTitle || previewTitle === note.title) return note;
+      changed = true;
+      return { ...note, title: previewTitle };
+    });
+
+    return changed ? next : notes;
+  }
+
+  #removeTitlePreview(path: string): void {
+    if (Object.prototype.hasOwnProperty.call(this.#pendingTitlePreviews, path)) {
+      const { [path]: _removed, ...next } = this.#pendingTitlePreviews;
+      this.#pendingTitlePreviews = next;
+    }
+    this.#titlePreviewOriginals.delete(path);
+  }
+
+  #rollbackTitlePreview(path: string): void {
+    const originalTitle = this.#titlePreviewOriginals.get(path);
+    this.#removeTitlePreview(path);
+    if (originalTitle !== undefined) {
+      this.#refreshLocalNoteTitle(path, originalTitle);
+    }
+  }
+
   /**
    * Remove deleted notes from local-only navigation affordances.
    */
   #forgetDeletedNote(path: string): void {
+    this.#removeTitlePreview(path);
+
     if (this.favorites.has(path)) {
       const nextFavorites = new Set(this.favorites);
       nextFavorites.delete(path);
@@ -1809,12 +1979,13 @@ class NotesStore {
   }
 
   #refreshLocalNoteTitle(path: string, title: string): void {
+    const titleByPath = { [path]: title };
+    this.items = this.#applyTitleMapToItems(this.items, titleByPath);
+    this.tagGroups = this.#applyTitleMapToTagGroups(this.tagGroups, titleByPath);
     this.recentNotes = this.recentNotes.map((recent) =>
       recent.path === path ? { ...recent, title } : recent
     );
-    this.searchResults = this.searchResults.map((item) =>
-      item.path === path ? { ...item, title } : item
-    );
+    this.searchResults = this.#applyTitleMapToItems(this.searchResults, titleByPath);
   }
 
   /**
@@ -1867,6 +2038,8 @@ class NotesStore {
     this.favoritesExpanded = true;
     this.recentExpanded = true;
     this.expandedTagGroups = new Set();
+    this.#pendingTitlePreviews = {};
+    this.#titlePreviewOriginals.clear();
   }
 }
 

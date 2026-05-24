@@ -95,7 +95,7 @@
         oncontextmenu={(e) => handleContextMenu(e, tab.path)}
         onkeydown={(e) => handleKeydown(e, tab.path)}
       >
-        <span class="editor-tab-label">{tab.title || basename(tab.path)}</span>
+        <span class="editor-tab-label">{notesStore.titleForPath(tab.path, tab.title || basename(tab.path))}</span>
         {#if tab.isDirty}
           <span class="editor-tab-dot" aria-label="Unsaved changes"></span>
         {/if}

@@ -7,6 +7,7 @@
 
 export { settingsStore } from './settings.svelte';
 export { protectionStore } from './protection.svelte';
+export { folderAccessStore } from './folderAccess.svelte';
 export { workspaceStore } from './workspace.svelte';
 export { editorStore } from './editor.svelte';
 export { noteWorkspaceStore } from './noteWorkspace.svelte';

@@ -205,7 +205,8 @@ export class SyncServiceImpl implements SyncService {
 
     const token = await this.getToken({ allowKeychain: true });
     if (!token) {
-      const message = this.authErrorMessage() ?? 'GitHub sign-in is required before automatic sync can run';
+      const message = this.authErrorMessage()
+        ?? 'GitHub sign-in is required before automatic sync can run';
       this.updateStatus({
         ...this.status,
         operation: 'idle',

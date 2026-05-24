@@ -25,7 +25,7 @@
     createAISelectionResource,
     isAISelectionResource,
   } from '$lib/domain/values/Protection';
-  import { normalizeNoteTag } from '$lib/domain/values';
+  import { EMPTY_SELECTION, normalizeNoteTag } from '$lib/domain/values';
   import { events } from '$lib/events';
   import { buildRefId } from '$lib/domain/values';
   import { AI_UNAVAILABLE_MESSAGE } from '$lib/domain/values/AIAvailability';
@@ -47,7 +47,7 @@
     onSaveStatusChange?: (status: 'saved' | 'saving' | 'unsaved') => void;
     onCountsChange?: (wordCount: number, charCount: number) => void;
     onError?: (error: string | null) => void;
-    onTitleRename?: (newTitle: string) => void;
+    onTitleRename?: (newTitle: string, path?: string) => void;
     editorStyle?: string;
   }
 
@@ -84,12 +84,16 @@
   let mountRunId = 0;
   let destroyed = false;
   let mountedHost: HTMLDivElement | null = null;
+  let mountedPaneId = LEGACY_EDITOR_PANE_ID;
   let countTimeout: ReturnType<typeof setTimeout> | null = null;
   let wordCount = $state(0);
   let charCount = $state(0);
   let tagInputOpen = $state(false);
   let tagDraft = $state('');
   let tagInputElement: HTMLInputElement | undefined = $state(undefined);
+  let titleEditing = $state(false);
+  let titleEditOriginal: string | null = null;
+  let titleEditPath: string | null = null;
   let aiFollowPaused = $state(false);
   let lastAIActiveBlockId: string | null = null;
   let aiFollowProgrammatic = false;
@@ -146,6 +150,15 @@
   const protection = $derived(currentPaneDocument.meta.protection ?? doc.meta.protection ?? null);
   const isProtected = $derived(protection?.level === 'protected');
   const isLocked = $derived(protection?.lockState === 'locked');
+  const activeSelection = $derived.by(() =>
+    shellIsActive
+      ? paneState?.selection ?? editorStore.selection
+      : EMPTY_SELECTION
+  );
+  const hasTextSelection = $derived(
+    activeSelection.from !== activeSelection.to
+      && activeSelection.text.trim().length > 0,
+  );
   const noteLevelAIAuthorization = $derived.by(() => {
     if (!protection || protection.level !== 'protected') return null;
     const active = protectionStore.authorizations
@@ -210,6 +223,9 @@
 
   async function mountEditor(document: Document) {
     const runId = ++mountRunId;
+    const currentPaneId = paneId ?? LEGACY_EDITOR_PANE_ID;
+    const paneMode = currentPaneId !== LEGACY_EDITOR_PANE_ID;
+    mountedPaneId = currentPaneId;
     mountedHost = null;
     if (document.meta.protection?.lockState === 'locked') {
       onCountsChange?.(0, 0);
@@ -220,12 +236,12 @@
     if (!container || !mountIsCurrent(runId)) return;
 
     const autoSaveDelay = settingsStore.settings?.autoSaveDelay ?? 1000;
-    const result = paneId
-      ? await editorStore.mountPane(paneId, container, document.path, document, autoSaveDelay)
+    const result = paneMode
+      ? await editorStore.mountPane(currentPaneId, container, document.path, document, autoSaveDelay)
       : await editorStore.mount(container, document, autoSaveDelay);
 
     if (!mountIsCurrent(runId) || editorContainer !== container || !container.isConnected) {
-      editorStore.unmountPane(paneId ?? LEGACY_EDITOR_PANE_ID, container);
+      editorStore.unmountPane(currentPaneId, container);
       return;
     }
 
@@ -237,19 +253,19 @@
     mountedHost = container;
     onError?.(null);
     updateCounts();
-    if (paneId && activateOnMount) {
-      editorStore.focusPane(paneId);
-      requestAnimationFrame(() => editorStore.focusPane(paneId));
+    if (paneMode && activateOnMount) {
+      editorStore.focusPane(currentPaneId);
+      requestAnimationFrame(() => editorStore.focusPane(currentPaneId));
     }
     requestAnimationFrame(() => {
       if (!mountIsCurrent(runId) || recoveredEmptyHost || !editorContainer?.isConnected || editorContainer.childElementCount > 0) return;
       recoveredEmptyHost = true;
-      void (paneId
-        ? editorStore.mountPane(paneId, editorContainer, document.path, document, autoSaveDelay)
+      void (paneMode
+        ? editorStore.mountPane(currentPaneId, editorContainer, document.path, document, autoSaveDelay)
         : editorStore.mount(editorContainer, document, autoSaveDelay));
     });
     if (shellIsActive) aiStore.setActiveDocument(document);
-    if (!paneId || editorStore.activePaneId === paneId) {
+    if (!paneMode || editorStore.activePaneId === currentPaneId) {
       requestAnimationFrame(() => editorStore.focus());
     }
   }
@@ -493,6 +509,60 @@
     await reloadDocument();
   }
 
+  async function protectSelectedRange(text: string, from: number, to: number) {
+    const selectedText = text.trim() ? text : editorStore.getTextBetween(from, to);
+    if (!selectedText.trim() || from === to) {
+      toastStore.info('Highlight one or more lines first');
+      return;
+    }
+    let capsule = await protectionStore.protectBlock(
+      selectedText,
+      countSelectedLines(selectedText),
+    );
+    if (!capsule && /locked|workspace protection key|recovery passphrase/i.test(protectionStore.error?.message ?? '')) {
+      const unlocked = await protectionStore.unlockWithRecoveryPrompt();
+      if (unlocked) {
+        capsule = await protectionStore.protectBlock(
+          selectedText,
+          countSelectedLines(selectedText),
+        );
+      }
+    }
+    if (!capsule) {
+      toastStore.error(protectionStore.error?.message ?? 'Could not protect selected lines');
+      return;
+    }
+    editorStore.replaceRange(from, to, capsule);
+    const saved = await editorStore.saveDocument();
+    if (!saved.ok) {
+      toastStore.error(saved.error.message);
+      return;
+    }
+    toastStore.success('Selected lines protected');
+  }
+
+  async function handleProtectSelectedLines() {
+    focusShellPane();
+    const selection = editorStore.getSelection();
+    await protectSelectedRange(selection.text, selection.from, selection.to);
+  }
+
+  async function handleProtectToolbarSelection(text: string, range: Range) {
+    focusShellPane();
+    const resolved = editorStore.resolveSelectionFromDOM(range);
+    if (!resolved) {
+      toastStore.info('Highlight text inside the note first');
+      return;
+    }
+    const selectedText = editorStore.getTextBetween(resolved.from, resolved.to) || text;
+    await protectSelectedRange(selectedText, resolved.from, resolved.to);
+  }
+
+  function countSelectedLines(text: string): number {
+    const trimmed = text.replace(/\n+$/, '');
+    return Math.max(1, trimmed ? trimmed.split(/\r?\n/).length : 1);
+  }
+
   async function handleGrantNoteAIAccess(scopes: AIContextAuthorizationScope[] = ['note.read', 'note.write']) {
     const noteProtection = protection;
     if (!noteProtection) return;
@@ -670,17 +740,56 @@
     editorStore.movePageLinkSelection(direction);
   }
 
+  function currentTitle(): string {
+    return currentPaneDocument.meta.title ?? doc.meta.title;
+  }
+
+  function titleDraft(): string {
+    return titleElement?.textContent?.trim() ?? '';
+  }
+
+  function syncTitleElement(title: string, path: string | null, force = false): void {
+    if (!titleElement) return;
+    if (!force && titleEditing && titleEditPath === path) return;
+    if (titleElement.textContent !== title) {
+      titleElement.textContent = title;
+    }
+  }
+
+  function commitTitleDraft(newTitle: string): boolean {
+    const trimmed = newTitle.trim();
+    if (!trimmed) return false;
+    if (trimmed === currentTitle()) return true;
+    focusShellPane();
+    onTitleRename?.(trimmed, currentPaneDocument.path ?? doc.path);
+    return true;
+  }
+
+  function handleTitleFocus() {
+    if (isLocked) return;
+    titleEditing = true;
+    titleEditPath = currentPaneDocument.path ?? doc.path;
+    titleEditOriginal = currentTitle();
+  }
+
+  function handleTitleInput() {
+    if (isLocked) return;
+    commitTitleDraft(titleDraft());
+  }
+
   function handleTitleBlur() {
     if (isLocked) return;
-    focusShellPane();
     if (!titleElement) return;
-    const newTitle = titleElement.textContent?.trim() || '';
-    const currentTitle = currentPaneDocument.meta.title ?? doc.meta.title;
-    if (newTitle && newTitle !== currentTitle) {
-      onTitleRename?.(newTitle);
-    } else if (!newTitle) {
-      titleElement.textContent = currentTitle;
+    const newTitle = titleDraft();
+    if (!newTitle) {
+      titleElement.textContent = currentTitle();
+    } else {
+      commitTitleDraft(newTitle);
     }
+    titleEditing = false;
+    titleEditPath = null;
+    titleEditOriginal = null;
+    syncTitleElement(currentTitle(), currentPaneDocument.path ?? doc.path, true);
   }
 
   function handleTitleKeyDown(e: KeyboardEvent) {
@@ -692,9 +801,14 @@
       editorStore.focus();
     } else if (e.key === 'Escape') {
       e.preventDefault();
+      const restoreTitle = titleEditOriginal ?? currentTitle();
+      titleEditing = false;
+      titleEditPath = null;
       if (titleElement) {
-        titleElement.textContent = currentPaneDocument.meta.title ?? doc.meta.title;
+        titleElement.textContent = restoreTitle;
       }
+      commitTitleDraft(restoreTitle);
+      titleEditOriginal = null;
       titleElement?.blur();
       focusShellPane();
       editorStore.focus();
@@ -795,6 +909,15 @@
     const target = event.target as HTMLElement | null;
     if (target?.closest('.ai-follow-jump, .inline-ai-jump-pill, .inline-ai-composer-jump-pill, .inline-ai-scroll-marker, .floating-inline-ai-composer')) return;
     pauseAIFollow();
+  }
+
+  async function handleEditorClick(event: MouseEvent) {
+    handleEditorUserIntent(event);
+    const target = event.target as HTMLElement | null;
+    if (!target?.closest('.void-protected-lines-locked')) return;
+    event.preventDefault();
+    event.stopPropagation();
+    await handleUnlockNote();
   }
 
   function getInlineAIThreadElement(threadId: string): HTMLElement | null {
@@ -1019,6 +1142,22 @@
   });
 
   $effect(() => {
+    const title = currentPaneDocument.meta.title ?? doc.meta.title;
+    const path = currentPaneDocument.path ?? doc.path;
+    if (titleEditing && titleEditPath !== null && path !== titleEditPath) {
+      titleEditing = false;
+      titleEditPath = null;
+      titleEditOriginal = null;
+    }
+    if (isLocked && titleEditing) {
+      titleEditing = false;
+      titleEditPath = null;
+      titleEditOriginal = null;
+    }
+    syncTitleElement(title, path, path !== titleEditPath || isLocked);
+  });
+
+  $effect(() => {
     const path = doc.path;
     if (path && path !== inlineAILoadedPath) {
       inlineAILoadedPath = path;
@@ -1078,6 +1217,7 @@
   });
 
   onMount(() => {
+    mountedPaneId = paneId ?? LEGACY_EDITOR_PANE_ID;
     window.addEventListener('resize', refreshInlineAIComposerPositions);
     window.addEventListener('void:inline-ai-thread-action', handleInlineAIAction);
     return () => {
@@ -1089,7 +1229,7 @@
   onDestroy(() => {
     destroyed = true;
     mountRunId += 1;
-    editorStore.unmountPane(paneId ?? LEGACY_EDITOR_PANE_ID, mountedHost ?? editorContainer ?? null);
+    editorStore.unmountPane(mountedPaneId, mountedHost ?? editorContainer ?? null);
     if (countTimeout) clearTimeout(countTimeout);
     if (aiFollowClearTimer) clearTimeout(aiFollowClearTimer);
     inlineAIObserver?.disconnect();
@@ -1116,11 +1256,13 @@
           class="note-title"
           contenteditable={!isLocked}
           spellcheck="false"
+          onfocus={handleTitleFocus}
+          oninput={handleTitleInput}
           onblur={handleTitleBlur}
           onkeydown={handleTitleKeyDown}
           role="textbox"
           aria-label="Note title"
-        >{doc.meta.title}</h1>
+        ></h1>
 
         <div class="protection-bar" class:protected={isProtected} class:locked={isLocked}>
           {#if isProtected}
@@ -1189,6 +1331,12 @@
                   </div>
                 {/if}
               </div>
+              {#if hasTextSelection}
+                <button type="button" class="protection-action subtle" onclick={handleProtectSelectedLines}>
+                  <Lock size={14} strokeWidth={2} aria-hidden="true" />
+                  <span>Protect selected lines</span>
+                </button>
+              {/if}
               <button type="button" class="protection-action lock-action" onclick={handleLockNotes} title="Lock protected notes" aria-label="Lock protected notes">
                 <Lock size={14} strokeWidth={2} aria-hidden="true" />
                 <span>Lock vault</span>
@@ -1203,6 +1351,12 @@
               <Shield size={14} strokeWidth={2} aria-hidden="true" />
               <span>Protect note</span>
             </button>
+            {#if hasTextSelection}
+              <button type="button" class="protection-action subtle" onclick={handleProtectSelectedLines}>
+                <Lock size={14} strokeWidth={2} aria-hidden="true" />
+                <span>Protect selected lines</span>
+              </button>
+            {/if}
           {/if}
         </div>
 
@@ -1278,6 +1432,7 @@
             onkeydown={handleEditorUserIntent}
             onbeforeinput={handleEditorUserIntent}
             onpointerdown={handleEditorUserIntent}
+            onclick={handleEditorClick}
           ></div>
         {/if}
       </div>
@@ -1448,6 +1603,7 @@
       editorElement={editorContainer ?? null}
       onAction={handleToolbarAction}
       onAIPrompt={handleAIPrompt}
+      onProtectSelection={handleProtectToolbarSelection}
       aiUnavailable={!aiStore.canStartAIWork}
       aiUnavailableMessage={aiStore.availabilityMessage ?? AI_UNAVAILABLE_MESSAGE}
       onAIUnavailable={showAIUnavailableMessage}
@@ -1634,6 +1790,118 @@
     background: var(--bg-hover);
     color: var(--text-primary);
     outline: none;
+  }
+
+  :global(.void-protected-lines) {
+    margin: 14px 0;
+    border: 1px solid var(--border-light);
+    border-radius: 8px;
+    background: var(--bg-card);
+    box-shadow: 0 1px 0 color-mix(in srgb, var(--text-primary) 4%, transparent);
+    overflow: hidden;
+  }
+
+  :global(.void-protected-lines-locked) {
+    cursor: pointer;
+  }
+
+  :global(.void-protected-lines-locked:hover) {
+    border-color: color-mix(in srgb, var(--accent-primary) 38%, var(--border-light));
+    background: color-mix(in srgb, var(--accent-primary) 5%, var(--bg-card));
+  }
+
+  :global(.void-protected-lines-header) {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    min-height: 46px;
+    padding: 8px 10px;
+    color: var(--text-secondary);
+    font-size: var(--text-caption);
+    user-select: none;
+  }
+
+  :global(.void-protected-lines-unlocked .void-protected-lines-header) {
+    border-bottom: 1px solid var(--border-subtle);
+    background: color-mix(in srgb, var(--accent-primary) 4%, transparent);
+  }
+
+  :global(.void-protected-lines-icon) {
+    position: relative;
+    display: inline-flex;
+    width: 24px;
+    height: 24px;
+    align-items: center;
+    justify-content: center;
+    border-radius: 7px;
+    background: color-mix(in srgb, var(--accent-primary) 11%, transparent);
+    color: var(--accent-primary);
+  }
+
+  :global(.void-protected-lines-icon::before) {
+    content: '';
+    position: absolute;
+    width: 9px;
+    height: 7px;
+    bottom: 6px;
+    border: 1.8px solid currentColor;
+    border-radius: 2px;
+  }
+
+  :global(.void-protected-lines-icon::after) {
+    content: '';
+    position: absolute;
+    width: 8px;
+    height: 7px;
+    top: 5px;
+    border: 1.8px solid currentColor;
+    border-bottom: 0;
+    border-radius: 6px 6px 0 0;
+  }
+
+  :global(.void-protected-lines-copy) {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  :global(.void-protected-lines-title) {
+    color: var(--text-primary);
+    font-weight: 650;
+    line-height: 1.25;
+  }
+
+  :global(.void-protected-lines-meta) {
+    color: var(--text-muted);
+    line-height: 1.25;
+  }
+
+  :global(.void-protected-lines-action) {
+    justify-self: end;
+    border: 1px solid var(--border-light);
+    border-radius: 999px;
+    padding: 4px 8px;
+    background: var(--bg-subtle);
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 650;
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  :global(.void-protected-lines-locked:hover .void-protected-lines-action) {
+    border-color: color-mix(in srgb, var(--accent-primary) 38%, var(--border-light));
+    color: var(--accent-primary);
+  }
+
+  :global(.void-protected-lines-content) {
+    padding: 10px 12px;
+  }
+
+  :global(.void-protected-lines-locked .void-protected-lines-content) {
+    display: none;
   }
 
   .locked-note-surface {

@@ -1,5 +1,9 @@
 import { err, ok, type Result } from '$lib/core';
-import type { ProtectionCodecPort, ProtectedDocumentEnvelope } from '$lib/ports/outbound/ProtectionCodecPort';
+import type {
+  ProtectionCodecPort,
+  ProtectedBlockEnvelope,
+  ProtectedDocumentEnvelope,
+} from '$lib/ports/outbound/ProtectionCodecPort';
 import type { CryptoPort, KeyCustodyPort, VoidStoragePort, WrappedKeyMaterial } from '$lib/ports/outbound';
 import type { DocumentMeta } from '$lib/domain/values/DocumentMeta';
 import { createBlock, type Block } from '$lib/domain/entities/Block';
@@ -9,6 +13,8 @@ import {
   isProtectedDocumentMeta,
   PROTECTED_NOTE_ALGORITHM,
   PROTECTED_NOTE_ENVELOPE_VERSION,
+  PROTECTED_LINES_ALGORITHM,
+  PROTECTED_LINES_ENVELOPE_VERSION,
   type LockState,
   type ProtectedNoteMeta,
 } from '$lib/domain/values/Protection';
@@ -16,11 +22,14 @@ import {
 const ENVELOPE_START = '<!-- void-protected-note';
 const ENVELOPE_END = '-->';
 const ENVELOPE_FENCE = 'void-protected-note-v2';
+const PROTECTED_LINES_FENCE = 'void-protected-lines-v1';
 const RECOVERY_PATH = 'keys/recovery.json';
 
 export class ProtectionRuntime implements ProtectionCodecPort {
   #locked = true;
   #cachedWorkspaceKey: string | null = null;
+  #keychainState: 'not_checked' | 'available_this_session' | 'missing_after_unlock_attempt' | 'error_after_unlock_attempt' = 'not_checked';
+  #unlockInFlight: Promise<Result<void, Error>> | null = null;
 
   constructor(
     private readonly crypto: CryptoPort,
@@ -37,7 +46,7 @@ export class ProtectionRuntime implements ProtectionCodecPort {
   async status(): Promise<Result<{
     workspaceId: string;
     lockState: LockState;
-    hasWorkspaceKey: boolean;
+    keychainState: 'not_checked' | 'available_this_session' | 'missing_after_unlock_attempt' | 'error_after_unlock_attempt';
     recoveryConfigured: boolean;
   }, Error>> {
     const recovery = await this.voidStorage.readJson<WrappedKeyMaterial>(this.notesPath, RECOVERY_PATH);
@@ -45,7 +54,7 @@ export class ProtectionRuntime implements ProtectionCodecPort {
     return ok({
       workspaceId: this.workspaceId,
       lockState: this.lockState(),
-      hasWorkspaceKey: await this.keyCustody.hasWorkspaceKey(this.workspaceId),
+      keychainState: this.#keychainState,
       recoveryConfigured: recovery.value !== null,
     });
   }
@@ -53,19 +62,35 @@ export class ProtectionRuntime implements ProtectionCodecPort {
   async lockWorkspace(): Promise<Result<void, Error>> {
     this.#locked = true;
     this.#cachedWorkspaceKey = null;
+    this.#keychainState = 'not_checked';
     return ok(undefined);
   }
 
   async unlockWorkspace(passphrase?: string): Promise<Result<void, Error>> {
+    if (this.#unlockInFlight) return this.#unlockInFlight;
+    this.#unlockInFlight = this.performUnlockWorkspace(passphrase);
+    try {
+      return await this.#unlockInFlight;
+    } finally {
+      this.#unlockInFlight = null;
+    }
+  }
+
+  private async performUnlockWorkspace(passphrase?: string): Promise<Result<void, Error>> {
     const existing = await this.keyCustody.getWorkspaceKey(this.workspaceId);
-    if (!existing.ok) return err(existing.error);
+    if (!existing.ok) {
+      this.#keychainState = 'error_after_unlock_attempt';
+      return err(existing.error);
+    }
     if (existing.value) {
       this.#cachedWorkspaceKey = existing.value;
       this.#locked = false;
+      this.#keychainState = 'available_this_session';
       return ok(undefined);
     }
 
     if (!passphrase) {
+      this.#keychainState = 'missing_after_unlock_attempt';
       return err(new Error('No workspace protection key is available. Enter the recovery passphrase to restore it.'));
     }
 
@@ -87,6 +112,7 @@ export class ProtectionRuntime implements ProtectionCodecPort {
 
     this.#cachedWorkspaceKey = unwrapped.value;
     this.#locked = false;
+    this.#keychainState = 'available_this_session';
     return ok(undefined);
   }
 
@@ -115,6 +141,76 @@ export class ProtectionRuntime implements ProtectionCodecPort {
         lockState: this.#locked ? 'locked' : 'unlocked',
       },
     };
+  }
+
+  async prepareMarkdownForLoad(markdown: string): Promise<Result<string, Error>> {
+    const prepared = await this.transformProtectedLineCapsules(markdown, async (envelope) => {
+      const runtimeEnvelope = { ...envelope };
+      if (this.#locked) {
+        return {
+          ...runtimeEnvelope,
+          __void: { lockState: 'locked' },
+        };
+      }
+
+      const decrypted = await this.decryptProtectedBlockEnvelope(envelope);
+      if (!decrypted.ok) {
+        return {
+          ...runtimeEnvelope,
+          __void: {
+            lockState: 'locked',
+            error: decrypted.error.message,
+          },
+        };
+      }
+      return {
+        ...runtimeEnvelope,
+        __void: {
+          lockState: 'unlocked',
+          plaintext: decrypted.value,
+        },
+      };
+    });
+    if (!prepared.ok) return err(prepared.error);
+    return ok(prepared.value);
+  }
+
+  async sealMarkdownForSave(markdown: string): Promise<Result<string, Error>> {
+    const sealed = await this.transformProtectedLineCapsules(markdown, async (envelope) => {
+      const plaintext = runtimePlaintextFromEnvelope(envelope);
+      if (plaintext === null) {
+        return cleanProtectedBlockEnvelope(envelope);
+      }
+      const encrypted = await this.encryptProtectedBlockEnvelope(
+        plaintext,
+        envelope.lineCount || countMarkdownLines(plaintext),
+        {
+          id: envelope.id,
+          keyId: envelope.keyId,
+          protectedAt: envelope.protectedAt,
+          titleVisible: envelope.titleVisible,
+        },
+      );
+      if (!encrypted.ok) throw encrypted.error;
+      return encrypted.value;
+    });
+    if (!sealed.ok) return err(sealed.error);
+    return ok(sealed.value);
+  }
+
+  async encryptProtectedBlock(markdown: string, lineCount: number): Promise<Result<string, Error>> {
+    const id = await this.crypto.randomId('pblk');
+    if (!id.ok) return err(id.error);
+    const keyId = await this.crypto.randomId('pkey');
+    if (!keyId.ok) return err(keyId.error);
+    const encrypted = await this.encryptProtectedBlockEnvelope(markdown, lineCount, {
+      id: id.value,
+      keyId: keyId.value,
+      protectedAt: new Date().toISOString(),
+      titleVisible: true,
+    });
+    if (!encrypted.ok) return err(encrypted.error);
+    return ok(formatProtectedLinesCapsule(encrypted.value));
   }
 
   async createProtectedMeta(_path: string, meta: DocumentMeta): Promise<Result<ProtectedNoteMeta, Error>> {
@@ -235,6 +331,116 @@ export class ProtectionRuntime implements ProtectionCodecPort {
     ];
   }
 
+  private async encryptProtectedBlockEnvelope(
+    markdown: string,
+    lineCount: number,
+    identity: {
+      id: string;
+      keyId: string;
+      protectedAt: string;
+      titleVisible: boolean;
+    },
+  ): Promise<Result<ProtectedBlockEnvelope, Error>> {
+    const workspaceKey = await this.ensureWorkspaceKey();
+    if (!workspaceKey.ok) return err(workspaceKey.error);
+
+    const dek = await this.crypto.generateKey();
+    if (!dek.ok) return err(dek.error);
+
+    const meta = {
+      id: identity.id,
+      keyId: identity.keyId,
+    };
+    const encrypted = await this.crypto.encryptString(
+      markdown,
+      dek.value,
+      this.protectedBlockAssociatedData(meta),
+    );
+    if (!encrypted.ok) return err(encrypted.error);
+
+    const wrappedDek = await this.crypto.wrapKey(
+      dek.value,
+      workspaceKey.value,
+      this.protectedBlockDekAssociatedData(meta),
+    );
+    if (!wrappedDek.ok) return err(wrappedDek.error);
+
+    return ok({
+      id: identity.id,
+      version: PROTECTED_LINES_ENVELOPE_VERSION,
+      algorithm: PROTECTED_LINES_ALGORITHM,
+      keyId: identity.keyId,
+      nonce: encrypted.value.nonce,
+      ciphertext: encrypted.value.ciphertext,
+      wrappedDek: wrappedDek.value,
+      lineCount: Math.max(1, Math.round(lineCount)),
+      protectedAt: identity.protectedAt,
+      titleVisible: identity.titleVisible,
+    });
+  }
+
+  private async decryptProtectedBlockEnvelope(envelope: ProtectedBlockEnvelope): Promise<Result<string, Error>> {
+    if (this.#locked) {
+      return err(new Error('Protected lines are locked.'));
+    }
+    const workspaceKey = await this.ensureWorkspaceKey();
+    if (!workspaceKey.ok) return err(workspaceKey.error);
+    const meta = {
+      id: envelope.id,
+      keyId: envelope.keyId,
+    };
+
+    const dek = await this.crypto.unwrapKey(
+      envelope.wrappedDek,
+      workspaceKey.value,
+      this.protectedBlockDekAssociatedData(meta),
+    );
+    if (!dek.ok) return err(dek.error);
+
+    const decrypted = await this.crypto.decryptString(
+      {
+        version: envelope.version,
+        algorithm: envelope.algorithm,
+        nonce: envelope.nonce,
+        ciphertext: envelope.ciphertext,
+      },
+      dek.value,
+      this.protectedBlockAssociatedData(meta),
+    );
+    if (!decrypted.ok) return err(decrypted.error);
+    return ok(decrypted.value);
+  }
+
+  private async transformProtectedLineCapsules(
+    markdown: string,
+    transform: (envelope: ProtectedBlockEnvelope & { __void?: unknown }) => Promise<unknown>,
+  ): Promise<Result<string, Error>> {
+    const normalizedMarkdown = normalizeProtectedLineCapsules(markdown);
+    const pattern = new RegExp(
+      `(?:^|\\n)(?:> Locked encrypted lines[^\\n]*\\n\\n)?\\\`\\\`\\\`${PROTECTED_LINES_FENCE}\\s*\\n([\\s\\S]*?)\\n\\\`\\\`\\\`(?=\\n|$)`,
+      'g',
+    );
+    let output = '';
+    let lastIndex = 0;
+    for (const match of normalizedMarkdown.matchAll(pattern)) {
+      const fullMatch = match[0] ?? '';
+      const json = match[1]?.trim();
+      const index = match.index ?? 0;
+      output += normalizedMarkdown.slice(lastIndex, index);
+      try {
+        const envelope = parseProtectedBlockEnvelopeJson(json ?? '');
+        const next = await transform(envelope);
+        const prefix = fullMatch.startsWith('\n') ? '\n' : '';
+        output += `${prefix}\`\`\`${PROTECTED_LINES_FENCE}\n${JSON.stringify(next, null, 2)}\n\`\`\``;
+      } catch (error) {
+        return err(error instanceof Error ? error : new Error(String(error)));
+      }
+      lastIndex = index + fullMatch.length;
+    }
+    output += normalizedMarkdown.slice(lastIndex);
+    return ok(output);
+  }
+
   private async ensureWorkspaceKey(): Promise<Result<string, Error>> {
     if (this.#cachedWorkspaceKey && !this.#locked) return ok(this.#cachedWorkspaceKey);
 
@@ -254,6 +460,7 @@ export class ProtectionRuntime implements ProtectionCodecPort {
     if (!stored.ok) return err(stored.error);
     this.#cachedWorkspaceKey = generated.value;
     this.#locked = false;
+    this.#keychainState = 'available_this_session';
     return ok(generated.value);
   }
 
@@ -285,6 +492,14 @@ export class ProtectionRuntime implements ProtectionCodecPort {
       return `void:note:${this.workspaceId}:${meta.noteId}:${meta.keyId}`;
     }
     return `void:note:${this.workspaceId}:${meta.noteId}:${meta.keyId}:${path.replace(/\\/g, '/')}`;
+  }
+
+  private protectedBlockAssociatedData(meta: { id: string; keyId: string }): string {
+    return `void:protected-block:${this.workspaceId}:${meta.id}:${meta.keyId}`;
+  }
+
+  private protectedBlockDekAssociatedData(meta: { id: string; keyId: string }): string {
+    return `void:protected-block-dek:${this.workspaceId}:${meta.id}:${meta.keyId}`;
   }
 }
 
@@ -325,6 +540,71 @@ function parseEnvelope(markdown: string): Result<ProtectedDocumentEnvelope, Erro
   } catch (error) {
     return err(error instanceof Error ? error : new Error(String(error)));
   }
+}
+
+function parseProtectedBlockEnvelopeJson(json: string): ProtectedBlockEnvelope & { __void?: unknown } {
+  const parsed = JSON.parse(json) as ProtectedBlockEnvelope & { __void?: unknown };
+  if (
+    typeof parsed.id !== 'string' ||
+    parsed.version !== PROTECTED_LINES_ENVELOPE_VERSION ||
+    parsed.algorithm !== PROTECTED_LINES_ALGORITHM ||
+    typeof parsed.keyId !== 'string' ||
+    typeof parsed.nonce !== 'string' ||
+    typeof parsed.ciphertext !== 'string' ||
+    !parsed.wrappedDek
+  ) {
+    throw new Error('Protected lines envelope is not supported.');
+  }
+  return parsed;
+}
+
+function cleanProtectedBlockEnvelope(
+  envelope: ProtectedBlockEnvelope & { __void?: unknown },
+): ProtectedBlockEnvelope {
+  return {
+    id: envelope.id,
+    version: envelope.version,
+    algorithm: envelope.algorithm,
+    keyId: envelope.keyId,
+    nonce: envelope.nonce,
+    ciphertext: envelope.ciphertext,
+    wrappedDek: envelope.wrappedDek,
+    lineCount: envelope.lineCount,
+    protectedAt: envelope.protectedAt,
+    titleVisible: envelope.titleVisible,
+  };
+}
+
+function runtimePlaintextFromEnvelope(envelope: { __void?: unknown }): string | null {
+  const runtime = envelope.__void && typeof envelope.__void === 'object'
+    ? envelope.__void as { plaintext?: unknown }
+    : null;
+  return typeof runtime?.plaintext === 'string' ? runtime.plaintext : null;
+}
+
+function formatProtectedLinesCapsule(envelope: ProtectedBlockEnvelope): string {
+  const lines = Math.max(1, envelope.lineCount);
+  return [
+    `> Locked encrypted lines · ${lines} line${lines === 1 ? '' : 's'} · Open in Void to unlock.`,
+    '',
+    `\`\`\`${PROTECTED_LINES_FENCE}`,
+    JSON.stringify(envelope, null, 2),
+    '```',
+  ].join('\n');
+}
+
+function normalizeProtectedLineCapsules(markdown: string): string {
+  return markdown.replace(
+    new RegExp(`(^|\\n)(> Locked encrypted lines[^\\n]*?)\\s+\\\`\\\`\\\`${PROTECTED_LINES_FENCE}\\s*\\n?([\\s\\S]*?)\\n?\\\`\\\`\\\`(?=\\n|$)`, 'g'),
+    (_match, prefix: string, stub: string, envelope: string) =>
+      `${prefix}${stub}\n\n\`\`\`${PROTECTED_LINES_FENCE}\n${envelope.trim()}\n\`\`\``,
+  );
+}
+
+function countMarkdownLines(markdown: string): number {
+  const trimmed = markdown.replace(/\n+$/, '');
+  if (!trimmed) return 1;
+  return trimmed.split(/\r?\n/).length;
 }
 
 function extractFencedEnvelope(markdown: string): string | null {

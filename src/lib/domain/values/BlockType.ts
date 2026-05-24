@@ -18,6 +18,7 @@ export const BLOCK_TYPES = [
   'todoItem',
   'blockquote',
   'codeBlock',
+  'protectedBlock',
   'horizontalRule',
   'image',
   'callout',

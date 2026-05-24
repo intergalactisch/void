@@ -65,7 +65,13 @@ function createEditorPortStub() {
     update: vi.fn((document: Document) => {
       currentDocument = document;
     }),
-    updateMetadata: vi.fn(),
+    updateMetadata: vi.fn((meta: Document['meta']) => {
+      if (!currentDocument) return;
+      currentDocument = {
+        ...currentDocument,
+        meta,
+      };
+    }),
     destroy: destroyed,
     execute: vi.fn((command: string) => {
       if (command === 'focus') emit('editor:focus', undefined as EditorEvents['editor:focus']);
@@ -117,9 +123,10 @@ function createEditorPortFactory() {
 describe('EditorServiceImpl - multi-pane mounted editors', () => {
   let editor: EditorServiceImpl;
   let factory: ReturnType<typeof createEditorPortFactory>;
+  let fs: MemoryFileSystemAdapter;
 
   beforeEach(() => {
-    const fs = new MemoryFileSystemAdapter();
+    fs = new MemoryFileSystemAdapter();
     fs.seed({
       '/notes/a.md': frontmatterDoc('A'),
       '/notes/b.md': frontmatterDoc('B'),
@@ -171,6 +178,29 @@ describe('EditorServiceImpl - multi-pane mounted editors', () => {
     expect(Object.keys(editor.getState().panes).sort()).toEqual(['pane-a', 'pane-b']);
     expect(factory.ports[0]?.__destroyed).not.toHaveBeenCalled();
     expect(factory.ports[1]?.__destroyed).not.toHaveBeenCalled();
+  });
+
+  it('persists active pane title metadata without changing the note path', async () => {
+    const hostA = document.createElement('div');
+    document.body.append(hostA);
+    await editor.mountPane('pane-a', hostA, 'a.md');
+
+    const result = editor.updateDocumentMeta({ title: 'A Live Title' });
+
+    expect(result.ok).toBe(true);
+    expect(editor.getState().activePath).toBe('a.md');
+    expect(editor.getState().tabs.map((tab) => tab.path)).toEqual(['a.md']);
+    expect(editor.getState().panes['pane-a']?.document?.meta.title).toBe('A Live Title');
+    expect(factory.ports[0]?.updateMetadata).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'A Live Title' }),
+    );
+
+    await editor.savePane('pane-a');
+    const saved = await fs.readFile('/notes/a.md');
+    expect(saved.ok).toBe(true);
+    if (saved.ok) {
+      expect(saved.value).toContain('title: A Live Title');
+    }
   });
 
   it('openDocument focuses an already mounted note pane', async () => {

@@ -11,7 +11,11 @@ import type {
 export interface ProtectionStatus {
   workspaceId: string;
   lockState: LockState;
-  hasWorkspaceKey: boolean;
+  keychainState:
+    | 'not_checked'
+    | 'available_this_session'
+    | 'missing_after_unlock_attempt'
+    | 'error_after_unlock_attempt';
   recoveryConfigured: boolean;
 }
 
@@ -29,6 +33,7 @@ export interface ProtectionService {
   lockWorkspace(): Promise<Result<void, Error>>;
   unlockWorkspace(passphrase?: string): Promise<Result<void, Error>>;
   setupRecovery(passphrase: string): Promise<Result<void, Error>>;
+  protectBlock(markdown: string, lineCount: number): Promise<Result<string, Error>>;
   protectNote(path: string): Promise<Result<ProtectedNoteMeta, Error>>;
   unprotectNote(path: string): Promise<Result<void, Error>>;
   authorizeAIContext(request: AIContextAuthorizationRequest): Promise<Result<AIContextAuthorization, Error>>;

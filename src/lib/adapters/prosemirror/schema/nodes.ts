@@ -230,6 +230,73 @@ export const nodes: Record<string, NodeSpec> = {
   },
 
   /**
+   * Inline encrypted markdown capsule.
+   * The encrypted envelope stays in attrs; unlocked content is rendered as
+   * normal child blocks and re-sealed at the markdown adapter boundary.
+   */
+  protectedBlock: {
+    content: 'block*',
+    group: 'block',
+    attrs: {
+      ...blockIdAttr,
+      protectionId: { default: '' },
+      keyId: { default: '' },
+      algorithm: { default: 'AES-256-GCM' },
+      envelopeVersion: { default: 1 },
+      protectedAt: { default: '' },
+      titleVisible: { default: true },
+      lineCount: { default: 1 },
+      lockState: { default: 'locked' },
+      envelope: { default: '' },
+    },
+    defining: true,
+    isolating: true,
+    parseDOM: [
+      {
+        tag: 'section[data-type="protected-lines"]',
+        getAttrs: (dom: HTMLElement) => ({
+          protectionId: dom.getAttribute('data-protection-id') ?? '',
+          keyId: dom.getAttribute('data-key-id') ?? '',
+          lockState: dom.getAttribute('data-lock-state') ?? 'locked',
+          lineCount: Number.parseInt(dom.getAttribute('data-line-count') ?? '1', 10),
+        }),
+      },
+    ],
+    toDOM(node) {
+      const locked = node.attrs.lockState !== 'unlocked';
+      const lineCount = Number(node.attrs.lineCount) || 1;
+      const lineLabel = `${lineCount} line${lineCount === 1 ? '' : 's'}`;
+      return [
+        'section',
+        {
+          'data-block-id': node.attrs.id,
+          'data-block-type': 'protectedBlock',
+          'data-type': 'protected-lines',
+          'data-protection-id': node.attrs.protectionId,
+          'data-key-id': node.attrs.keyId,
+          'data-lock-state': node.attrs.lockState,
+          'data-line-count': String(lineCount),
+          class: `void-protected-lines ${locked ? 'void-protected-lines-locked' : 'void-protected-lines-unlocked'}`,
+          ...(locked ? { contenteditable: 'false' } : {}),
+        },
+        [
+          'div',
+          { class: 'void-protected-lines-header', contenteditable: 'false' },
+          ['span', { class: 'void-protected-lines-icon', 'aria-hidden': 'true' }],
+          [
+            'span',
+            { class: 'void-protected-lines-copy' },
+            ['span', { class: 'void-protected-lines-title' }, locked ? 'Locked lines' : 'Protected lines'],
+            ['span', { class: 'void-protected-lines-meta' }, locked ? `${lineLabel} hidden` : `${lineLabel} visible this session`],
+          ],
+          ['span', { class: 'void-protected-lines-action' }, locked ? 'Unlock vault' : 'Encrypted on disk'],
+        ],
+        ['div', { class: 'void-protected-lines-content' }, 0],
+      ];
+    },
+  },
+
+  /**
    * Horizontal rule
    * Visual divider between sections
    */

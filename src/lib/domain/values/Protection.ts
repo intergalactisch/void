@@ -30,6 +30,20 @@ export interface ProtectedNoteMeta {
   lockState: Extract<LockState, 'locked' | 'unlocked'>;
 }
 
+export type ProtectedContentKind = 'note' | 'block';
+
+export interface ProtectedBlockMeta {
+  kind: 'block';
+  protectionId: string;
+  keyId: string;
+  algorithm: string;
+  envelopeVersion: number;
+  protectedAt: string;
+  titleVisible: boolean;
+  lineCount: number;
+  lockState: Extract<LockState, 'locked' | 'unlocked'>;
+}
+
 export interface AIContextAuthorization {
   id: string;
   noteIds: string[];
@@ -68,6 +82,8 @@ export const DEFAULT_PROTECTION_POLICY: ProtectionPolicy = {
 
 export const PROTECTED_NOTE_ALGORITHM = 'AES-256-GCM';
 export const PROTECTED_NOTE_ENVELOPE_VERSION = 2;
+export const PROTECTED_LINES_ALGORITHM = 'AES-256-GCM';
+export const PROTECTED_LINES_ENVELOPE_VERSION = 1;
 
 export const PROTECTED_FRONTMATTER_KEYS = {
   level: 'void_protection',

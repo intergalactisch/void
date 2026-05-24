@@ -2,39 +2,47 @@
   import {
     Calendar,
     CheckCircle2,
-    Copy,
-    Edit3,
     FileText,
     Flag,
     Repeat,
     Tag,
-    Trash2,
   } from '@lucide/svelte';
   import type { Todo } from '$lib/domain/entities/Todo';
   import type { TodoPriority } from '$lib/domain/values/TodoPriority';
-  import { todoStore } from '$lib/stores';
+  import { todoStore, toastStore } from '$lib/stores';
   import { buildRefId } from '$lib/domain/values';
   import { copyTextToClipboard } from '$lib/utils/clipboard';
-  import { toastStore } from '$lib/stores';
 
   interface Props {
     todo: Todo;
     selected?: boolean;
+    multiSelected?: boolean;
+    /** Visual density (drives row height, padding, font sizing). */
+    density?: 'compact' | 'comfortable';
+    /** Hide the source-file chip — the workspace passes this when the source is implied by the active view. */
+    hideSource?: boolean;
+    /** Single-line vs. multi-line title. Compact density implies single-line. */
     compact?: boolean;
-    onSelect?: (todo: Todo) => void;
+    onSelect?: (todo: Todo, event?: MouseEvent | KeyboardEvent) => void;
     onNavigateToFile?: (filePath: string) => void;
   }
 
-  let { todo, selected = false, compact = false, onSelect, onNavigateToFile }: Props = $props();
+  let {
+    todo,
+    selected = false,
+    multiSelected = false,
+    density = 'compact',
+    hideSource = false,
+    compact = false,
+    onSelect,
+    onNavigateToFile,
+  }: Props = $props();
 
   let editing = $state(false);
   let draft = $state('');
   let editInput = $state<HTMLInputElement | null>(null);
 
-  $effect(() => {
-    if (!editing) draft = todo.content;
-  });
-
+  $effect(() => { if (!editing) draft = todo.content; });
   $effect(() => {
     if (editing && editInput) {
       editInput.focus();
@@ -42,20 +50,13 @@
     }
   });
 
-  async function toggle() {
+  async function toggle(event?: Event) {
+    event?.stopPropagation();
     await todoStore.toggle(todo.id);
   }
 
-  async function remove() {
-    await todoStore.delete(todo.id);
-  }
-
-  function select() {
-    todoStore.selectTodo(todo.id);
-    onSelect?.(todo);
-  }
-
-  function startEditing() {
+  function startEditing(event: Event) {
+    event.stopPropagation();
     editing = true;
     draft = todo.content;
   }
@@ -73,14 +74,14 @@
     editing = false;
   }
 
-  function navigate(event: MouseEvent) {
+  function navigateSource(event: MouseEvent) {
     event.stopPropagation();
     onNavigateToFile?.(todo.sourceFile);
   }
 
-  async function copyRef(event: MouseEvent) {
+  async function copyRef(event: MouseEvent | KeyboardEvent) {
     event.preventDefault();
-    event.stopPropagation();
+    if ('stopPropagation' in event) event.stopPropagation();
     const success = await copyTextToClipboard(buildRefId({ kind: 'todo', todoId: todo.id }));
     if (success) toastStore.info('Ref copied');
     else toastStore.error('Failed to copy ref');
@@ -96,13 +97,11 @@
     const target = new Date(date);
     target.setHours(0, 0, 0, 0);
     const diffDays = Math.round((target.getTime() - today.getTime()) / 86400000);
-
     if (diffDays === 0) return 'Today';
     if (diffDays === 1) return 'Tomorrow';
     if (diffDays === -1) return 'Yesterday';
     if (diffDays < 0) return `${Math.abs(diffDays)}d ago`;
     if (diffDays <= 7) return `In ${diffDays}d`;
-
     return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
   }
 
@@ -112,10 +111,9 @@
     target.setHours(0, 0, 0, 0);
     const diffDays = Math.round((target.getTime() - today.getTime()) / 86400000);
     const time = date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-
-    if (diffDays === 0) return `Completed today, ${time}`;
-    if (diffDays === -1) return `Completed yesterday, ${time}`;
-    return `Completed ${date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
+    if (diffDays === 0) return `Today ${time}`;
+    if (diffDays === -1) return `Yesterday ${time}`;
+    return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
   }
 
   function formatDateTimeTitle(date: Date): string {
@@ -138,6 +136,23 @@
     return new Date(now.getFullYear(), now.getMonth(), now.getDate());
   }
 
+  function handleClick(event: MouseEvent) {
+    if (editing) return;
+    onSelect?.(todo, event);
+  }
+
+  function handleKeydown(event: KeyboardEvent) {
+    if (editing) return;
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      onSelect?.(todo, event);
+    }
+    if (event.key === ' ') {
+      event.preventDefault();
+      toggle();
+    }
+  }
+
   const dueState = $derived.by(() => {
     if (!todo.dates.dueDate || todo.isCompleted) return '';
     const due = new Date(todo.dates.dueDate);
@@ -147,123 +162,134 @@
     if (due.getTime() === today.getTime()) return 'today';
     return '';
   });
+
+  /** Compact / comfortable single-line rows put the title and chips on one line.
+   *  Use the comfortable+compact=false combo only when callers explicitly want two-line. */
+  const isSingleLine = $derived(!compact || density === 'compact');
 </script>
 
 <div
   class="task-row"
   class:selected
+  class:multi-selected={multiSelected}
   class:completed={todo.isCompleted}
-  class:compact
-  onclick={select}
+  class:density-compact={density === 'compact'}
+  class:density-comfortable={density === 'comfortable'}
+  class:overdue={dueState === 'overdue'}
+  class:today={dueState === 'today'}
+  data-todo-id={todo.id}
+  onclick={handleClick}
   oncontextmenu={copyRef}
-  onkeydown={(event) => {
-    if (event.key === 'Enter') select();
-  }}
+  onkeydown={handleKeydown}
   role="button"
   tabindex="0"
+  aria-pressed={selected}
 >
   <label class="check-wrap" aria-label={todo.isCompleted ? 'Mark incomplete' : 'Mark complete'}>
-    <input type="checkbox" checked={todo.isCompleted} onchange={toggle} onclick={(event) => event.stopPropagation()} />
-    <span class="check-shell" aria-hidden="true"></span>
+    <input type="checkbox" checked={todo.isCompleted} onchange={toggle} onclick={(e) => e.stopPropagation()} />
+    <span class="check-shell" class:multi={multiSelected} aria-hidden="true"></span>
   </label>
 
-  <div class="task-body">
-    {#if editing}
-      <input
-        bind:this={editInput}
-        class="inline-edit"
-        bind:value={draft}
-        aria-label="Task title"
-        onkeydown={(event) => {
-          if (event.key === 'Enter') saveEdit();
-          if (event.key === 'Escape') cancelEdit();
-        }}
-        onblur={saveEdit}
-        onclick={(event) => event.stopPropagation()}
-      />
-    {:else}
-      <div class="task-title">{todo.content}</div>
+  {#if editing}
+    <input
+      bind:this={editInput}
+      class="inline-edit"
+      bind:value={draft}
+      aria-label="Task title"
+      onkeydown={(event) => {
+        if (event.key === 'Enter') saveEdit();
+        if (event.key === 'Escape') cancelEdit();
+      }}
+      onblur={saveEdit}
+      onclick={(event) => event.stopPropagation()}
+    />
+  {:else}
+    <div class="title" class:single-line={isSingleLine}>{todo.content}</div>
+  {/if}
+
+  <div class="meta" aria-label="Task metadata">
+    {#if todo.dates.dueDate && !todo.isCompleted}
+      <span class="chip due {dueState}" title={`Due ${formatDateTimeTitle(todo.dates.dueDate)}`}>
+        <Calendar size={11} strokeWidth={2} />
+        <span>{formatDate(todo.dates.dueDate)}</span>
+      </span>
     {/if}
 
-    <div class="task-meta" aria-label="Task metadata">
-      {#if todo.priority}
-        <span class="meta-chip priority-{todo.priority}">
-          <Flag size={13} strokeWidth={2} />
-          {priorityLabel(todo.priority)}
-        </span>
-      {/if}
+    {#if todo.priority}
+      <span class="chip priority-{todo.priority}" title={`${priorityLabel(todo.priority)} priority`}>
+        <Flag size={11} strokeWidth={2} />
+        <span>{priorityLabel(todo.priority)}</span>
+      </span>
+    {/if}
 
-      {#if todo.isCompleted && todo.dates.completedAt}
-        <span class="meta-chip completed-at" title={`Completed ${formatDateTimeTitle(todo.dates.completedAt)}`}>
-          <CheckCircle2 size={13} strokeWidth={2} />
-          {formatCompletedDate(todo.dates.completedAt)}
-        </span>
-      {/if}
+    {#if todo.isCompleted && todo.dates.completedAt}
+      <span class="chip completed-at" title={`Completed ${formatDateTimeTitle(todo.dates.completedAt)}`}>
+        <CheckCircle2 size={11} strokeWidth={2} />
+        <span>{formatCompletedDate(todo.dates.completedAt)}</span>
+      </span>
+    {/if}
 
-      {#if todo.dates.dueDate}
-        <span class="meta-chip due {dueState}">
-          <Calendar size={13} strokeWidth={2} />
-          {formatDate(todo.dates.dueDate)}
-        </span>
-      {/if}
+    {#if todo.dates.scheduledDate && !todo.isCompleted}
+      <span class="chip" title={`Starts ${formatDateTimeTitle(todo.dates.scheduledDate)}`}>
+        <Calendar size={11} strokeWidth={2} />
+        <span>{formatDate(todo.dates.scheduledDate)}</span>
+      </span>
+    {/if}
 
-      {#if todo.dates.scheduledDate}
-        <span class="meta-chip">
-          <Calendar size={13} strokeWidth={2} />
-          {formatDate(todo.dates.scheduledDate)}
-        </span>
-      {/if}
+    {#if todo.dates.recurrence}
+      <span class="chip" title={`Repeats ${todo.dates.recurrence}`}>
+        <Repeat size={11} strokeWidth={2} />
+        <span>{todo.dates.recurrence}</span>
+      </span>
+    {/if}
 
-      {#if todo.dates.recurrence}
-        <span class="meta-chip">
-          <Repeat size={13} strokeWidth={2} />
-          {todo.dates.recurrence}
-        </span>
-      {/if}
+    {#each todo.tags.slice(0, 2) as tagName (tagName)}
+      <span class="chip tag">
+        <Tag size={11} strokeWidth={2} />
+        <span>{tagName}</span>
+      </span>
+    {/each}
+    {#if todo.tags.length > 2}
+      <span class="chip muted" title={todo.tags.slice(2).map((t) => `#${t}`).join(' ')}>+{todo.tags.length - 2}</span>
+    {/if}
 
-      {#each todo.tags as tagName (tagName)}
-        <span class="meta-chip">
-          <Tag size={13} strokeWidth={2} />
-          {tagName}
-        </span>
-      {/each}
-
-      <button type="button" class="source-link" onclick={navigate} title={todo.sourceFile}>
-        <FileText size={13} strokeWidth={2} />
-        {getFileName(todo.sourceFile)}
+    {#if !hideSource}
+      <button type="button" class="source" onclick={navigateSource} title={todo.sourceFile} aria-label={`Open ${getFileName(todo.sourceFile)}`}>
+        <FileText size={11} strokeWidth={2} />
+        <span>{getFileName(todo.sourceFile)}</span>
       </button>
-    </div>
+    {/if}
   </div>
 
-  <div class="row-actions">
-    <button type="button" class="icon-button" onclick={copyRef} title="Copy Ref" aria-label="Copy Ref">
-      <Copy size={14} strokeWidth={2} />
-    </button>
-    <button type="button" class="icon-button" onclick={(event) => { event.stopPropagation(); startEditing(); }} title="Edit task" aria-label="Edit task">
-      <Edit3 size={14} strokeWidth={2} />
-    </button>
-    <button type="button" class="icon-button danger" onclick={(event) => { event.stopPropagation(); remove(); }} title="Delete task" aria-label="Delete task">
-      <Trash2 size={14} strokeWidth={2} />
-    </button>
-  </div>
+  <button type="button" class="row-edit" onclick={startEditing} title="Edit (e)" aria-label="Edit task">
+    <span aria-hidden="true">e</span>
+  </button>
 </div>
 
 <style>
   .task-row {
     display: grid;
-    grid-template-columns: 26px minmax(0, 1fr) auto;
-    gap: 8px;
-    align-items: start;
-    min-height: 44px;
-    padding: 8px 10px;
-    border-bottom: 1px solid var(--border-faint);
-    background: transparent;
-    cursor: default;
+    grid-template-columns: 22px minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    height: 100%;
+    border: 0;
     border-radius: var(--radius-sm);
+    background: transparent;
+    padding: 0 8px;
+    cursor: default;
+    transition: background var(--transition-fast);
+    outline: none;
   }
 
   .task-row:hover {
     background: var(--bg-hover);
+  }
+
+  .task-row:focus-visible {
+    background: var(--bg-hover);
+    box-shadow: inset 0 0 0 1px var(--accent-primary);
   }
 
   .task-row.selected {
@@ -271,23 +297,41 @@
     box-shadow: inset 2px 0 0 var(--accent-primary);
   }
 
+  .task-row.multi-selected {
+    background: var(--accent-soft);
+  }
+
+  .task-row.multi-selected.selected {
+    box-shadow: inset 2px 0 0 var(--accent-primary), inset 0 0 0 1px var(--accent-primary);
+  }
+
   .task-row.completed {
-    background: color-mix(in srgb, var(--bg-sidebar) 62%, transparent);
+    background: color-mix(in srgb, var(--bg-sidebar) 50%, transparent);
   }
 
-  .task-row.compact {
-    padding: 9px 10px;
+  .task-row.completed:hover {
+    background: color-mix(in srgb, var(--bg-hover) 100%, transparent);
   }
 
+  .density-compact {
+    padding: 0 8px;
+  }
+
+  .density-comfortable {
+    padding: 2px 10px;
+  }
+
+  /* ─── Checkbox ───────────────────────────────────────────────────────── */
   .check-wrap {
     display: grid;
     place-items: center;
-    min-height: 24px;
     cursor: pointer;
   }
 
   .check-wrap input {
     position: absolute;
+    width: 1px;
+    height: 1px;
     opacity: 0;
     pointer-events: none;
   }
@@ -296,50 +340,66 @@
     position: relative;
     display: inline-grid;
     place-items: center;
-    width: 18px;
-    height: 18px;
+    width: 16px;
+    height: 16px;
     border: 1.5px solid var(--border-dark);
-    border-radius: var(--radius-full);
+    border-radius: 4px;
     background: var(--bg-editor);
-    pointer-events: none;
+    transition: border-color 120ms ease, background-color 120ms ease, transform 90ms ease;
+  }
+
+  .check-wrap:hover .check-shell {
+    border-color: var(--accent-primary);
+    background: var(--accent-light);
   }
 
   .check-wrap input:checked + .check-shell {
-    border-color: var(--color-success);
     background: var(--color-success);
+    border-color: var(--color-success);
+  }
+
+  .check-shell.multi {
+    border-color: var(--accent-primary);
+    background: var(--accent-soft);
   }
 
   .check-shell::after {
     content: '';
-    width: 8px;
-    height: 4px;
+    width: 7px;
+    height: 3.5px;
     border-left: 1.5px solid var(--text-inverse);
     border-bottom: 1.5px solid var(--text-inverse);
-    opacity: 0;
     transform: rotate(-45deg) translateY(-1px);
+    opacity: 0;
+    transition: opacity 120ms ease;
   }
 
   .check-wrap input:checked + .check-shell::after {
     opacity: 1;
   }
 
-  .task-body {
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-  }
-
-  .task-title {
+  /* ─── Title ──────────────────────────────────────────────────────────── */
+  .title {
     color: var(--text-primary);
-    font-size: var(--text-body);
-    line-height: 1.42;
-    overflow-wrap: anywhere;
+    font-size: var(--text-small);
+    line-height: 1.4;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  .completed .task-title {
+  .density-comfortable .title {
+    font-size: var(--text-body);
+  }
+
+  .title.single-line {
+    white-space: nowrap;
+  }
+
+  .completed .title {
     color: var(--text-muted);
     text-decoration: line-through;
+    text-decoration-color: var(--border-medium);
   }
 
   .inline-edit {
@@ -349,7 +409,8 @@
     background: var(--bg-editor);
     color: var(--text-primary);
     font: inherit;
-    padding: 5px 7px;
+    font-size: var(--text-small);
+    padding: 4px 7px;
     outline: none;
   }
 
@@ -358,107 +419,134 @@
     box-shadow: 0 0 0 2px var(--accent-soft);
   }
 
-  .task-meta {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 5px;
-    align-items: center;
-  }
-
-  .meta-chip,
-  .source-link {
+  /* ─── Meta cluster ───────────────────────────────────────────────────── */
+  .meta {
     display: inline-flex;
     align-items: center;
+    flex-wrap: nowrap;
     gap: 4px;
-    min-height: 20px;
-    border: 0;
-    border-radius: var(--radius-xs);
-    padding: 1px 4px;
-    color: var(--text-secondary);
-    background: transparent;
+    color: var(--text-tertiary);
     font-size: var(--text-caption);
-    line-height: var(--text-caption-line-height);
+    line-height: 1.3;
+    overflow: hidden;
   }
 
-  .source-link {
-    cursor: pointer;
+  .chip,
+  .source {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    min-height: 18px;
+    border: 0;
+    border-radius: var(--radius-xs);
+    padding: 0 5px;
+    background: transparent;
+    color: var(--text-tertiary);
+    font: inherit;
+    font-size: 11px;
+    line-height: 1.3;
+    white-space: nowrap;
+  }
+
+  .chip.muted {
+    color: var(--text-muted);
+  }
+
+  .chip.due.overdue {
+    color: var(--color-error);
+    background: var(--color-error-bg);
+    font-weight: 500;
+  }
+
+  .chip.due.today {
+    color: var(--color-warning);
+    background: var(--color-warning-bg);
+    font-weight: 500;
+  }
+
+  .chip.completed-at {
+    color: var(--color-success);
+  }
+
+  .chip.priority-high {
+    color: var(--color-error);
+  }
+
+  .chip.priority-medium {
+    color: var(--color-warning);
+  }
+
+  .chip.priority-low {
     color: var(--text-tertiary);
   }
 
-  .source-link:hover {
+  .chip.tag {
+    color: var(--accent-primary);
+  }
+
+  .source {
+    cursor: pointer;
+    transition: color var(--transition-fast), background var(--transition-fast);
+    max-width: 180px;
+  }
+
+  .source span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .source:hover {
     color: var(--accent-primary);
     background: var(--accent-light);
   }
 
-  .meta-chip.due.overdue {
-    color: var(--color-error);
-    background: var(--color-error-bg);
-  }
-
-  .meta-chip.due.today {
-    color: var(--color-warning);
-    background: var(--color-warning-bg);
-  }
-
-  .meta-chip.completed-at {
-    color: var(--color-success);
-    background: color-mix(in srgb, var(--color-success) 10%, transparent);
-  }
-
-  .priority-high {
-    color: var(--color-error);
-  }
-
-  .priority-medium {
-    color: var(--color-warning);
-  }
-
-  .priority-low {
+  /* ─── Inline edit affordance ─────────────────────────────────────────── */
+  .row-edit {
+    display: grid;
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    border: 1px solid var(--border-faint);
+    border-radius: 4px;
+    background: transparent;
     color: var(--text-tertiary);
-  }
-
-  .row-actions {
-    display: flex;
-    gap: 2px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    cursor: pointer;
     opacity: 0;
+    transition: opacity var(--transition-fast), background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
   }
 
-  .task-row:hover .row-actions,
-  .task-row:focus-within .row-actions,
-  .task-row.selected .row-actions {
+  .task-row:hover .row-edit,
+  .task-row:focus-within .row-edit,
+  .task-row.selected .row-edit {
     opacity: 1;
   }
 
-  .icon-button {
-    display: grid;
-    place-items: center;
-    width: 26px;
-    height: 26px;
-    border: 0;
-    border-radius: var(--radius-sm);
-    background: transparent;
-    color: var(--text-tertiary);
-    cursor: pointer;
-  }
-
-  .icon-button:hover {
+  .row-edit:hover {
+    border-color: var(--border-medium);
     background: var(--bg-active);
     color: var(--text-primary);
   }
 
-  .icon-button.danger:hover {
-    color: var(--color-error);
-    background: var(--color-error-bg);
-  }
-
+  /* ─── Responsive: at narrow widths the meta cluster wraps under the title ─── */
   @media (max-width: 720px) {
     .task-row {
-      grid-template-columns: 28px minmax(0, 1fr);
+      grid-template-columns: 22px minmax(0, 1fr) auto;
+      grid-template-rows: auto auto;
+      row-gap: 2px;
     }
 
-    .row-actions {
+    .meta {
       grid-column: 2;
-      opacity: 1;
+      grid-row: 2;
+      flex-wrap: wrap;
+    }
+
+    .row-edit {
+      grid-column: 3;
+      grid-row: 1 / -1;
     }
   }
 </style>

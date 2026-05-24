@@ -866,6 +866,55 @@ describe('ProseMirrorAdapter', () => {
       expect(adapter.getDocument().blocks[0]?.content).toBe('Keep the new phrase around');
     });
 
+    it('replaces selected inline text with a protected-lines capsule instead of raw envelope text', async () => {
+      const doc = createTestDocument({
+        blocks: [
+          {
+            id: 'p1',
+            type: 'paragraph',
+            content: 'Keep API_KEY=secret around',
+            marks: [],
+            children: [],
+            attrs: { type: 'paragraph' },
+          },
+        ],
+      });
+      const capsule = [
+        '> Locked encrypted lines · 1 line · Open in Void to unlock.',
+        '',
+        '```void-protected-lines-v1',
+        JSON.stringify({
+          id: 'pblk_test',
+          version: 1,
+          algorithm: 'AES-256-GCM',
+          keyId: 'pkey_test',
+          nonce: 'nonce',
+          ciphertext: 'ciphertext',
+          wrappedDek: { version: 1, algorithm: 'AES-256-GCM', kdf: 'none', nonce: 'dek-nonce', ciphertext: 'dek' },
+          lineCount: 1,
+          protectedAt: '2026-05-24T00:00:00.000Z',
+          titleVisible: true,
+        }, null, 2),
+        '```',
+      ].join('\n');
+
+      await adapter.mount(container, doc);
+      const view = getMountedView(adapter);
+      setSelectionAroundText(view, 'API_KEY=secret');
+      const { from, to } = view.state.selection;
+
+      adapter.execute('replaceRange', from, to, capsule);
+
+      expect(container.querySelector('.void-protected-lines')).not.toBeNull();
+      expect(container.textContent).toContain('Locked lines');
+      expect(container.textContent).toContain('1 line hidden');
+      expect(container.textContent).not.toContain('Locked encrypted lines');
+      expect(container.textContent).not.toContain('void-protected-lines-v1');
+      expect(container.textContent).not.toContain('ciphertext');
+      expect(adapter.getMarkdown()).toContain('```void-protected-lines-v1');
+      expect(adapter.getMarkdown()).not.toContain('API_KEY=secret');
+    });
+
     it('replaces a multi-block partial range while preserving outside text', async () => {
       const doc = createTestDocument({
         blocks: [

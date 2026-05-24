@@ -6,12 +6,16 @@ async function resetApp(page: Page) {
   await page.goto('/', { waitUntil: 'domcontentloaded' });
   await page.evaluate(() => localStorage.clear());
   await page.reload({ waitUntil: 'domcontentloaded' });
-  await expect(page.locator('main')).toBeVisible();
+  await expect(page.getByRole('main')).toBeVisible();
 }
 
 async function createQuickNote(page: Page, body: string) {
+  const tabs = page.locator('.workspace-tab');
+  const previousTabCount = await tabs.count();
   await page.keyboard.press('Meta+n');
-  const editor = page.locator('.ProseMirror').first();
+  await expect(tabs).toHaveCount(previousTabCount + 1);
+  await expect(tabs.nth(previousTabCount)).toHaveClass(/active/);
+  const editor = page.locator('.note-pane-single-target .ProseMirror').first();
   await expect(editor).toBeVisible();
   await editor.click();
   await page.keyboard.type(body);
@@ -48,49 +52,43 @@ async function dragPaneToPane(
   targetIndex: number,
   zone: 'center' | 'left' | 'right' | 'top' | 'bottom',
 ) {
-  await page.evaluate(({ sourceIndex, targetIndex, zone }) => {
-    const panes = Array.from(document.querySelectorAll<HTMLElement>('.note-pane-leaf'));
-    const source = panes[sourceIndex];
-    const target = panes[targetIndex];
-    if (!source || !target) throw new Error('Pane not found');
+  const sourceHeader = page.locator('.note-pane-leaf').nth(sourceIndex).locator('.note-pane-header');
+  const targetPane = page.locator('.note-pane-leaf').nth(targetIndex);
+  const sourceBox = await sourceHeader.boundingBox();
+  const targetBox = await targetPane.boundingBox();
+  expect(sourceBox).toBeTruthy();
+  expect(targetBox).toBeTruthy();
 
-    const rect = target.getBoundingClientRect();
-    const points = {
-      center: [rect.left + rect.width / 2, rect.top + rect.height / 2],
-      left: [rect.left + 12, rect.top + rect.height / 2],
-      right: [rect.right - 12, rect.top + rect.height / 2],
-      top: [rect.left + rect.width / 2, rect.top + 12],
-      bottom: [rect.left + rect.width / 2, rect.bottom - 12],
-    } as const;
-    const [clientX, clientY] = points[zone];
-    const data = new DataTransfer();
-    data.effectAllowed = 'move';
-    data.setData('application/x-void-pane', JSON.stringify({
-      tabId: source.dataset.tabId,
-      paneId: source.dataset.paneId,
-      notePath: source.dataset.notePath,
-    }));
+  const startX = sourceBox!.x + Math.min(42, sourceBox!.width / 3);
+  const startY = sourceBox!.y + sourceBox!.height / 2;
+  const points = {
+    center: [targetBox!.x + targetBox!.width / 2, targetBox!.y + targetBox!.height / 2],
+    left: [targetBox!.x + 12, targetBox!.y + targetBox!.height / 2],
+    right: [targetBox!.x + targetBox!.width - 12, targetBox!.y + targetBox!.height / 2],
+    top: [targetBox!.x + targetBox!.width / 2, targetBox!.y + 12],
+    bottom: [targetBox!.x + targetBox!.width / 2, targetBox!.y + targetBox!.height - 12],
+  } as const;
+  const [targetX, targetY] = points[zone];
 
-    for (const type of ['dragenter', 'dragover', 'drop']) {
-      target.dispatchEvent(new DragEvent(type, {
-        bubbles: true,
-        cancelable: true,
-        clientX,
-        clientY,
-        dataTransfer: data,
-      }));
-    }
-  }, { sourceIndex, targetIndex, zone });
+  await page.mouse.move(startX, startY);
+  await page.mouse.down();
+  await page.mouse.move(startX + 8, startY + 2);
+  await page.mouse.move(targetX, targetY);
+  await expect(page.locator('.pane-move-preview-rect')).toBeVisible();
+  await page.mouse.up();
+  await expect(page.locator('.pane-move-preview-rect')).toHaveCount(0);
 }
 
 test.describe('note split panes', () => {
+  test.describe.configure({ mode: 'serial' });
+
   test.beforeEach(async ({ page }) => {
     await resetApp(page);
   });
 
   test('first split from a single note opens a picker without a stale mount error', async ({ page }) => {
     const pageErrors: string[] = [];
-    page.on('pageerror', (error) => pageErrors.push(error.message));
+    page.on('pageerror', (error) => pageErrors.push(error.stack ?? error.message));
 
     await createTwoNotesAndSplit(page);
 
@@ -153,6 +151,15 @@ test.describe('note split panes', () => {
     await expect(panes.nth(1)).toContainText('Alpha pane body');
   });
 
+  test('clicking pane header controls does not start pane moving', async ({ page }) => {
+    await createTwoNotesAndSplit(page);
+
+    await page.locator('.note-pane-header').first().getByRole('button', { name: 'More' }).click();
+
+    await expect(page.locator('.pane-move-preview-rect')).toHaveCount(0);
+    await expect(page.getByRole('menu', { name: 'Pane options' })).toBeVisible();
+  });
+
   test('dragging a pane to an edge moves it and changes split orientation', async ({ page }) => {
     await createTwoNotesAndSplit(page);
 
@@ -162,5 +169,63 @@ test.describe('note split panes', () => {
     const panes = page.locator('.note-pane-leaf');
     await expect(panes.nth(0)).toContainText('Beta pane body');
     await expect(panes.nth(1)).toContainText('Alpha pane body');
+  });
+
+  test('dragging over another workspace tab activates it before dropping into its pane', async ({ page }) => {
+    await createTwoNotesAndSplit(page);
+    await createQuickNote(page, 'Gamma pane body');
+
+    const tabs = page.locator('.workspace-tab');
+    await expect(tabs).toHaveCount(2);
+    await tabs.nth(0).click();
+    await expect(page.locator('.note-pane-header')).toHaveCount(2);
+    await expect(page.locator('.note-pane-leaf .ProseMirror')).toHaveCount(2);
+
+    const sourceHeader = page.locator('.note-pane-leaf').nth(0).locator('.note-pane-header');
+    const sourceBox = await sourceHeader.boundingBox();
+    const targetTabBox = await tabs.nth(1).boundingBox();
+    expect(sourceBox).toBeTruthy();
+    expect(targetTabBox).toBeTruthy();
+
+    await page.mouse.move(sourceBox!.x + 42, sourceBox!.y + sourceBox!.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(sourceBox!.x + 52, sourceBox!.y + sourceBox!.height / 2);
+    await page.mouse.move(targetTabBox!.x + targetTabBox!.width / 2, targetTabBox!.y + targetTabBox!.height / 2);
+    await expect(tabs.nth(1)).toHaveClass(/active/, { timeout: 1200 });
+
+    const targetPane = page.locator('.note-pane-leaf').first();
+    const targetBox = await targetPane.boundingBox();
+    expect(targetBox).toBeTruthy();
+    await page.mouse.move(targetBox!.x + targetBox!.width - 12, targetBox!.y + targetBox!.height / 2);
+    await expect(page.locator('.pane-move-preview-rect')).toBeVisible();
+    await page.mouse.up();
+
+    const panes = page.locator('.note-pane-leaf');
+    await expect(panes).toHaveCount(2);
+    await expect(panes.nth(0)).toContainText('Gamma pane body');
+    await expect(panes.nth(1)).toContainText('Alpha pane body');
+  });
+
+  test('escape cancels an in-progress pane move without mutating layout', async ({ page }) => {
+    await createTwoNotesAndSplit(page);
+
+    const sourceHeader = page.locator('.note-pane-leaf').nth(0).locator('.note-pane-header');
+    const targetPane = page.locator('.note-pane-leaf').nth(1);
+    const sourceBox = await sourceHeader.boundingBox();
+    const targetBox = await targetPane.boundingBox();
+    expect(sourceBox).toBeTruthy();
+    expect(targetBox).toBeTruthy();
+
+    await page.mouse.move(sourceBox!.x + 42, sourceBox!.y + sourceBox!.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(targetBox!.x + targetBox!.width / 2, targetBox!.y + targetBox!.height / 2);
+    await expect(page.locator('.pane-move-preview-rect')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await page.mouse.up();
+
+    const panes = page.locator('.note-pane-leaf');
+    await expect(page.locator('.pane-move-preview-rect')).toHaveCount(0);
+    await expect(panes.nth(0)).toContainText('Alpha pane body');
+    await expect(panes.nth(1)).toContainText('Beta pane body');
   });
 });

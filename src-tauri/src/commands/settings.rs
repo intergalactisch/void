@@ -1,6 +1,7 @@
 use crate::error::VoidError;
 use chrono::Utc;
 use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 
 /// Expand ~ to home directory in a path string.
@@ -55,6 +56,8 @@ pub struct Settings {
     pub capture_target_default: CaptureTarget,
     #[serde(default = "default_sync_settings")]
     pub sync: SyncSettings,
+    #[serde(flatten, default)]
+    pub extra: HashMap<String, Value>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -67,6 +70,8 @@ pub struct Workspace {
     pub last_opened_at: String,
     #[serde(default = "default_sync_settings")]
     pub sync: SyncSettings,
+    #[serde(flatten, default)]
+    pub extra: HashMap<String, Value>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -723,6 +728,7 @@ impl Default for Settings {
             capture_shortcut: default_capture_shortcut(),
             capture_target_default: default_capture_target(),
             sync: workspace.sync.clone(),
+            extra: HashMap::new(),
         }
     }
 }
@@ -741,6 +747,7 @@ fn default_workspace(notes_path: &str, sync: SyncSettings) -> Workspace {
         created_at: now.clone(),
         last_opened_at: now,
         sync,
+        extra: HashMap::new(),
     }
 }
 
@@ -972,6 +979,77 @@ mod tests {
             settings.active_workspace_id.as_deref(),
             Some(settings.workspaces[0].id.as_str())
         );
+    }
+
+    #[test]
+    fn test_unknown_settings_fields_roundtrip() {
+        let json = r#"{
+            "notesPath": "/Users/sanderjansma/Desktop/notities",
+            "workspaces": [{
+                "id": "workspace-desktop",
+                "name": "notities",
+                "notesPath": "/Users/sanderjansma/Desktop/notities",
+                "createdAt": "2026-05-24T00:00:00Z",
+                "lastOpenedAt": "2026-05-24T00:00:00Z",
+                "sync": {
+                    "enabled": false,
+                    "autoSync": true,
+                    "authMode": "github-app",
+                    "repository": null,
+                    "artifactPolicy": {
+                        "includeMarkdown": true,
+                        "includeVoidHistory": true,
+                        "includePatterns": ["*.md"],
+                        "excludePatterns": [".void/sync/**"]
+                    },
+                    "lastSyncAt": null,
+                    "paused": false
+                },
+                "folderAccess": {
+                    "path": "/Users/sanderjansma/Desktop/notities",
+                    "bookmarkData": "bookmark",
+                    "grantedAt": "2026-05-24T12:00:00Z"
+                }
+            }],
+            "activeWorkspaceId": "workspace-desktop",
+            "theme": "system",
+            "autoSave": true,
+            "autoSaveDelay": 1000,
+            "aiProvider": null,
+            "taskDefaultView": "all",
+            "protection": {
+                "idleLockMinutes": 15,
+                "lockOnAppClose": true,
+                "lockOnSleep": false,
+                "hideProtectedPreviews": true,
+                "requireAIApprovalForProtectedReads": true,
+                "requireAIApprovalForProtectedWrites": true
+            },
+            "sync": {
+                "enabled": false,
+                "autoSync": true,
+                "authMode": "github-app",
+                "repository": null,
+                "artifactPolicy": {
+                    "includeMarkdown": true,
+                    "includeVoidHistory": true,
+                    "includePatterns": ["*.md"],
+                    "excludePatterns": [".void/sync/**"]
+                },
+                "lastSyncAt": null,
+                "paused": false
+            }
+        }"#;
+
+        let mut settings: Settings = serde_json::from_str(json).expect("settings should parse");
+        normalize_settings(&mut settings);
+        let roundtrip = serde_json::to_value(&settings).expect("settings should serialize");
+
+        assert_eq!(
+            roundtrip["workspaces"][0]["folderAccess"]["bookmarkData"],
+            "bookmark"
+        );
+        assert_eq!(roundtrip["protection"]["idleLockMinutes"], 15);
     }
 
     #[test]

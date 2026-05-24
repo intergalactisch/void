@@ -28,6 +28,7 @@
     editing?: boolean;
     onOpenNote?: () => void;
     onClosePane?: () => void;
+    onPaneMoveStart?: ((event: PointerEvent, payload: NotePaneDragPayload) => void) | undefined;
   }
 
   let {
@@ -41,12 +42,13 @@
     editing = false,
     onOpenNote,
     onClosePane,
+    onPaneMoveStart,
   }: Props = $props();
 
   let moreOpen = $state(false);
 
   const note = $derived(notesStore.allNotes.find((item) => item.path === notePath));
-  const title = $derived(note?.title ?? basename(notePath));
+  const title = $derived(notesStore.titleForPath(notePath, note?.title ?? basename(notePath)));
   const folderCrumb = $derived.by(() => {
     const parts = notePath.split('/');
     if (parts.length <= 1) return '';
@@ -127,6 +129,10 @@
   }
 
   function handleTitleDragStart(event: DragEvent): void {
+    if (!event.altKey) {
+      event.preventDefault();
+      return;
+    }
     const transfer = event.dataTransfer;
     if (!transfer) return;
     transfer.effectAllowed = 'copy';
@@ -139,37 +145,42 @@
     transfer.setData('text/plain', wikiLink());
   }
 
-  function handlePaneDragStart(event: DragEvent): void {
-    const transfer = event.dataTransfer;
-    if (!transfer) return;
-    const payload: NotePaneDragPayload = { tabId, paneId, notePath };
+  function handleHeaderPointerDown(event: PointerEvent): void {
+    if (event.button !== 0) return;
+    const target = event.target;
+    if (target instanceof HTMLElement) {
+      if (target.closest('[data-pane-control]')) return;
+      if (event.altKey && target.closest('[data-note-link-drag]')) return;
+    }
     focusThisPane();
-    transfer.effectAllowed = 'move';
-    transfer.setData('application/x-void-pane', JSON.stringify(payload));
-    transfer.setData('text/plain', title);
+    onPaneMoveStart?.(event, { tabId, paneId, notePath });
   }
 </script>
 
-<div class="note-pane-header" class:active>
+<div
+  class="note-pane-header"
+  class:active
+  role="group"
+  aria-label={`Pane header for ${title}`}
+  onpointerdown={handleHeaderPointerDown}
+  title={`${title}${folderCrumb ? ` - ${folderCrumb}` : ''}`}
+>
   <div class="pane-title-shell">
-    <button
-      type="button"
+    <span
       class="pane-drag-handle"
-      draggable="true"
-      onclick={focusThisPane}
-      ondragstart={handlePaneDragStart}
       title="Move Pane"
-      aria-label="Move Pane"
+      aria-hidden="true"
     >
       <GripVertical size={14} strokeWidth={1.8} aria-hidden="true" />
-    </button>
-    <button
-      type="button"
+    </span>
+    <span
       class="pane-title-group"
+      data-note-link-drag
       draggable="true"
-      onclick={focusThisPane}
+      role="button"
+      tabindex="-1"
+      aria-label={`Drag note link for ${title}`}
       ondragstart={handleTitleDragStart}
-      title={`${title}${folderCrumb ? ` - ${folderCrumb}` : ''}`}
     >
       <span class="pane-title-row">
         <span class="pane-title">{title}</span>
@@ -188,13 +199,14 @@
       {#if folderCrumb}
         <span class="pane-crumb">{folderCrumb}</span>
       {/if}
-    </button>
+    </span>
   </div>
 
   <div class="pane-header-actions">
     <button
       type="button"
       class="pane-icon-btn"
+      data-pane-control
       onclick={(event) => split('horizontal', event)}
       title="Split Right"
       aria-label="Split Right"
@@ -204,6 +216,7 @@
     <button
       type="button"
       class="pane-icon-btn"
+      data-pane-control
       onclick={(event) => split('vertical', event)}
       title="Split Down"
       aria-label="Split Down"
@@ -213,6 +226,7 @@
     <button
       type="button"
       class="pane-icon-btn"
+      data-pane-control
       onclick={openNote}
       title="Open Note"
       aria-label="Open Note"
@@ -222,6 +236,7 @@
     <button
       type="button"
       class="pane-icon-btn"
+      data-pane-control
       onclick={toggleMaximized}
       title={maximized ? 'Restore Pane' : 'Maximize Pane'}
       aria-label={maximized ? 'Restore Pane' : 'Maximize Pane'}
@@ -232,10 +247,11 @@
         <Maximize2 size={14} strokeWidth={1.8} aria-hidden="true" />
       {/if}
     </button>
-    <div class="pane-more-wrap">
+    <div class="pane-more-wrap" data-pane-control>
       <button
         type="button"
         class="pane-icon-btn"
+        data-pane-control
         onclick={(event) => { event.stopPropagation(); moreOpen = !moreOpen; }}
         title="More"
         aria-label="More"
@@ -247,22 +263,24 @@
         <button
           type="button"
           class="pane-menu-backdrop"
+          data-pane-control
           aria-label="Close pane menu"
           onclick={(event) => { event.stopPropagation(); moreOpen = false; }}
         ></button>
-        <div class="pane-menu" role="menu" aria-label="Pane options">
-          <button type="button" role="menuitem" onclick={() => { insertLink(); }}>
+        <div class="pane-menu" role="menu" aria-label="Pane options" data-pane-control>
+          <button type="button" role="menuitem" data-pane-control onclick={() => { insertLink(); }}>
             <Link2 size={13} strokeWidth={2} aria-hidden="true" />
             Insert Link
           </button>
-          <button type="button" role="menuitem" onclick={() => { void copyRef(); }}>Copy Ref</button>
-          <button type="button" role="menuitem" onclick={() => { void copyPath(); }}>Copy Path</button>
+          <button type="button" role="menuitem" data-pane-control onclick={() => { void copyRef(); }}>Copy Ref</button>
+          <button type="button" role="menuitem" data-pane-control onclick={() => { void copyPath(); }}>Copy Path</button>
         </div>
       {/if}
     </div>
     <button
       type="button"
       class="pane-icon-btn"
+      data-pane-control
       onclick={closePane}
       title="Close Pane"
       aria-label="Close Pane"
@@ -285,8 +303,12 @@
     border-bottom: 1px solid var(--border-faint);
     background: color-mix(in oklab, var(--bg-editor) 94%, var(--bg-sidebar));
     color: var(--text-secondary);
-    cursor: default;
+    cursor: grab;
     user-select: none;
+  }
+
+  :global(.pane-moving) .note-pane-header {
+    cursor: grabbing;
   }
 
   .note-pane-header.active {
@@ -324,17 +346,7 @@
     border-radius: var(--radius-xs);
     background: transparent;
     color: var(--text-tertiary);
-    cursor: grab;
-  }
-
-  .pane-drag-handle:active {
-    cursor: grabbing;
-  }
-
-  .pane-drag-handle:hover,
-  .pane-drag-handle:focus-visible {
-    background: var(--bg-hover);
-    color: var(--text-primary);
+    cursor: inherit;
   }
 
   .pane-title-group {
@@ -348,7 +360,7 @@
     border: 0;
     background: transparent;
     color: inherit;
-    cursor: pointer;
+    cursor: inherit;
     font: inherit;
     text-align: left;
   }
@@ -427,6 +439,7 @@
     gap: 2px;
     justify-self: end;
     opacity: 0.38;
+    cursor: default;
   }
 
   .note-pane-header.active .pane-header-actions,
