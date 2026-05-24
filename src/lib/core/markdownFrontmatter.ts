@@ -4,6 +4,7 @@
 
 import type { DocumentMeta } from '$lib/domain/values';
 import { normalizeNoteTags } from '$lib/domain/values';
+import { customFromProtectionMeta, isProtectedNoteMeta } from '$lib/domain/values/Protection';
 
 export function extractFrontmatterTags(markdown: string): string[] {
   const data = parseFrontmatterData(markdown);
@@ -53,6 +54,10 @@ export function serializeMetadataFrontmatter(meta: DocumentMeta): string {
 
   if (meta.aiTouches && meta.aiTouches > 0) {
     data.ai_touches = meta.aiTouches;
+  }
+
+  if (isProtectedNoteMeta(meta.protection)) {
+    Object.assign(data, customFromProtectionMeta(meta.protection));
   }
 
   data.createdAt = meta.createdAt.toISOString();

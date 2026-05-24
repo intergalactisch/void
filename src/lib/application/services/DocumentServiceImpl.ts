@@ -16,6 +16,7 @@ import type { NotesService } from '$lib/ports/inbound/NotesService';
 import type { TodoService } from '$lib/ports/inbound/TodoService';
 import type { Document } from '$lib/domain';
 import type { DocumentMeta } from '$lib/domain/values/DocumentMeta';
+import { isLockedProtectedMeta } from '$lib/domain/values/Protection';
 import { normalizeNoteTags } from '$lib/domain/values/NoteTags';
 import type { OperationSource } from '$lib/pipeline/types';
 import { AI_SOURCE } from '$lib/pipeline/types';
@@ -44,6 +45,9 @@ export class DocumentServiceImpl implements DocumentService {
     }
 
     const doc = loadResult.value;
+    if (isLockedProtectedMeta(doc.meta)) {
+      return err(new Error('Protected note is locked.'));
+    }
     const markdown = this.markdown.serializeBlocks(doc.blocks);
 
     log.debug('readContent success', { path, length: markdown.length });
@@ -98,6 +102,9 @@ export class DocumentServiceImpl implements DocumentService {
     }
 
     const doc = loadResult.value;
+    if (isLockedProtectedMeta(doc.meta)) {
+      return err(new Error('Protected note is locked.'));
+    }
     return ok({
       document: doc,
       markdown: this.markdown.serializeBlocks(doc.blocks),
@@ -192,6 +199,9 @@ export class DocumentServiceImpl implements DocumentService {
     }
 
     const document = loadResult.value;
+    if (isLockedProtectedMeta(document.meta)) {
+      return err(new Error('Protected note is locked.'));
+    }
     document.meta = {
       ...document.meta,
       ...updates,

@@ -334,6 +334,7 @@ export class AgentWorkerRunner {
     return [
       'You are a bounded Void worker agent.',
       'You report findings to the orchestrator. Any writes must stay inside your declared capability and target-resource scope.',
+      'When lineage tools are allowed and the task asks why a note changed, where a line came from, or how to create the best version from history, ground your findings in lineage tool results.',
       'Return JSON only for final answers.',
       '',
       `Worker: ${spec.title}`,

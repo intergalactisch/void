@@ -17,6 +17,7 @@
   import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { invoke } from '@tauri-apps/api/core';
   import { getCurrentWindow } from '@tauri-apps/api/window';
+  import SelectShell from '$lib/components/shared/SelectShell.svelte';
 
   type CaptureTarget = 'inbox' | 'daily';
 
@@ -280,8 +281,9 @@
   <footer class="capture-footer">
     <div class="capture-target">
       <span class="capture-target-label">Save to</span>
-      <div class="capture-target-select-wrap">
+      <SelectShell class="capture-target-select-wrap">
         <select
+          name="capture-target"
           bind:value={target}
           class="capture-target-select"
           disabled={submitting}
@@ -290,10 +292,7 @@
           <option value="inbox">Inbox</option>
           <option value="daily">Today's daily note</option>
         </select>
-        <svg viewBox="0 0 8 5" width="8" height="5" fill="none" stroke="currentColor" stroke-width="1" aria-hidden="true">
-          <path d="M.5.5 4 4 7.5.5" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
-      </div>
+      </SelectShell>
     </div>
 
     <div class="capture-hint" aria-hidden="true">
@@ -545,46 +544,20 @@
     user-select: none;
   }
 
-  .capture-target-select-wrap {
-    display: inline-grid;
-    grid-template-columns: 1fr 18px;
-    align-items: center;
-    background: var(--bg-card, #ffffff);
-    border-radius: 6px;
-    box-shadow: inset 0 0 0 1px var(--border-light, rgba(28, 27, 24, 0.07));
-  }
-
-  .capture-target-select-wrap:focus-within {
-    box-shadow: inset 0 0 0 1px var(--accent-primary, #2c5cd5);
-  }
-
-  .capture-target-select-wrap svg {
-    grid-column: 2;
-    grid-row: 1;
-    pointer-events: none;
-    color: var(--text-tertiary, #84827d);
-    justify-self: center;
+  :global(.capture-target-select-wrap) {
+    --select-bg: var(--bg-card, #ffffff);
+    --select-hover-bg: var(--bg-card, #ffffff);
+    --select-radius: 6px;
+    --select-min-height: 28px;
+    --select-padding-x: 10px;
+    --select-padding-y: 5px;
+    --select-chevron-size: 22px;
   }
 
   .capture-target-select {
-    grid-column: 1 / -1;
-    grid-row: 1;
-    appearance: none;
-    -webkit-appearance: none;
-    border: none;
-    outline: none;
-    background: transparent;
     font-family: inherit;
     font-size: 12px;
     font-weight: 500;
-    color: var(--text-primary, #1c1b1a);
-    padding: 5px 22px 5px 10px;
-    cursor: pointer;
-  }
-
-  .capture-target-select:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
   }
 
   .capture-hint {

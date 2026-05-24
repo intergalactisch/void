@@ -61,6 +61,8 @@ export class OperationArchiver {
     try {
       const entries: UndoFrameEntry[] = [];
       for (const notePath of operation.targetNotes) {
+        const meta = await this.documentService.readMeta(notePath);
+        if (meta.ok && meta.value.protection?.level === 'protected') continue;
         const result = await this.documentService.readContent(notePath);
         if (result.ok) {
           entries.push({ notePath, contentBefore: result.value });

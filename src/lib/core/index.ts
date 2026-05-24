@@ -49,3 +49,23 @@ export {
   containsApiKeyGuidance,
   sanitizeCLIErrorMessage,
 } from './cliErrors';
+
+export {
+  redactSensitiveText,
+  redactSensitiveValue,
+  type RedactionOptions,
+} from './privacyRedaction';
+
+export {
+  buildCodeFence,
+  escapeHtml,
+  normalizeCodeLanguageForHighlighter,
+  normalizeCodeLanguageLabel,
+  parseCodeBlockDisplayOptions,
+  parseCodeFenceInfo,
+  updateCodeFenceMeta,
+  type CodeBlockDisplayOptions,
+  type CodeFenceBuildInput,
+  type CodeFenceInfo,
+  type CodeFenceMetaUpdates,
+} from './codeFence';

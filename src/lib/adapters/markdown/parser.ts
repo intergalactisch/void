@@ -12,6 +12,7 @@ import MarkdownIt from 'markdown-it';
 import type { Node as ProseMirrorNode, Schema, Mark } from 'prosemirror-model';
 import { voidSchema } from '$lib/adapters/prosemirror/schema';
 import { generateBlockId } from '$lib/domain/entities/Block';
+import { parseCodeFenceInfo, renderCodeFenceHtml } from '$lib/core/codeFence';
 
 /**
  * Configure markdown-it with appropriate options
@@ -21,6 +22,12 @@ const renderMd = new MarkdownIt({
   breaks: false, // Don't convert \n to <br>
   linkify: true, // Auto-detect URLs
 });
+
+renderMd.renderer.rules.fence = (tokens, idx) => {
+  const token = tokens[idx];
+  if (!token) return '';
+  return renderCodeFenceHtml(token.content, token.info);
+};
 
 const md = new MarkdownIt({
   html: true, // Parse Markdown-compatible HTML so we can preserve/round-trip it safely.
@@ -721,11 +728,12 @@ function parseCodeBlock(
 
   const token = tokens[index];
   if (!token) {
-    return { node: codeBlockType.create({ id: generateBlockId(), language: null }), nextIndex: index + 1 };
+    return { node: codeBlockType.create({ id: generateBlockId(), language: null, meta: null }), nextIndex: index + 1 };
   }
 
-  // Extract language from fence info (e.g., "```typescript")
-  const language = token.info?.trim() || null;
+  // Extract language and metadata from fence info
+  // (e.g. "```typescript title=\"api.ts\" lineNumbers").
+  const info = parseCodeFenceInfo(token.info);
 
   // Get the code content
   const content = token.content || '';
@@ -735,7 +743,7 @@ function parseCodeBlock(
 
   return {
     node: codeBlockType.create(
-      { id: generateBlockId(), language },
+      { id: generateBlockId(), language: info.language, meta: info.meta },
       textNode ? [textNode] : []
     ),
     nextIndex: index + 1,

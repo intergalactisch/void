@@ -93,6 +93,7 @@ import {
 import { createAIBlockPlugin, aiBlockKey, AI_BYPASS } from './plugins/aiBlock';
 import type { AIBlockMeta } from './plugins/aiBlock';
 import { createAIShortcutKeymap } from './plugins/aiShortcutKeymap';
+import { createCodeHighlightPlugin } from './plugins/codeHighlight';
 import {
   moveCurrentBlockUp,
   moveCurrentBlockDown,
@@ -110,6 +111,7 @@ import {
   moveBlockUp,
   moveBlockDown,
   setBlockTypeFromDomain,
+  exitFinalCodeBlockOnArrowDown,
   splitBlock,
 } from './commands/blocks';
 import { deleteEmptyListItem } from './commands/lists';
@@ -1079,6 +1081,7 @@ export class ProseMirrorAdapter implements EditorPort {
       })
     );
     plugins.push(createAIThreadsPlugin());
+    plugins.push(createCodeHighlightPlugin());
 
     // ---- 5. Block Selection plugin (multi-select decorations + keyboard) ----
     plugins.push(
@@ -1190,6 +1193,7 @@ export class ProseMirrorAdapter implements EditorPort {
           if (dispatch) dispatch(state.tr.replaceSelectionWith(br.create()).scrollIntoView());
           return true;
         },
+        'ArrowDown': exitFinalCodeBlockOnArrowDown(),
         'Mod-Enter': chainCommands(exitCode, splitBlock()),
         'Backspace': (state, dispatch) => {
           const { $from, empty } = state.selection;

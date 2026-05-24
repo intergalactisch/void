@@ -16,15 +16,34 @@
 
 import { ok, err, type Result } from '$lib/core';
 import {
+  isActiveAgentRunStatus,
   normalizeAgentRun,
   type AgentRun,
   type AgentRunEvent,
   type AgentWorkerMessage,
 } from '$lib/domain/entities/AgentRun';
-import type { AgentRunStoragePort } from '$lib/ports/outbound/AgentRunStoragePort';
+import type {
+  AgentRunStoragePort,
+  AgentRunSummary,
+  AgentRunSummaryQuery,
+} from '$lib/ports/outbound/AgentRunStoragePort';
+import {
+  clampPageLimit,
+  coerceDate,
+  cursorToOffset,
+  nextOffsetCursor,
+  type PagedResult,
+} from '$lib/ports/outbound/PagedQuery';
 import type { VoidStoragePort } from '$lib/ports/outbound/VoidStoragePort';
 
 const ORCHESTRATOR_LOG = '_orchestrator';
+const COMMAND_CENTER_INDEX_DIR = 'index/command-center';
+const RUN_INDEX_FILE = `${COMMAND_CENTER_INDEX_DIR}/runs.json`;
+
+interface AgentRunSummaryIndex {
+  version: 1;
+  summaries: AgentRunSummary[];
+}
 
 function safeId(value: string): string {
   return value.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -72,6 +91,7 @@ export class VoidAgentRunStorageAdapter implements AgentRunStoragePort {
       }
     }
 
+    await this.upsertIndexedSummary(normalizeAgentRun({ ...snapshot, events }));
     return ok(undefined);
   }
 
@@ -119,6 +139,34 @@ export class VoidAgentRunStorageAdapter implements AgentRunStoragePort {
     return ok(runs);
   }
 
+  async listSummaries(query: AgentRunSummaryQuery = {}): Promise<Result<PagedResult<AgentRunSummary>, Error>> {
+    const limit = clampPageLimit(query.limit);
+    const offset = cursorToOffset(query.cursor);
+    const dateFrom = coerceDate(query.dateFrom);
+    const dateTo = coerceDate(query.dateTo);
+    const needle = query.query?.trim().toLocaleLowerCase() ?? '';
+    const sortBy = query.sortBy ?? 'updatedAt';
+    const sortOrder = query.sortOrder ?? 'desc';
+
+    const index = await this.readSummaryIndex();
+    if (!index.ok) return err(index.error);
+    const summaries = index.value.filter((summary) =>
+      this.matchesSummary(summary, query, needle, dateFrom, dateTo)
+    );
+
+    summaries.sort((a, b) => {
+      const aValue = sortBy === 'createdAt' ? a.createdAt : a.updatedAt;
+      const bValue = sortBy === 'createdAt' ? b.createdAt : b.updatedAt;
+      return sortOrder === 'asc' ? aValue.localeCompare(bValue) : bValue.localeCompare(aValue);
+    });
+
+    return ok({
+      items: summaries.slice(offset, offset + limit),
+      nextCursor: nextOffsetCursor(offset, limit, summaries.length),
+      total: summaries.length,
+    });
+  }
+
   async appendEvent(runId: string, event: AgentRunEvent): Promise<Result<void, Error>> {
     const previous = this.eventWriteQueues.get(runId) ?? Promise.resolve(ok(undefined));
     const next = previous.then(async () => {
@@ -127,7 +175,11 @@ export class VoidAgentRunStorageAdapter implements AgentRunStoragePort {
       if (events.value.some((existing) => existing.id === event.id)) {
         return ok(undefined);
       }
-      return this.voidStorage.writeJson(this.notesPath, this.eventsPathFor(runId), [...events.value, event]);
+      const appended = await this.voidStorage.appendJsonl(this.notesPath, this.eventsJsonlPathFor(runId), event);
+      if (appended.ok) {
+        await this.touchIndexedSummaryEvent(runId, event);
+      }
+      return appended;
     });
     this.eventWriteQueues.set(runId, next);
     const result = await next;
@@ -138,10 +190,19 @@ export class VoidAgentRunStorageAdapter implements AgentRunStoragePort {
   }
 
   async listEvents(runId: string, fromEventId?: string): Promise<Result<AgentRunEvent[], Error>> {
-    const read = await this.voidStorage.readJson<AgentRunEvent[]>(this.notesPath, this.eventsPathFor(runId));
-    if (!read.ok) return err(read.error);
+    const legacy = await this.voidStorage.readJson<AgentRunEvent[]>(this.notesPath, this.eventsPathFor(runId));
+    if (!legacy.ok) return err(legacy.error);
+    const appended = await this.voidStorage.readJsonl<AgentRunEvent>(this.notesPath, this.eventsJsonlPathFor(runId));
+    if (!appended.ok) return err(appended.error);
 
-    const events = Array.isArray(read.value) ? read.value : [];
+    const seen = new Set<string>();
+    const events: AgentRunEvent[] = [];
+    for (const event of [...(Array.isArray(legacy.value) ? legacy.value : []), ...appended.value]) {
+      if (!event?.id || seen.has(event.id)) continue;
+      seen.add(event.id);
+      events.push(event);
+    }
+    events.sort((a, b) => a.sequence - b.sequence || a.createdAt.localeCompare(b.createdAt));
     if (!fromEventId) return ok(events);
 
     const index = events.findIndex((event) => event.id === fromEventId);
@@ -217,8 +278,122 @@ export class VoidAgentRunStorageAdapter implements AgentRunStoragePort {
     return `agents/${safeId(runId)}.events.json`;
   }
 
+  private eventsJsonlPathFor(runId: string): string {
+    return `agents/${safeId(runId)}.events.jsonl`;
+  }
+
   private workerLogPathFor(runId: string, workerId: string | undefined): string {
     const worker = workerId ? safeId(workerId) : ORCHESTRATOR_LOG;
     return `agents/${safeId(runId)}/${worker}.jsonl`;
+  }
+
+  private async readSummaryIndex(): Promise<Result<AgentRunSummary[], Error>> {
+    const read = await this.voidStorage.readJson<AgentRunSummaryIndex>(this.notesPath, RUN_INDEX_FILE);
+    if (read.ok && read.value?.version === 1 && Array.isArray(read.value.summaries)) {
+      return ok(read.value.summaries);
+    }
+    if (!read.ok) return err(read.error);
+    return this.rebuildSummaryIndex();
+  }
+
+  private async writeSummaryIndex(summaries: AgentRunSummary[]): Promise<Result<void, Error>> {
+    return this.voidStorage.writeJson(this.notesPath, RUN_INDEX_FILE, { version: 1, summaries });
+  }
+
+  private async rebuildSummaryIndex(): Promise<Result<AgentRunSummary[], Error>> {
+    const entries = await this.voidStorage.listDir(this.notesPath, 'agents');
+    if (!entries.ok) return err(entries.error);
+
+    const summaries: AgentRunSummary[] = [];
+    for (const entry of entries.value) {
+      if (!entry.endsWith('.json')) continue;
+      if (entry.endsWith('.events.json')) continue;
+      const read = await this.voidStorage.readJson<AgentRun>(this.notesPath, `agents/${entry}`);
+      if (!read.ok) return err(read.error);
+      if (!read.value) continue;
+      summaries.push(this.toSummary(normalizeAgentRun(read.value)));
+    }
+
+    const written = await this.writeSummaryIndex(summaries);
+    if (!written.ok) return err(written.error);
+    return ok(summaries);
+  }
+
+  private async upsertIndexedSummary(run: AgentRun): Promise<void> {
+    const index = await this.readSummaryIndex();
+    if (!index.ok) return;
+    const next = index.value.filter((summary) => summary.id !== run.id);
+    next.push(this.toSummary(run));
+    await this.writeSummaryIndex(next);
+  }
+
+  private async touchIndexedSummaryEvent(runId: string, event: AgentRunEvent): Promise<void> {
+    const index = await this.readSummaryIndex();
+    if (!index.ok) return;
+    const next = index.value.map((summary) => {
+      if (summary.id !== runId) return summary;
+      return {
+        ...summary,
+        lastEventPreview: event.message ?? summary.lastEventPreview,
+        updatedAt: event.createdAt > summary.updatedAt ? event.createdAt : summary.updatedAt,
+      };
+    });
+    await this.writeSummaryIndex(next);
+  }
+
+  private toSummary(run: AgentRun): AgentRunSummary {
+    const artifactTypes = Array.from(new Set(run.artifacts.map((artifact) => artifact.type)));
+    const lastEvent = run.events.at(-1);
+    return {
+      id: run.id,
+      prompt: run.prompt,
+      status: run.status,
+      orchestrationMode: run.orchestrationMode,
+      conversationId: run.conversationId,
+      sourceMessageId: run.sourceMessageId ?? null,
+      workerCount: run.workers.length,
+      runningWorkerCount: run.workers.filter((worker) => worker.status === 'running').length,
+      completedWorkerCount: run.workers.filter((worker) => worker.status === 'completed').length,
+      taskCount: run.tasks.length,
+      completedTaskCount: run.tasks.filter((task) => task.status === 'completed').length,
+      artifactCount: run.artifacts.length,
+      artifactTypes,
+      lastEventPreview: lastEvent?.message ?? run.finalSummary,
+      createdAt: run.createdAt,
+      updatedAt: run.updatedAt,
+      completedAt: run.completedAt,
+    };
+  }
+
+  private matchesSummary(
+    summary: AgentRunSummary,
+    query: AgentRunSummaryQuery,
+    needle: string,
+    dateFrom: Date | null,
+    dateTo: Date | null,
+  ): boolean {
+    if (query.status && query.status !== 'all') {
+      if (query.status === 'active' && !isActiveAgentRunStatus(summary.status)) return false;
+      if (query.status === 'terminal' && isActiveAgentRunStatus(summary.status)) return false;
+      if (query.status !== 'active' && query.status !== 'terminal' && summary.status !== query.status) return false;
+    }
+    if (query.orchestrationMode && query.orchestrationMode !== 'all' && summary.orchestrationMode !== query.orchestrationMode) {
+      return false;
+    }
+    if (query.conversationId !== undefined && summary.conversationId !== query.conversationId) {
+      return false;
+    }
+    const updatedAt = new Date(summary.updatedAt);
+    if (dateFrom && updatedAt < dateFrom) return false;
+    if (dateTo && updatedAt > dateTo) return false;
+    if (!needle) return true;
+    return [
+      summary.id,
+      summary.prompt,
+      summary.conversationId ?? '',
+      summary.lastEventPreview ?? '',
+      summary.status,
+      summary.orchestrationMode,
+    ].some((value) => value.toLocaleLowerCase().includes(needle));
   }
 }

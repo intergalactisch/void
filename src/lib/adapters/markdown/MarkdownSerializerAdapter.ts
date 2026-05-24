@@ -8,11 +8,12 @@
  */
 
 import type { Block } from '$lib/domain/entities/Block';
-import type { MarkdownSerializerPort } from '$lib/ports/outbound/MarkdownSerializerPort';
+import type { MarkdownSerializerPort, ParsedMarkdownDocument } from '$lib/ports/outbound/MarkdownSerializerPort';
 import { parseMarkdown } from './parser';
 import { serializeToMarkdown } from './serializer';
 import { prosemirrorDocToBlocks, blocksToProsemirrorDoc } from './index';
 import { voidSchema } from '$lib/adapters/prosemirror/schema';
+import { parseMarkdownWithFrontmatter } from './frontmatter';
 
 export class MarkdownSerializerAdapter implements MarkdownSerializerPort {
   parseToBlocks(markdown: string): Block[] {
@@ -23,5 +24,14 @@ export class MarkdownSerializerAdapter implements MarkdownSerializerPort {
   serializeBlocks(blocks: Block[]): string {
     const pmDoc = blocksToProsemirrorDoc(blocks);
     return serializeToMarkdown(pmDoc);
+  }
+
+  parseDocument(markdown: string): ParsedMarkdownDocument {
+    const { content, meta } = parseMarkdownWithFrontmatter(markdown);
+    return {
+      content,
+      meta,
+      blocks: this.parseToBlocks(content),
+    };
   }
 }

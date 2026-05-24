@@ -13,6 +13,7 @@ export {
   setBlockType,
   setBlockTypeFromDomain,
   liftBlock,
+  exitFinalCodeBlockOnArrowDown,
   insertHorizontalRule,
   splitBlock,
 } from './blocks';

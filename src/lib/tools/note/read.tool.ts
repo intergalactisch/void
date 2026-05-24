@@ -41,6 +41,19 @@ export default defineTool<ReadArgs, ReadResult>({
     if (!metaResult.ok) {
       throw new Error(`Failed to read note: ${metaResult.error.message}`);
     }
+    const protection = metaResult.value.protection;
+    if (protection?.level === 'protected') {
+      if (protection.lockState === 'locked') {
+        throw new Error(`Protected note "${metaResult.value.title}" is locked. Unlock it before AI can request access.`);
+      }
+      const policy = services.protection.currentPolicy();
+      if (
+        policy.requireAIApprovalForProtectedReads &&
+        !services.protection.hasAIContextAuthorization(protection.noteId, 'note.read')
+      ) {
+        throw new Error(`Protected note "${metaResult.value.title}" requires explicit AI access approval.`);
+      }
+    }
 
     const contentResult = await services.documents.readContent(noteId);
     if (!contentResult.ok) {

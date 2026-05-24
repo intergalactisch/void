@@ -1,5 +1,6 @@
 import { defineTool } from '../define';
 import { normalizeNoteFolder, normalizeNotePath } from './paths';
+import { assertProtectedAIReadAllowed, assertProtectedAIWriteAllowed } from '../protectionGuard';
 
 interface MoveArgs {
   noteId: string;
@@ -28,6 +29,8 @@ export default defineTool<MoveArgs, { success: boolean; newPath: string }>({
   async execute(args, { services, progress }) {
     progress(10, 'Moving note...');
     const noteId = await normalizeNotePath(args.noteId, services);
+    await assertProtectedAIReadAllowed(services, noteId, 'note.read');
+    await assertProtectedAIWriteAllowed(services, noteId);
     const destination = await normalizeNoteFolder(args.destination, services);
 
     // Extract filename from current path

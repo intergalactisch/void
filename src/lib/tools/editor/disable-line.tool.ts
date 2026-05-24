@@ -1,5 +1,6 @@
 import { defineTool } from '../define';
 import { normalizeNotePath } from '../note/paths';
+import { assertProtectedAIReadAllowed, assertProtectedAIWriteAllowed } from '../protectionGuard';
 
 interface DisableLineArgs {
   noteId?: string;
@@ -40,6 +41,8 @@ export default defineTool<DisableLineArgs, { success: boolean; noteId: string; l
     if (!noteId) {
       throw new Error('No note selected. Provide noteId or open a note first.');
     }
+    await assertProtectedAIReadAllowed(services, noteId, 'note.read');
+    await assertProtectedAIWriteAllowed(services, noteId);
 
     const read = await services.documents.readContent(noteId);
     if (!read.ok) {

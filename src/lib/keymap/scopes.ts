@@ -60,8 +60,8 @@ export function defaultEditorFocusedPredicate(): boolean {
   if (typeof document === 'undefined') return false;
   const active = document.activeElement;
   if (!active) return false;
-  // Match ProseMirror, plain contenteditables, inputs, and textareas
-  if (active.matches('.ProseMirror, [contenteditable="true"], input, textarea')) {
+  // Match ProseMirror, plain contenteditables, and form controls.
+  if (active.matches('.ProseMirror, [contenteditable="true"], input, textarea, select')) {
     return true;
   }
   // Match descendant inside a ProseMirror tree (e.g. a node-view child)

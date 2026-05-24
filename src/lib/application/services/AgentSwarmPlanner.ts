@@ -71,10 +71,21 @@ const DEFAULT_WORKER_TOOLS = [
   'intelligence:find-related',
   'lineage:actions',
   'lineage:context',
+  'lineage:history',
+  'lineage:why',
+  'lineage:trace',
+  'lineage:synthesize',
 ];
 
 const STAGED_DRAFT_TOOLS = ['note:create'];
-const PROPOSED_PATCH_TOOLS = ['editor:apply-note-patch', 'editor:insert-blocks', 'editor:replace-block', 'note:update'];
+const PROPOSED_PATCH_TOOLS = [
+  'editor:apply-note-patch',
+  'editor:insert-blocks',
+  'editor:insert-code-block',
+  'editor:replace-block',
+  'editor:update-code-block',
+  'note:update',
+];
 
 export class AgentSwarmPlanner {
   constructor(
@@ -130,6 +141,7 @@ export class AgentSwarmPlanner {
           '- Keep worker scopes independent when possible.',
           '- For research or media requests, prefer these lanes: source scout, media scout, vault/context scout, domain synthesizer, critique/editor.',
           '- Research workers must produce concrete, topic-specific findings and draft material, not methodology summaries about how they searched.',
+          '- For questions about note history, sources of lines, recovered deleted material, or best-version drafting from prior edits, assign a lineage-aware worker and allow lineage:context, lineage:history, lineage:trace, lineage:why, or lineage:synthesize.',
           '- Media scouts should use search:media when available, then report useful articles, YouTube/videos, images, datasets, or audio as media drafts with URL and mediaKind.',
           ...constellationRules,
           '',

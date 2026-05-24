@@ -314,6 +314,11 @@ function createMarkdown(): MarkdownSerializerPort {
   return {
     parseToBlocks: (markdown: string) => [createBlock(markdown)],
     serializeBlocks: (blocks: Block[]) => blocks.map((block) => block.content).join('\n'),
+    parseDocument: (markdown: string) => ({
+      content: markdown,
+      meta: {},
+      blocks: [createBlock(markdown)],
+    }),
   } as MarkdownSerializerPort;
 }
 

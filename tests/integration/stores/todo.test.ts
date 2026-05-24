@@ -20,11 +20,13 @@ import type {
   TodoListFile,
   CreateTodoListFileParams,
   UpdateTodoListFileParams,
+  SettingsService,
 } from '$lib/ports/inbound';
 import type { Todo } from '$lib/domain/entities/Todo';
 import { filterTodos, type TodoFilter } from '$lib/domain/values/TodoFilter';
 import type { TodoId } from '$lib/domain/values/TodoId';
 import { createTodo } from '$lib/domain/entities/Todo';
+import { DEFAULT_SETTINGS } from '$lib/domain/entities/Settings';
 import { ok, err } from '$lib/core';
 
 // ============================================================================
@@ -875,6 +877,215 @@ describe('Todo Store Integration', () => {
 
       expect(todoStore.workspaceOpen).toBe(true);
       expect(todoStore.activeView).toBe('inbox');
+    });
+  });
+
+  describe('Advanced task presentation', () => {
+    it('filters completed tasks by an inclusive completed date range', async () => {
+      todoStore.init(mockService);
+      const before = createMockTodo({
+        content: 'Done before',
+        isCompleted: true,
+        dates: { completedAt: new Date(2026, 3, 30, 12, 0, 0) },
+      });
+      const startBoundary = createMockTodo({
+        content: 'Done start',
+        isCompleted: true,
+        dates: { completedAt: new Date(2026, 4, 1, 8, 0, 0) },
+      });
+      const endBoundary = createMockTodo({
+        content: 'Done end',
+        isCompleted: true,
+        dates: { completedAt: new Date(2026, 4, 31, 20, 0, 0) },
+      });
+      const after = createMockTodo({
+        content: 'Done after',
+        isCompleted: true,
+        dates: { completedAt: new Date(2026, 5, 1, 8, 0, 0) },
+      });
+
+      mockService._subscribers.forEach((cb) => cb([before, startBoundary, endBoundary, after]));
+      todoStore.openWorkspace('logbook');
+      await todoStore.updateAdvancedFilters({
+        dateField: 'completedAt',
+        datePreset: 'custom',
+        dateFrom: '2026-05-01',
+        dateTo: '2026-05-31',
+      });
+
+      expect(todoStore.visibleTodos.map((todo) => todo.content)).toEqual([
+        'Done end',
+        'Done start',
+      ]);
+    });
+
+    it('groups shown completed tasks by completion date newest first', () => {
+      todoStore.init(mockService);
+      const today = new Date();
+      const yesterday = new Date();
+      yesterday.setDate(today.getDate() - 1);
+      const undated = createMockTodo({ content: 'Legacy done', isCompleted: true });
+      const doneToday = createMockTodo({
+        content: 'Done today',
+        isCompleted: true,
+        dates: { completedAt: today },
+      });
+      const doneYesterday = createMockTodo({
+        content: 'Done yesterday',
+        isCompleted: true,
+        dates: { completedAt: yesterday },
+      });
+
+      mockService._subscribers.forEach((cb) => cb([undated, doneYesterday, doneToday]));
+      todoStore.openWorkspace('logbook');
+
+      expect(todoStore.visibleTodos.map((todo) => todo.content)).toEqual([
+        'Done today',
+        'Done yesterday',
+        'Legacy done',
+      ]);
+      expect(todoStore.groupedVisibleTodos.map((group) => group.label)).toEqual([
+        'Completed today',
+        'Completed yesterday',
+        'No completion date',
+      ]);
+    });
+
+    it('uses smart date grouping for open and completed tasks', async () => {
+      todoStore.init(mockService);
+      const created = new Date();
+      const tomorrow = new Date();
+      tomorrow.setDate(created.getDate() + 1);
+      const openScheduled = createMockTodo({
+        content: 'Tomorrow start',
+        dates: { scheduledDate: tomorrow, createdAt: created },
+      });
+      const completed = createMockTodo({
+        content: 'Finished',
+        isCompleted: true,
+        dates: { completedAt: created, createdAt: created },
+      });
+
+      mockService._subscribers.forEach((cb) => cb([openScheduled, completed]));
+      todoStore.openWorkspace('all');
+      todoStore.setShowCompleted(true);
+      await todoStore.setGroupMode('smartDate');
+
+      expect(todoStore.groupedVisibleTodos.map((group) => group.label)).toEqual([
+        'Tomorrow',
+        'Completed today',
+      ]);
+    });
+
+    it('persists preferences per custom list key when settings service is provided', async () => {
+      const saved: { key: string; value: unknown }[] = [];
+      const settingsService = {
+        current: () => ({
+          ...DEFAULT_SETTINGS,
+          activeWorkspaceId: 'workspace-test',
+          taskWorkspacePreferences: {},
+        }),
+        set: vi.fn().mockImplementation(async (key: string, value: unknown) => {
+          saved.push({ key, value });
+          return ok(undefined);
+        }),
+      } as unknown as SettingsService;
+
+      todoStore.init(mockService, settingsService);
+      todoStore.setActiveList('/notes/todo-work.md');
+      await todoStore.setGroupMode('completedDate');
+
+      expect(settingsService.set).toHaveBeenCalledWith(
+        'taskWorkspacePreferences',
+        expect.objectContaining({
+          'workspace:workspace-test:list:/notes/todo-work.md': expect.objectContaining({
+            groupMode: 'completedDate',
+          }),
+        }),
+      );
+      expect(saved.at(-1)?.key).toBe('taskWorkspacePreferences');
+    });
+
+    it('filters completed tasks independently from open task filters', async () => {
+      todoStore.init(mockService);
+      const openReview = createMockTodo({ content: 'Open review brief' });
+      const openWrite = createMockTodo({ content: 'Open writing draft' });
+      const doneReview = createMockTodo({
+        content: 'Done review notes',
+        isCompleted: true,
+        dates: { completedAt: new Date(2026, 4, 10, 9, 0, 0) },
+      });
+      const doneWrite = createMockTodo({
+        content: 'Done writing notes',
+        isCompleted: true,
+        dates: { completedAt: new Date(2026, 4, 11, 9, 0, 0) },
+      });
+
+      mockService._subscribers.forEach((cb) => cb([openReview, openWrite, doneReview, doneWrite]));
+      todoStore.openWorkspace('all');
+      todoStore.setShowCompleted(true);
+      await todoStore.setAdvancedFilter('search', 'open');
+      await todoStore.setCompletedAdvancedFilter('search', 'review');
+
+      expect(todoStore.visibleOpenTodos.map((todo) => todo.content)).toEqual([
+        'Open review brief',
+        'Open writing draft',
+      ]);
+      expect(todoStore.visibleCompletedTodos.map((todo) => todo.content)).toEqual([
+        'Done review notes',
+      ]);
+    });
+
+    it('applies completed date ranges without hiding open tasks', async () => {
+      todoStore.init(mockService);
+      const open = createMockTodo({ content: 'Open task' });
+      const inRange = createMockTodo({
+        content: 'Done in range',
+        isCompleted: true,
+        dates: { completedAt: new Date(2026, 4, 15, 23, 30, 0) },
+      });
+      const outOfRange = createMockTodo({
+        content: 'Done out of range',
+        isCompleted: true,
+        dates: { completedAt: new Date(2026, 5, 1, 1, 0, 0) },
+      });
+
+      mockService._subscribers.forEach((cb) => cb([open, inRange, outOfRange]));
+      todoStore.openWorkspace('all');
+      todoStore.setShowCompleted(true);
+      await todoStore.updateCompletedAdvancedFilters({
+        datePreset: 'custom',
+        dateFrom: '2026-05-01',
+        dateTo: '2026-05-31',
+      });
+
+      expect(todoStore.visibleOpenTodos.map((todo) => todo.content)).toEqual(['Open task']);
+      expect(todoStore.visibleCompletedTodos.map((todo) => todo.content)).toEqual(['Done in range']);
+    });
+
+    it('persists completed preferences under a completed workspace key', async () => {
+      const settingsService = {
+        current: () => ({
+          ...DEFAULT_SETTINGS,
+          activeWorkspaceId: 'workspace-test',
+          taskWorkspacePreferences: {},
+        }),
+        set: vi.fn().mockResolvedValue(ok(undefined)),
+      } as unknown as SettingsService;
+
+      todoStore.init(mockService, settingsService);
+      todoStore.openWorkspace('today');
+      await todoStore.setCompletedGroupMode('sourceFile');
+
+      expect(settingsService.set).toHaveBeenCalledWith(
+        'taskWorkspacePreferences',
+        expect.objectContaining({
+          'workspace:workspace-test:view:today:completed': expect.objectContaining({
+            groupMode: 'sourceFile',
+            filters: expect.objectContaining({ status: 'completed' }),
+          }),
+        }),
+      );
     });
   });
 

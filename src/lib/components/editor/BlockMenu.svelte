@@ -11,9 +11,14 @@
    * Supports keyboard navigation in either action or conversion mode.
    */
 
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import type { BlockType } from '$lib/domain/values/BlockType';
   import { Clock3 } from '@lucide/svelte';
+  import {
+    calculateBlockMenuPlacement,
+    type BlockMenuAnchor,
+    type BlockMenuPlacement,
+  } from './blockMenuPlacement';
 
   export type BlockMenuMode = 'actions' | 'convert';
 
@@ -29,7 +34,7 @@
     /** The block this menu operates on */
     blockId: string;
     /** Screen position for the menu */
-    position: { top: number; left: number };
+    position: BlockMenuAnchor;
     /** Current block type (to highlight in conversion mode) */
     currentType?: BlockType;
     /** Which menu surface to show */
@@ -101,6 +106,13 @@
 
   /** Menu element ref */
   let menuElement: HTMLDivElement | undefined = $state(undefined);
+  let closeRequested = false;
+  let placement = $state<BlockMenuPlacement>({
+    top: 0,
+    left: 0,
+    openAbove: false,
+    maxHeight: 360,
+  });
 
   /** Active items based on which menu is shown */
   let activeItems = $derived(mode === 'convert' ? TURN_INTO_OPTIONS : MENU_ITEMS);
@@ -113,8 +125,66 @@
   /** Focus menu on mount */
   onMount(() => {
     submenuIndex = getCurrentTypeIndex();
-    menuElement?.focus();
+
+    const handleDocumentPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && menuElement?.contains(target)) return;
+      closeMenu();
+    };
+
+    const handleViewportChange = () => updatePlacement();
+
+    document.addEventListener('pointerdown', handleDocumentPointerDown, true);
+    window.addEventListener('resize', handleViewportChange);
+
+    void tick().then(() => {
+      updatePlacement();
+      menuElement?.focus();
+    });
+
+    return () => {
+      document.removeEventListener('pointerdown', handleDocumentPointerDown, true);
+      window.removeEventListener('resize', handleViewportChange);
+    };
   });
+
+  $effect(() => {
+    position.top;
+    position.left;
+    position.openAbove;
+    position.maxHeight;
+    mode;
+    if (menuElement) {
+      void tick().then(updatePlacement);
+    } else {
+      placement = getFallbackPlacement();
+    }
+  });
+
+  function getFallbackPlacement(): BlockMenuPlacement {
+    return {
+      top: position.top,
+      left: position.left,
+      openAbove: position.openAbove ?? false,
+      maxHeight: position.maxHeight ?? 360,
+    };
+  }
+
+  function updatePlacement() {
+    if (!menuElement) return;
+    const rect = menuElement.getBoundingClientRect();
+    placement = calculateBlockMenuPlacement(
+      position,
+      { width: rect.width || 208, height: rect.height || 360 },
+      { width: window.innerWidth, height: window.innerHeight },
+    );
+  }
+
+  function closeMenu() {
+    if (closeRequested) return;
+    closeRequested = true;
+    onClose();
+  }
 
   /** Handle main menu item selection */
   function selectItem(item: MenuItem) {
@@ -182,7 +252,7 @@
       case 'Escape':
         event.preventDefault();
         event.stopPropagation();
-        onClose();
+        closeMenu();
         break;
     }
   }
@@ -198,7 +268,7 @@
   /** Handle click outside */
   function handleBackdropClick(event: MouseEvent) {
     event.stopPropagation();
-    onClose();
+    closeMenu();
   }
 </script>
 
@@ -216,7 +286,8 @@
 <div
   bind:this={menuElement}
   class="block-menu"
-  style="top: {position.top}px; left: {position.left}px;"
+  class:block-menu-above={placement.openAbove}
+  style="top: {placement.top}px; left: {placement.left}px; max-height: {placement.maxHeight}px;"
   role="menu"
   aria-label={mode === 'convert' ? 'Change block type' : 'Block options'}
   tabindex="0"
@@ -318,6 +389,10 @@
     animation: block-menu-in 120ms cubic-bezier(0.2, 0, 0, 1);
     transform-origin: top left;
     outline: none;
+  }
+
+  .block-menu-above {
+    transform-origin: bottom left;
   }
 
   .block-menu:focus-visible {

@@ -44,6 +44,8 @@ pub struct Settings {
     #[serde(default = "default_task_default_view")]
     pub task_default_view: TaskDefaultView,
     #[serde(default)]
+    pub task_workspace_preferences: HashMap<String, TodoWorkspacePreference>,
+    #[serde(default)]
     pub keymap_overrides: HashMap<String, String>,
     #[serde(default = "default_density")]
     pub density: Density,
@@ -326,6 +328,369 @@ impl<'de> Deserialize<'de> for TaskDefaultView {
     }
 }
 
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum TodoSortMode {
+    ViewDefault,
+    CompletedNewest,
+    CreatedNewest,
+    PlanningDateAsc,
+    Priority,
+    SourceOrder,
+}
+
+fn default_todo_sort_mode() -> TodoSortMode {
+    TodoSortMode::ViewDefault
+}
+
+impl<'de> Deserialize<'de> for TodoSortMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            "completedNewest" => TodoSortMode::CompletedNewest,
+            "createdNewest" => TodoSortMode::CreatedNewest,
+            "planningDateAsc" => TodoSortMode::PlanningDateAsc,
+            "priority" => TodoSortMode::Priority,
+            "sourceOrder" => TodoSortMode::SourceOrder,
+            "viewDefault" => TodoSortMode::ViewDefault,
+            _ => TodoSortMode::ViewDefault,
+        })
+    }
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum TodoGroupMode {
+    ViewDefault,
+    SmartDate,
+    CompletedDate,
+    CreatedDate,
+    PlanningDate,
+    SourceFile,
+    Priority,
+    Tag,
+    None,
+}
+
+fn default_todo_group_mode() -> TodoGroupMode {
+    TodoGroupMode::ViewDefault
+}
+
+impl<'de> Deserialize<'de> for TodoGroupMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            "smartDate" => TodoGroupMode::SmartDate,
+            "completedDate" => TodoGroupMode::CompletedDate,
+            "createdDate" => TodoGroupMode::CreatedDate,
+            "planningDate" => TodoGroupMode::PlanningDate,
+            "sourceFile" => TodoGroupMode::SourceFile,
+            "priority" => TodoGroupMode::Priority,
+            "tag" => TodoGroupMode::Tag,
+            "none" => TodoGroupMode::None,
+            "viewDefault" => TodoGroupMode::ViewDefault,
+            _ => TodoGroupMode::ViewDefault,
+        })
+    }
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum TodoDateFilterField {
+    Smart,
+    CreatedAt,
+    DueDate,
+    ScheduledDate,
+    CompletedAt,
+}
+
+fn default_todo_date_filter_field() -> TodoDateFilterField {
+    TodoDateFilterField::Smart
+}
+
+impl<'de> Deserialize<'de> for TodoDateFilterField {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            "createdAt" => TodoDateFilterField::CreatedAt,
+            "dueDate" => TodoDateFilterField::DueDate,
+            "scheduledDate" => TodoDateFilterField::ScheduledDate,
+            "completedAt" => TodoDateFilterField::CompletedAt,
+            "smart" => TodoDateFilterField::Smart,
+            _ => TodoDateFilterField::Smart,
+        })
+    }
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum TodoDateFilterPreset {
+    Any,
+    Today,
+    Yesterday,
+    Last7Days,
+    Last30Days,
+    Custom,
+}
+
+fn default_todo_date_filter_preset() -> TodoDateFilterPreset {
+    TodoDateFilterPreset::Any
+}
+
+impl<'de> Deserialize<'de> for TodoDateFilterPreset {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            "today" => TodoDateFilterPreset::Today,
+            "yesterday" => TodoDateFilterPreset::Yesterday,
+            "last7Days" => TodoDateFilterPreset::Last7Days,
+            "last30Days" => TodoDateFilterPreset::Last30Days,
+            "custom" => TodoDateFilterPreset::Custom,
+            "any" => TodoDateFilterPreset::Any,
+            _ => TodoDateFilterPreset::Any,
+        })
+    }
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum TodoFilterStatus {
+    All,
+    Open,
+    Completed,
+}
+
+fn default_todo_filter_status() -> TodoFilterStatus {
+    TodoFilterStatus::All
+}
+
+impl<'de> Deserialize<'de> for TodoFilterStatus {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            "open" => TodoFilterStatus::Open,
+            "completed" => TodoFilterStatus::Completed,
+            "all" => TodoFilterStatus::All,
+            _ => TodoFilterStatus::All,
+        })
+    }
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum TodoFilterSource {
+    All,
+    Dedicated,
+    Inline,
+}
+
+fn default_todo_filter_source() -> TodoFilterSource {
+    TodoFilterSource::All
+}
+
+impl<'de> Deserialize<'de> for TodoFilterSource {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            "dedicated" => TodoFilterSource::Dedicated,
+            "inline" => TodoFilterSource::Inline,
+            "all" => TodoFilterSource::All,
+            _ => TodoFilterSource::All,
+        })
+    }
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum TodoFilterList {
+    All,
+    Inbox,
+    Anytime,
+    Someday,
+}
+
+fn default_todo_filter_list() -> TodoFilterList {
+    TodoFilterList::All
+}
+
+impl<'de> Deserialize<'de> for TodoFilterList {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            "inbox" => TodoFilterList::Inbox,
+            "anytime" => TodoFilterList::Anytime,
+            "someday" => TodoFilterList::Someday,
+            "all" => TodoFilterList::All,
+            _ => TodoFilterList::All,
+        })
+    }
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum TodoPriorityFilter {
+    High,
+    Medium,
+    Low,
+}
+
+impl<'de> Deserialize<'de> for TodoPriorityFilter {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            "high" => TodoPriorityFilter::High,
+            "medium" => TodoPriorityFilter::Medium,
+            "low" => TodoPriorityFilter::Low,
+            _ => TodoPriorityFilter::Low,
+        })
+    }
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum TodoTagFilterMode {
+    Any,
+    All,
+}
+
+fn default_todo_tag_filter_mode() -> TodoTagFilterMode {
+    TodoTagFilterMode::Any
+}
+
+impl<'de> Deserialize<'de> for TodoTagFilterMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            "all" => TodoTagFilterMode::All,
+            "any" => TodoTagFilterMode::Any,
+            _ => TodoTagFilterMode::Any,
+        })
+    }
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum TodoRecurrenceFilter {
+    All,
+    With,
+    Without,
+}
+
+fn default_todo_recurrence_filter() -> TodoRecurrenceFilter {
+    TodoRecurrenceFilter::All
+}
+
+impl<'de> Deserialize<'de> for TodoRecurrenceFilter {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            "with" => TodoRecurrenceFilter::With,
+            "without" => TodoRecurrenceFilter::Without,
+            "all" => TodoRecurrenceFilter::All,
+            _ => TodoRecurrenceFilter::All,
+        })
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TodoAdvancedFilter {
+    #[serde(default = "default_todo_filter_status")]
+    pub status: TodoFilterStatus,
+    #[serde(default = "default_todo_filter_source")]
+    pub source: TodoFilterSource,
+    #[serde(default = "default_todo_filter_list")]
+    pub list: TodoFilterList,
+    #[serde(default)]
+    pub priority: Vec<TodoPriorityFilter>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default = "default_todo_tag_filter_mode")]
+    pub tag_mode: TodoTagFilterMode,
+    #[serde(default = "default_todo_recurrence_filter")]
+    pub recurrence: TodoRecurrenceFilter,
+    #[serde(default)]
+    pub search: String,
+    #[serde(default = "default_todo_date_filter_field")]
+    pub date_field: TodoDateFilterField,
+    #[serde(default = "default_todo_date_filter_preset")]
+    pub date_preset: TodoDateFilterPreset,
+    #[serde(default)]
+    pub date_from: String,
+    #[serde(default)]
+    pub date_to: String,
+}
+
+impl Default for TodoAdvancedFilter {
+    fn default() -> Self {
+        Self {
+            status: default_todo_filter_status(),
+            source: default_todo_filter_source(),
+            list: default_todo_filter_list(),
+            priority: Vec::new(),
+            tags: Vec::new(),
+            tag_mode: default_todo_tag_filter_mode(),
+            recurrence: default_todo_recurrence_filter(),
+            search: String::new(),
+            date_field: default_todo_date_filter_field(),
+            date_preset: default_todo_date_filter_preset(),
+            date_from: String::new(),
+            date_to: String::new(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TodoWorkspacePreference {
+    #[serde(default = "default_todo_sort_mode")]
+    pub sort_mode: TodoSortMode,
+    #[serde(default = "default_todo_group_mode")]
+    pub group_mode: TodoGroupMode,
+    #[serde(default)]
+    pub filters: TodoAdvancedFilter,
+}
+
+impl Default for TodoWorkspacePreference {
+    fn default() -> Self {
+        Self {
+            sort_mode: default_todo_sort_mode(),
+            group_mode: default_todo_group_mode(),
+            filters: TodoAdvancedFilter::default(),
+        }
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         let notes_path = dirs::home_dir()
@@ -352,6 +717,7 @@ impl Default for Settings {
             line_height: default_line_height(),
             content_width: default_content_width(),
             task_default_view: default_task_default_view(),
+            task_workspace_preferences: HashMap::new(),
             keymap_overrides: HashMap::new(),
             density: default_density(),
             capture_shortcut: default_capture_shortcut(),
@@ -549,6 +915,7 @@ mod tests {
     fn test_task_default_view_defaults_to_all() {
         let settings = Settings::default();
         assert_eq!(settings.task_default_view, TaskDefaultView::All);
+        assert!(settings.task_workspace_preferences.is_empty());
     }
 
     #[test]
@@ -672,5 +1039,94 @@ mod tests {
         let settings: Settings = serde_json::from_str(json).expect("settings should parse");
         assert_eq!(settings.cli_provider, CliProvider::Codex);
         assert_eq!(settings.ai_reasoning_effort, AiReasoningEffort::Xhigh);
+    }
+
+    #[test]
+    fn test_task_workspace_preferences_deserialize() {
+        let json = r#"{
+            "notesPath": "/notes",
+            "theme": "system",
+            "autoSave": true,
+            "autoSaveDelay": 1000,
+            "aiProvider": null,
+            "taskDefaultView": "all",
+            "taskWorkspacePreferences": {
+                "workspace:default:view:logbook": {
+                    "sortMode": "completedNewest",
+                    "groupMode": "completedDate",
+                    "filters": {
+                        "status": "completed",
+                        "source": "all",
+                        "list": "all",
+                        "priority": ["high"],
+                        "tags": ["work"],
+                        "tagMode": "all",
+                        "recurrence": "without",
+                        "search": "review",
+                        "dateField": "completedAt",
+                        "datePreset": "custom",
+                        "dateFrom": "2026-05-01",
+                        "dateTo": "2026-05-31"
+                    }
+                }
+            }
+        }"#;
+
+        let settings: Settings = serde_json::from_str(json).expect("settings should parse");
+        let preference = settings
+            .task_workspace_preferences
+            .get("workspace:default:view:logbook")
+            .expect("preference exists");
+
+        assert_eq!(preference.sort_mode, TodoSortMode::CompletedNewest);
+        assert_eq!(preference.group_mode, TodoGroupMode::CompletedDate);
+        assert_eq!(preference.filters.status, TodoFilterStatus::Completed);
+        assert_eq!(preference.filters.date_field, TodoDateFilterField::CompletedAt);
+        assert_eq!(preference.filters.date_preset, TodoDateFilterPreset::Custom);
+        assert_eq!(preference.filters.date_from, "2026-05-01");
+        assert_eq!(preference.filters.date_to, "2026-05-31");
+    }
+
+    #[test]
+    fn test_unknown_task_workspace_preference_values_fall_back() {
+        let json = r#"{
+            "notesPath": "/notes",
+            "theme": "system",
+            "autoSave": true,
+            "autoSaveDelay": 1000,
+            "aiProvider": null,
+            "taskDefaultView": "all",
+            "taskWorkspacePreferences": {
+                "workspace:default:view:all": {
+                    "sortMode": "latest",
+                    "groupMode": "calendar",
+                    "filters": {
+                        "status": "mystery",
+                        "source": "somewhere",
+                        "list": "future",
+                        "tagMode": "both",
+                        "recurrence": "sometimes",
+                        "dateField": "modifiedAt",
+                        "datePreset": "forever"
+                    }
+                }
+            }
+        }"#;
+
+        let settings: Settings = serde_json::from_str(json).expect("settings should parse");
+        let preference = settings
+            .task_workspace_preferences
+            .get("workspace:default:view:all")
+            .expect("preference exists");
+
+        assert_eq!(preference.sort_mode, TodoSortMode::ViewDefault);
+        assert_eq!(preference.group_mode, TodoGroupMode::ViewDefault);
+        assert_eq!(preference.filters.status, TodoFilterStatus::All);
+        assert_eq!(preference.filters.source, TodoFilterSource::All);
+        assert_eq!(preference.filters.list, TodoFilterList::All);
+        assert_eq!(preference.filters.tag_mode, TodoTagFilterMode::Any);
+        assert_eq!(preference.filters.recurrence, TodoRecurrenceFilter::All);
+        assert_eq!(preference.filters.date_field, TodoDateFilterField::Smart);
+        assert_eq!(preference.filters.date_preset, TodoDateFilterPreset::Any);
     }
 }

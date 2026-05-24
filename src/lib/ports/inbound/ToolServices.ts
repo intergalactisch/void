@@ -12,6 +12,7 @@ import type { EditorService } from './EditorService';
 import type { NotesService } from './NotesService';
 import type { TodoService } from './TodoService';
 import type { FileService } from './FileService';
+import type { ProtectionService } from './ProtectionService';
 import type { DocumentService } from './DocumentService';
 import type { LineageService } from './LineageService';
 import type { NoteCollaborationService } from './NoteCollaborationService';
@@ -46,6 +47,8 @@ export interface ToolServices {
   todos: TodoService;
   /** File system operations */
   files: FileService;
+  /** Protected-note privacy and AI context authorization */
+  protection: ProtectionService;
   /** AI provider for tools that need LLM (summarize, expand, etc.) */
   ai: AIAssistantProviderPort;
   /** App settings */

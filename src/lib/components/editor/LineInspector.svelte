@@ -1,5 +1,6 @@
 <script lang="ts">
   import { lineageStore } from '$lib/stores';
+  import { InfoPopover } from '$lib/components/shared';
   import { Clock3, GitBranch, RotateCcw, Route, X, AlertTriangle, CheckCircle2 } from '@lucide/svelte';
   import { formatRelativeDate } from '$lib/utils/relativeDate';
   import type { LineVersion } from '$lib/domain/entities/Lineage';
@@ -49,6 +50,16 @@
       <span class="line-inspector-title">
         <Clock3 size={13} strokeWidth={1.8} aria-hidden="true" />
         Line
+        <InfoPopover
+          title="Line details"
+          body="The line inspector explains where this line came from and why it changed."
+          items={[
+            'Actor is who or what wrote the current version.',
+            'Intent is the reason Void recorded for that edit.',
+            'Command, receipt, and run IDs are reference links for deeper debugging.',
+          ]}
+          align="start"
+        />
       </span>
       <span class="line-inspector-line">{lineageStore.lineIndex !== null ? `#${lineageStore.lineIndex + 1}` : ''}</span>
       <button type="button" class="line-inspector-close" onclick={close} aria-label="Close line inspector">
@@ -105,6 +116,15 @@
             <h3>
               <GitBranch size={12} strokeWidth={1.8} aria-hidden="true" />
               Edit Cluster
+              <InfoPopover
+                title="Edit cluster"
+                body="A cluster groups nearby line changes that were saved together."
+                items={[
+                  'Range is where the cluster currently appears.',
+                  'Units are the stable history records touched by the edit.',
+                ]}
+                align="start"
+              />
             </h3>
             <p class="line-copy">{activeCluster.summary}</p>
             <dl class="line-fields">
@@ -129,6 +149,15 @@
             <h3>
               <Route size={12} strokeWidth={1.8} aria-hidden="true" />
               Context
+              <InfoPopover
+                title="Line context"
+                body="Context shows the neighboring lines captured with this version."
+                items={[
+                  'The highlighted row is the selected line.',
+                  'Neighbors help explain restore placement and repair matches.',
+                ]}
+                align="start"
+              />
             </h3>
             <ol class="context-list">
               {#each current.context.before as line (`before-${line.lineIndex}`)}
@@ -160,6 +189,15 @@
                 <AlertTriangle size={12} strokeWidth={1.8} aria-hidden="true" />
               {/if}
               Commitment
+              <InfoPopover
+                title="Commitment"
+                body="Commitment links a task-like line back to the source text it came from."
+                items={[
+                  'Current means the task still matches its source.',
+                  'A warning means the task may be stale after edits.',
+                ]}
+                align="start"
+              />
             </h3>
             <p class="line-copy">{lineageStore.commitmentSource.todo.content}</p>
             <p class:line-warning={lineageStore.commitmentSource.status !== 'current'} class="line-status">
@@ -176,6 +214,15 @@
             <h3>
               <AlertTriangle size={12} strokeWidth={1.8} aria-hidden="true" />
               Repair
+              <InfoPopover
+                title="Repair"
+                body="Repair reconnects a line to older saved history when Void found a likely match."
+                items={[
+                  'Use it only when the suggested unit clearly matches this text.',
+                  'Repair records a new history event.',
+                ]}
+                align="start"
+              />
             </h3>
             {#each openWarnings as warning (warning.id)}
               <div class="line-warning-box">
@@ -196,6 +243,15 @@
           <h3>
             <Route size={12} strokeWidth={1.8} aria-hidden="true" />
             Trace
+            <InfoPopover
+              title="Trace"
+              body="Trace shows whether this line was derived from earlier text or reused later."
+              items={[
+                'Source points backward to text that fed this version.',
+                'Downstream points forward to text that reused it.',
+              ]}
+              align="start"
+            />
           </h3>
           {#if lineageStore.traceNodes.length <= 1}
             <p class="line-muted">No source or downstream versions</p>
@@ -215,6 +271,15 @@
           <h3>
             <GitBranch size={12} strokeWidth={1.8} aria-hidden="true" />
             Versions
+            <InfoPopover
+              title="Versions"
+              body="Versions are older saved forms of this same line."
+              items={[
+                'Restore writes that text back into the note.',
+                'Old versions remain available after restore.',
+              ]}
+              align="start"
+            />
           </h3>
           {#if previousVersions.length === 0}
             <p class="line-muted">No previous versions</p>

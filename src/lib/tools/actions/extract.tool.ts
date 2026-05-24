@@ -1,6 +1,7 @@
 import { defineTool } from '../define';
 import { aiPrompt } from '../context';
 import type { NotesListItem } from '$lib/ports/inbound/NotesService';
+import { assertProtectedAIReadAllowed } from '../protectionGuard';
 
 const EXTRACT_TYPES: Record<string, string> = {
   todos: 'Extract all action items, tasks, and to-dos. Format as markdown checkboxes.',
@@ -53,6 +54,11 @@ export default defineTool({
     const contents: string[] = [];
     const sourcePaths: string[] = [];
     for (const note of allNotes.slice(0, 20)) {
+      try {
+        await assertProtectedAIReadAllowed(services, note.path, 'related.read');
+      } catch {
+        continue;
+      }
       const content = await services.documents.readContent(note.path);
       if (content.ok && content.value.trim()) {
         contents.push(`## ${note.title}\n${content.value.slice(0, 500)}`);

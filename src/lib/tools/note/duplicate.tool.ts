@@ -1,5 +1,6 @@
 import { defineTool } from '../define';
 import { normalizeNotePath } from './paths';
+import { assertProtectedAIReadAllowed } from '../protectionGuard';
 
 interface DuplicateArgs {
   noteId: string;
@@ -28,6 +29,7 @@ export default defineTool<DuplicateArgs, { success: boolean; newPath: string; ti
   async execute(args, { services, progress }) {
     progress(10, 'Reading original...');
     const noteId = await normalizeNotePath(args.noteId, services);
+    await assertProtectedAIReadAllowed(services, noteId, 'note.read');
 
     // Read original content and metadata
     const metaResult = await services.documents.readMeta(noteId);

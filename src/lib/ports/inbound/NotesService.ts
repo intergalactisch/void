@@ -11,6 +11,7 @@
 import type { Document } from '$lib/domain';
 import type { Result } from '$lib/core';
 import type { OperationSource } from '$lib/pipeline/types';
+import type { ProtectedNoteMeta } from '$lib/domain/values/Protection';
 
 /**
  * A note item in the folder tree.
@@ -28,6 +29,8 @@ export interface NotesListItem {
   modifiedAt: Date;
   /** Normalized frontmatter tags for this note */
   tags: string[];
+  /** Protection state for selected protected notes. */
+  protection?: ProtectedNoteMeta | null;
 }
 
 /**

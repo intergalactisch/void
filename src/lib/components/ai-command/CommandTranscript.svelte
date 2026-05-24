@@ -30,6 +30,27 @@
       .filter((run) => run.conversationId === conversationId)
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   });
+  let runAnchors = $derived.by(() => {
+    const byMessageId = new Map<string, AgentRun[]>();
+    const byPrompt = new Map<string, AgentRun[]>();
+
+    for (const run of runs) {
+      if (run.sourceMessageId) {
+        const anchored = byMessageId.get(run.sourceMessageId) ?? [];
+        anchored.push(run);
+        byMessageId.set(run.sourceMessageId, anchored);
+      }
+
+      const prompt = normalizePrompt(run.prompt);
+      if (prompt) {
+        const matching = byPrompt.get(prompt) ?? [];
+        matching.push(run);
+        byPrompt.set(prompt, matching);
+      }
+    }
+
+    return { byMessageId, byPrompt };
+  });
   let unanchoredRuns = $derived.by(() => {
     const anchored = new Set<string>();
     for (const message of messages) {
@@ -55,8 +76,14 @@
 
   function runsForMessage(message: Message): AgentRun[] {
     if (message.role !== 'user') return [];
-    const text = message.text.trim();
-    return runs.filter((run) => run.prompt.trim() === text);
+    const byId = runAnchors.byMessageId.get(message.id) ?? [];
+    const byPrompt = runAnchors.byPrompt.get(normalizePrompt(message.text)) ?? [];
+    const seen = new Set<string>();
+    return [...byId, ...byPrompt].filter((run) => {
+      if (seen.has(run.id)) return false;
+      seen.add(run.id);
+      return true;
+    });
   }
 
   async function submitOptimisticPrompt(prompt: string, clientTurnId?: string) {
@@ -111,6 +138,10 @@
   function isLiveAgentActivityMessage(message: Message): boolean {
     if (message.role !== 'assistant' || !message.isStreaming) return false;
     return message.activity?.some((entry) => entry.id.startsWith('agent-run:')) ?? false;
+  }
+
+  function normalizePrompt(value: string): string {
+    return value.trim().replace(/\s+/g, ' ');
   }
 </script>
 

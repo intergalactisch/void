@@ -9,6 +9,7 @@
  */
 
 import type { Node as ProseMirrorNode, Mark } from 'prosemirror-model';
+import { buildCodeFence } from '$lib/core/codeFence';
 
 /**
  * Serializer state for tracking context during serialization
@@ -256,13 +257,9 @@ function serializeBlockquoteContent(node: ProseMirrorNode): string[] {
  */
 function serializeCodeBlock(node: ProseMirrorNode, state: SerializerState): void {
   const language = (node.attrs.language as string) || '';
-  state.output += '```' + language + '\n';
-  state.output += node.textContent;
-  // Ensure code block ends with newline
-  if (!state.output.endsWith('\n')) {
-    state.output += '\n';
-  }
-  state.output += '```\n\n';
+  const meta = (node.attrs.meta as string | null) || null;
+  state.output += buildCodeFence({ code: node.textContent, language, meta });
+  state.output += '\n\n';
 }
 
 /**

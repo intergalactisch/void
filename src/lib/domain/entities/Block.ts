@@ -64,6 +64,7 @@ export interface HeadingAttrs {
 export interface CodeBlockAttrs {
   type: 'codeBlock';
   language: string | null;
+  meta?: string | null;
 }
 
 export interface ImageAttrs {

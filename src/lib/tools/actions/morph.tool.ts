@@ -1,5 +1,6 @@
 import { defineTool } from '../define';
 import { aiPrompt } from '../context';
+import { assertProtectedAIReadAllowed } from '../protectionGuard';
 
 const FORMAT_PROMPTS: Record<string, string> = {
   email: 'Transform into a professional email. Include subject line, greeting, body, sign-off. Preserve all key information.',
@@ -39,6 +40,7 @@ export default defineTool({
 
     progress(10, 'Reading note...');
     const state = services.editor.getState();
+    await assertProtectedAIReadAllowed(services, state.document?.path ?? '', 'note.read');
     const content = state.document?.blocks.map(b => b.content).join('\n') ?? '';
     const title = state.document?.meta.title ?? 'Untitled';
 

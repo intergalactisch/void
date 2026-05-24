@@ -3,6 +3,21 @@
  */
 import { test, expect } from '@playwright/test';
 
+async function dispatchPaste(page: import('@playwright/test').Page, text: string, selector?: string) {
+  await page.evaluate(
+    ({ pastedText, targetSelector }) => {
+      const data = new DataTransfer();
+      data.setData('text/plain', pastedText);
+      const event = new ClipboardEvent('paste', { bubbles: true, cancelable: true });
+      Object.defineProperty(event, 'clipboardData', { value: data });
+      const target = targetSelector ? document.querySelector(targetSelector) : document;
+      if (!target) throw new Error(`Paste target not found: ${targetSelector}`);
+      target.dispatchEvent(event);
+    },
+    { pastedText: text, targetSelector: selector ?? null },
+  );
+}
+
 test.describe('Note CRUD', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/');
@@ -32,6 +47,37 @@ test.describe('Note CRUD', () => {
       .click();
 
     await expect(page.locator('.ProseMirror')).toBeVisible();
+  });
+
+  test('pasting text with no open note creates a note with the clipboard content', async ({ page }) => {
+    await expect(page.getByRole('heading', { name: 'What are we capturing today?' })).toBeVisible();
+
+    await dispatchPaste(page, 'Clipboard paste title\n\nBody from clipboard');
+
+    await expect(page.locator('.ProseMirror')).toBeVisible();
+    await expect(page.locator('.ProseMirror')).toContainText('Clipboard paste title');
+    await expect(page.locator('.ProseMirror')).toContainText('Body from clipboard');
+  });
+
+  test('pasting from a folder overview creates the note in that folder', async ({ page }) => {
+    await page.locator('main').getByRole('button', { name: /new note/i }).click();
+    await expect(page.locator('.ProseMirror')).toBeVisible();
+
+    await page.getByRole('button', { name: 'New folder at root' }).click();
+    const input = page.getByRole('dialog').getByRole('textbox');
+    await input.fill('Paste Target');
+    await page.getByRole('button', { name: /create folder/i }).click();
+    await page.getByRole('treeitem', { name: 'Paste Target' }).click();
+    await expect(page.getByRole('heading', { name: 'Paste Target', level: 1 })).toBeVisible();
+
+    await dispatchPaste(page, 'Folder paste title\n\nFolder body');
+
+    await expect(page.locator('.ProseMirror')).toBeVisible();
+    await expect(page.locator('.ProseMirror')).toContainText('Folder body');
+
+    await page.getByRole('treeitem', { name: 'Paste Target' }).click();
+    await expect(page.getByRole('heading', { name: 'Paste Target', level: 1 })).toBeVisible();
+    await expect(page.locator('.folder-overview .row-title', { hasText: 'Folder paste title' })).toBeVisible();
   });
 
   test('quick-create action does not open a modal', async ({ page }) => {
@@ -68,5 +114,15 @@ test.describe('Note CRUD', () => {
     await page.keyboard.press('Meta+n');
 
     await expect(page.locator('.ProseMirror')).toBeVisible();
+  });
+
+  test('paste inside an open editor does not create another note', async ({ page }) => {
+    await page.keyboard.press('Meta+n');
+    await expect(page.locator('.ProseMirror')).toBeVisible();
+    const noteCount = await page.getByRole('treeitem').count();
+
+    await dispatchPaste(page, 'This should not create a new note', '.ProseMirror');
+
+    await expect.poll(() => page.getByRole('treeitem').count(), { timeout: 500 }).toBe(noteCount);
   });
 });

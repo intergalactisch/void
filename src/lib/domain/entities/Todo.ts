@@ -384,7 +384,7 @@ export function sortTodos(todos: Todo[]): Todo[] {
 export function sortTodosWithCompletedLast(todos: Todo[]): Todo[] {
   const open = todos.filter((t) => !t.isCompleted);
   const completed = todos.filter((t) => t.isCompleted);
-  return [...sortTodos(open), ...sortTodos(completed)];
+  return [...sortTodos(open), ...sortCompletedTodosByCompletedAt(completed)];
 }
 
 /**

@@ -629,6 +629,7 @@ export class NotesServiceImpl implements NotesService {
         isFolder: false,
         modifiedAt: new Date(doc.meta.updatedAt),
         tags: normalizeNoteTags(doc.meta.tags),
+        protection: doc.meta.protection ?? null,
       };
 
       if (!dirPath) {

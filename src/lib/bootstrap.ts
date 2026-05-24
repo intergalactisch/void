@@ -32,6 +32,8 @@ import {
   TauriFileSystemAdapter,
   TauriSettingsAdapter,
   TauriCredentialAdapter,
+  TauriCryptoAdapter,
+  TauriKeyCustodyAdapter,
   TauriGitRepositoryAdapter,
   TauriGitHubAdapter,
   TauriLoggerAdapter,
@@ -50,6 +52,8 @@ import {
   MemoryFileSystemAdapter,
   MemorySettingsAdapter,
   MemoryCredentialAdapter,
+  MemoryCryptoAdapter,
+  MemoryKeyCustodyAdapter,
   MemoryGitRepositoryAdapter,
   MemoryGitHubAdapter,
   MemoryLoggerAdapter,
@@ -73,6 +77,7 @@ import {
   LocalAgentEventStreamAdapter,
 } from './adapters/agent';
 import { VoidLineageStorageAdapter } from './adapters/lineage';
+import { ProtectedVoidStorageAdapter } from './adapters/protection/ProtectedVoidStorageAdapter';
 import { ProseMirrorEditorPortFactory } from './adapters/prosemirror';
 import { MarkdownAdapter, MarkdownSerializerAdapter } from './adapters/markdown';
 import { CommandRegistryAdapter, registerGlobalCommands } from './adapters/commands';
@@ -125,6 +130,8 @@ import {
   WorkspaceServiceImpl,
   FileServiceImpl,
   CredentialServiceImpl,
+  ProtectionRuntime,
+  ProtectionServiceImpl,
   SyncServiceImpl,
   EditorServiceImpl,
   CommandServiceImpl,
@@ -147,6 +154,7 @@ import {
   TodoServiceImpl,
   NotesServiceImpl,
   DocumentServiceImpl,
+  MarkdownImportServiceImpl,
   NoteCollaborationServiceImpl,
   CaptureServiceImpl,
   OperationServiceImpl,
@@ -179,6 +187,7 @@ import { addToolInvocation, updateToolInvocation } from './domain/entities/Messa
 // Stores (UI primary adapters)
 import {
   settingsStore,
+  protectionStore,
   workspaceStore,
   aiStore,
   toolStore,
@@ -216,6 +225,7 @@ import type {
   WorkspaceService,
   FileService,
   CredentialService,
+  ProtectionService,
   EditorService,
   InlineAIThreadService,
   NoteAIActivityService,
@@ -225,6 +235,7 @@ import type {
   AIAssistantService,
   TodoService,
   NotesService,
+  NotesListItem,
   DocumentService,
   CaptureService,
   NoteCollaborationService,
@@ -247,9 +258,14 @@ import type {
   ClipboardService,
   UpdaterService,
   SyncService,
+  MarkdownImportService,
 } from './ports/inbound';
 import type {
   FileSystemPort,
+  CryptoPort,
+  KeyCustodyPort,
+  ProtectionCodecPort,
+  CredentialPort,
   DocumentPort,
   CommandRegistryPort,
   AIProviderPort,
@@ -305,6 +321,8 @@ export interface AppContext {
   files: FileService;
   /** Credential storage service */
   credentials: CredentialService;
+  /** Selected-note protection, unlock, recovery, and AI privacy controls. */
+  protection: ProtectionService;
   /** Editor orchestration service */
   editor: EditorService;
   /** Command palette service */
@@ -355,6 +373,8 @@ export interface AppContext {
   inlineAI: InlineAIThreadService;
   /** Per-note AI conversation and change history read model. */
   noteAIActivity: NoteAIActivityService;
+  /** Imports external markdown files as workspace notes. */
+  markdownImport: MarkdownImportService;
 }
 
 /**
@@ -440,10 +460,16 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
     container.register(TOKENS.FileSystem, () => new MemoryFileSystemAdapter());
     container.register(TOKENS.SettingsStorage, () => new MemorySettingsAdapter());
     container.register(TOKENS.CredentialStorage, () => new MemoryCredentialAdapter());
+    container.register(TOKENS.Crypto, () => new MemoryCryptoAdapter());
+    container.register(TOKENS.KeyCustody, () => new MemoryKeyCustodyAdapter());
   } else {
     container.register(TOKENS.FileSystem, () => new TauriFileSystemAdapter());
     container.register(TOKENS.SettingsStorage, () => new TauriSettingsAdapter());
     container.register(TOKENS.CredentialStorage, () => new TauriCredentialAdapter());
+    container.register(TOKENS.Crypto, () => new TauriCryptoAdapter());
+    container.register(TOKENS.KeyCustody, () =>
+      new TauriKeyCustodyAdapter(container.resolve<CredentialPort>(TOKENS.CredentialStorage))
+    );
   }
 
   // Register logger early (right after FileSystem, before settings load)
@@ -532,11 +558,38 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
     container.register(TOKENS.GitHub, () => new TauriGitHubAdapter());
   }
 
+  if (useMocks) {
+    container.register(TOKENS.VoidStorage, () =>
+      new ProtectedVoidStorageAdapter(new MemoryVoidStorageAdapter())
+    );
+  } else {
+    container.register(TOKENS.VoidStorage, () =>
+      new ProtectedVoidStorageAdapter(new TauriVoidStorageAdapter())
+    );
+  }
+
+  const workspaceId = settingsResult.ok
+    ? settingsResult.value.activeWorkspaceId || 'legacy-workspace'
+    : 'legacy-workspace';
+
+  container.register(TOKENS.ProtectionCodec, () =>
+    new ProtectionRuntime(
+      container.resolve<CryptoPort>(TOKENS.Crypto),
+      container.resolve<KeyCustodyPort>(TOKENS.KeyCustody),
+      container.resolve<VoidStoragePort>(TOKENS.VoidStorage),
+      notesPath,
+      workspaceId,
+    )
+  );
+
   // Register document storage (markdown adapter) with user's configured path
   container.register(TOKENS.DocumentStorage, () =>
     new MarkdownAdapter(
       container.resolve<FileSystemPort>(TOKENS.FileSystem),
-      { basePath: notesPath }
+      {
+        basePath: notesPath,
+        protection: container.resolve<ProtectionCodecPort>(TOKENS.ProtectionCodec),
+      }
     )
   );
 
@@ -567,6 +620,7 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
         navigation: container.resolve<ApplicationNavigationPort>(TOKENS.ApplicationNavigation),
         mediaSources: container.resolve<MediaSourcePort>(TOKENS.MediaSource),
         sessions: container.resolve<SessionService>(TOKENS.SessionService),
+        protection: container.resolve<ProtectionService>(TOKENS.ProtectionService),
       })
     )
   );
@@ -613,12 +667,7 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
     aiReasoningEffort,
   });
 
-  // Register Void storage adapter (Artifact system)
-  if (useMocks) {
-    container.register(TOKENS.VoidStorage, () => new MemoryVoidStorageAdapter());
-  } else {
-    container.register(TOKENS.VoidStorage, () => new TauriVoidStorageAdapter());
-  }
+  // Register Void lineage over the already-registered .void storage adapter.
   container.register(TOKENS.LineageStorage, () =>
     new VoidLineageStorageAdapter(
       container.resolve<VoidStoragePort>(TOKENS.VoidStorage),
@@ -733,6 +782,20 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
       conversationStorage: container.resolve<ConversationStoragePort>(TOKENS.ConversationStorage),
       voidStorage: container.resolve<VoidStoragePort>(TOKENS.VoidStorage),
       notesPath,
+      isProtectedDocumentPath: (path) => {
+        const normalizedPath = path.replace(/\\/g, '/').replace(/^\/+/, '').toLowerCase();
+        const visit = (items: NotesListItem[]): boolean => {
+          for (const item of items) {
+            const itemPath = item.path.replace(/\\/g, '/').toLowerCase();
+            if (!item.isFolder && itemPath === normalizedPath && item.protection?.level === 'protected') {
+              return true;
+            }
+            if (item.children && visit(item.children)) return true;
+          }
+          return false;
+        };
+        return visit(container.resolve<NotesService>(TOKENS.NotesService).getState().items);
+      },
       onCurrentConversationChanged: () => assistant?.notifyStateSubscribers(),
     });
     const toolInvocationService = new ToolInvocationService({
@@ -818,6 +881,16 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
   // application layer free of direct ProseMirror/markdown imports).
   container.register(TOKENS.MarkdownSerializer, () => new MarkdownSerializerAdapter());
 
+  container.register(TOKENS.ProtectionService, () =>
+    new ProtectionServiceImpl(
+      container.resolve<ProtectionRuntime>(TOKENS.ProtectionCodec),
+      container.resolve<DocumentPort>(TOKENS.DocumentStorage),
+      container.resolve<MarkdownSerializerPort>(TOKENS.MarkdownSerializer),
+      container.resolve<NotesService>(TOKENS.NotesService),
+      () => settingsService.current().protection,
+    )
+  );
+
   // Register Provenance service (legacy receipt stream folded into lineage).
   container.register(TOKENS.ProvenanceService, () =>
     new ProvenanceServiceImpl(
@@ -849,6 +922,17 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
       container.resolve<NotesService>(TOKENS.NotesService),
       container.resolve<MarkdownSerializerPort>(TOKENS.MarkdownSerializer),
       container.resolve<TodoService>(TOKENS.TodoService),
+      container.resolve<LineageService>(TOKENS.LineageService),
+    )
+  );
+
+  // Register external markdown import service. It copies source files into
+  // the workspace and records import lineage without persisting source paths.
+  container.register(TOKENS.MarkdownImportService, () =>
+    new MarkdownImportServiceImpl(
+      container.resolve<FileSystemPort>(TOKENS.FileSystem),
+      container.resolve<DocumentPort>(TOKENS.DocumentStorage),
+      container.resolve<MarkdownSerializerPort>(TOKENS.MarkdownSerializer),
       container.resolve<LineageService>(TOKENS.LineageService),
     )
   );
@@ -887,6 +971,7 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
       container.resolve<ConversationStoragePort>(TOKENS.ConversationStorage),
       container.resolve<AgentRunStoragePort>(TOKENS.AgentRunStorage),
       container.resolve<OperationStoragePort>(TOKENS.OperationStorage),
+      container.resolve<ProtectionService>(TOKENS.ProtectionService),
     )
   );
 
@@ -908,6 +993,8 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
       container.resolve<NoteCollaborationService>(TOKENS.NoteCollaborationService),
       container.resolve<EditorService>(TOKENS.EditorService),
       container.resolve<ProvenanceService>(TOKENS.ProvenanceService),
+      container.resolve<DocumentService>(TOKENS.DocumentService),
+      container.resolve<ProtectionService>(TOKENS.ProtectionService),
     )
   );
 
@@ -930,8 +1017,9 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
   // Register ContextBuilder (depends on FileService + NotesService)
   container.register(TOKENS.ContextBuilder, () =>
     new ContextBuilderAdapter(
-      container.resolve<FileService>(TOKENS.FileService),
-      container.resolve<NotesService>(TOKENS.NotesService)
+      container.resolve<DocumentService>(TOKENS.DocumentService),
+      container.resolve<NotesService>(TOKENS.NotesService),
+      container.resolve<ProtectionService>(TOKENS.ProtectionService)
     )
   );
 
@@ -1140,7 +1228,8 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
       container.resolve<NoteCollaborationService>(TOKENS.NoteCollaborationService),
       container.resolve<DeepResearchPipeline>(TOKENS.DeepResearchPipeline),
       container.resolve<SessionService>(TOKENS.SessionService),
-      container.resolve<ReferenceService>(TOKENS.ReferenceService)
+      container.resolve<ReferenceService>(TOKENS.ReferenceService),
+      container.resolve<ProtectionService>(TOKENS.ProtectionService)
     )
   );
 
@@ -1150,6 +1239,7 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
   const workspaces = container.resolve<WorkspaceService>(TOKENS.WorkspaceService);
   const files = container.resolve<FileService>(TOKENS.FileService);
   const credentials = container.resolve<CredentialService>(TOKENS.CredentialService);
+  const protection = container.resolve<ProtectionService>(TOKENS.ProtectionService);
   const editor = container.resolve<EditorService>(TOKENS.EditorService);
   const commands = container.resolve<CommandService>(TOKENS.CommandService);
   const aiRewrite = container.resolve<AIRewriteService>(TOKENS.AIRewriteService);
@@ -1175,6 +1265,24 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
   const sync = container.resolve<SyncService>(TOKENS.SyncService);
   const inlineAI = container.resolve<InlineAIThreadService>(TOKENS.InlineAIThreadService);
   const noteAIActivity = container.resolve<NoteAIActivityService>(TOKENS.NoteAIActivityService);
+  const markdownImport = container.resolve<MarkdownImportService>(TOKENS.MarkdownImportService);
+  contextProviderAdapter.setProtectionGuard((noteId, scope) => {
+    const policy = protection.currentPolicy();
+    if (
+      scope === 'note.read' &&
+      !policy.requireAIApprovalForProtectedReads
+    ) {
+      return true;
+    }
+    if (
+      scope === 'selection.read' &&
+      !policy.requireAIApprovalForProtectedReads
+    ) {
+      return true;
+    }
+    return protection.hasAIContextAuthorization(noteId, scope)
+      || protection.hasAIContextAuthorization(noteId, 'note.read');
+  });
   editor.setInlineAIThreadService(inlineAI);
   const gitRepository = container.resolve<GitRepositoryPort>(TOKENS.GitRepository);
 
@@ -1380,8 +1488,72 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
     }
   });
 
+  // Keep selected protected notes from staying decrypted longer than the
+  // workspace policy allows. This lives in bootstrap because it coordinates
+  // app runtime state with the protection service.
+  const installProtectionAutoLock = () => {
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    const activityEvents = ['pointerdown', 'keydown', 'wheel', 'touchstart'] as const;
+
+    const lockWorkspace = async () => {
+      const prepared = await editor.prepareProtectedDocumentsForLock();
+      if (!prepared.ok) {
+        console.warn('[Protection] Skipped auto-lock because protected notes could not be saved:', prepared.error);
+        return;
+      }
+      const locked = await protection.lockWorkspace();
+      if (!locked.ok) {
+        console.warn('[Protection] Failed to lock protected notes:', locked.error);
+        return;
+      }
+      const reloaded = await editor.reloadProtectedDocuments();
+      if (!reloaded.ok) {
+        console.warn('[Protection] Failed to refresh protected note sessions after lock:', reloaded.error);
+      }
+    };
+
+    const clearIdleTimer = () => {
+      if (!idleTimer) return;
+      clearTimeout(idleTimer);
+      idleTimer = null;
+    };
+
+    const scheduleIdleLock = () => {
+      clearIdleTimer();
+      const policy = settingsService.current().protection;
+      if (policy.idleLockMinutes <= 0) return;
+      idleTimer = setTimeout(lockWorkspace, policy.idleLockMinutes * 60_000);
+    };
+
+    const handleVisibilityChange = () => {
+      // Tauri can report document.hidden during normal window/focus churn.
+      // V2 defaults to idle/manual/app-close locking so the vault does not
+      // relock while the user is actively moving around the app.
+    };
+
+    const handleBeforeUnload = () => {
+      const policy = settingsService.current().protection;
+      if (policy.lockOnAppClose) {
+        void lockWorkspace();
+      }
+    };
+
+    for (const eventName of activityEvents) {
+      window.addEventListener(eventName, scheduleIdleLock, { passive: true });
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    events.on('settings:changed', ({ key }) => {
+      if (key === 'protection') scheduleIdleLock();
+    });
+
+    scheduleIdleLock();
+  };
+
   // 6. Initialize stores (UI primary adapters)
   settingsStore.init(settings);
+  protectionStore.init(protection);
+  installProtectionAutoLock();
   updaterStore.init(updater);
   void updaterStore.loadCurrentVersion();
   workspaceStore.init(workspaces);
@@ -1392,7 +1564,7 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
   aiStore.initContextProvider(container.resolve<ContextProviderPort>(TOKENS.ContextProvider));
   await aiStore.refreshAvailability();
   toolStore.init(toolRegistry);
-  todoStore.init(todoService);
+  todoStore.init(todoService, settingsService);
 
   // Load persisted ordering/frecency before Notes observes these services.
   const frecencyLoadResult = await frecency.load();
@@ -1490,7 +1662,18 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
   registerScopePredicate('activeNotePath', () => notesStore.selectedPath);
   registerScopePredicate('tagViewActive', () => notesStore.activeTagView !== null);
   registerScopePredicate('findBarOpen', () => uiStore.findBarOpen);
-  keymapStore.init(keymap);
+  registerScopePredicate('activeContext', () => {
+    if (uiStore.quickSwitcherOpen || defaultModalOpenPredicate()) return 'global';
+    const active = typeof document !== 'undefined'
+      ? document.activeElement as HTMLElement | null
+      : null;
+    if (uiStore.aiSidebarVisible && active?.closest('.command-center')) {
+      return 'ai-command-center';
+    }
+    if (uiStore.tasksWorkspaceOpen) return 'tasks';
+    return 'notes';
+  });
+  keymapStore.init(keymap, commands);
   relationsStore.init(relations);
   provenanceStore.init(container.resolve<ProvenanceService>(TOKENS.ProvenanceService));
   lineageStore.init(
@@ -1563,6 +1746,7 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
     workspaces,
     files,
     credentials,
+    protection,
     editor,
     commands,
     aiRewrite,
@@ -1588,6 +1772,7 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
     sync,
     inlineAI,
     noteAIActivity,
+    markdownImport,
   };
 
   // Track capture-related disposers so shutdown() can tear them down.

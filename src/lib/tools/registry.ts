@@ -20,12 +20,14 @@ import noteDelete from './note/delete.tool';
 import noteList from './note/list.tool';
 import noteCreateFolder from './note/create-folder.tool';
 
-// Editor tools (7)
+// Editor tools
 import editorInsert from './editor/insert.tool';
 import editorFormat from './editor/format.tool';
 import editorReplace from './editor/replace.tool';
 import editorReplaceBlock from './editor/replace-block.tool';
 import editorInsertBlocks from './editor/insert-blocks.tool';
+import editorInsertCodeBlock from './editor/insert-code-block.tool';
+import editorUpdateCodeBlock from './editor/update-code-block.tool';
 import editorDeleteBlock from './editor/delete-block.tool';
 import editorApplyNotePatch from './editor/apply-note-patch.tool';
 import editorConvertBlock from './editor/convert-block.tool';
@@ -99,7 +101,7 @@ import actionSynthesize from './actions/synthesize.tool';
 import actionReplay from './actions/replay.tool';
 import actionVersions from './actions/versions.tool';
 
-// Lineage tools (9)
+// Lineage tools (10)
 import lineageHistory from './lineage/history.tool';
 import lineageWhy from './lineage/why.tool';
 import lineageRevert from './lineage/revert.tool';
@@ -109,6 +111,7 @@ import lineageCompare from './lineage/compare.tool';
 import lineageRepair from './lineage/repair.tool';
 import lineageContext from './lineage/context.tool';
 import lineageActions from './lineage/actions.tool';
+import lineageSynthesize from './lineage/synthesize.tool';
 
 // Commitment lineage tools (2)
 import commitmentSource from './commitment/source.tool';
@@ -126,12 +129,14 @@ const ALL_TOOLS: RegisteredTool[] = [
   noteList,
   noteCreateFolder,
 
-  // Editor tools (7)
+  // Editor tools
   editorInsert,
   editorFormat,
   editorReplace,
   editorReplaceBlock,
   editorInsertBlocks,
+  editorInsertCodeBlock,
+  editorUpdateCodeBlock,
   editorDeleteBlock,
   editorApplyNotePatch,
   editorConvertBlock,
@@ -205,7 +210,7 @@ const ALL_TOOLS: RegisteredTool[] = [
   actionReplay,
   actionVersions,
 
-  // Lineage tools (9)
+  // Lineage tools (10)
   lineageHistory,
   lineageWhy,
   lineageRevert,
@@ -215,6 +220,7 @@ const ALL_TOOLS: RegisteredTool[] = [
   lineageRepair,
   lineageContext,
   lineageActions,
+  lineageSynthesize,
 
   // Commitment lineage tools (2)
   commitmentSource,

@@ -48,7 +48,9 @@ const STAGED_DRAFT_TOOLS = new Set<string>([
 const PROPOSED_PATCH_TOOLS = new Set<string>([
   'editor:apply-note-patch',
   'editor:insert-blocks',
+  'editor:insert-code-block',
   'editor:replace-block',
+  'editor:update-code-block',
   'note:update',
 ]);
 
@@ -158,6 +160,20 @@ export class ScopedWorkerToolExecutor implements ToolExecutorPort {
       return { ok: false, reason: `Worker scope ${scope?.writeScope ?? 'read_only'} cannot execute tool ${id}` };
     }
 
+    if ((id === 'fs:read' || id === 'fs:summarize') && isLikelySecretPath(String(invocation.args.path ?? ''))) {
+      return {
+        ok: false,
+        reason: 'Worker filesystem tools cannot read likely secret files such as .env, private keys, or cloud credentials',
+      };
+    }
+
+    if ((id === 'fs:read' || id === 'fs:summarize') && isVoidSidecarPath(String(invocation.args.path ?? ''))) {
+      return {
+        ok: false,
+        reason: 'Worker filesystem tools cannot read .void sidecars directly',
+      };
+    }
+
     const meta = getToolResourceMeta(invocation.toolId);
     if (!meta || meta.accessMode === 'read') return { ok: true };
 
@@ -217,4 +233,27 @@ export class ScopedWorkerToolExecutor implements ToolExecutorPort {
 
 function normalizeResourceId(value: string): string {
   return value.replace(/\\/g, '/').replace(/\/+/g, '/').trim();
+}
+
+function isLikelySecretPath(path: string): boolean {
+  const normalized = path.replace(/\\/g, '/').toLowerCase();
+  const basename = normalized.split('/').pop() ?? normalized;
+  return (
+    basename === '.env' ||
+    basename.startsWith('.env.') ||
+    basename.endsWith('.pem') ||
+    basename.endsWith('.key') ||
+    basename.endsWith('.p12') ||
+    basename.endsWith('.pfx') ||
+    basename === 'id_rsa' ||
+    basename === 'id_ed25519' ||
+    basename === '.npmrc' ||
+    basename === '.pypirc' ||
+    /\/\.(ssh|aws|azure|kube|gnupg)\//.test(normalized)
+  );
+}
+
+function isVoidSidecarPath(path: string): boolean {
+  const normalized = path.replace(/\\/g, '/').toLowerCase();
+  return normalized === '.void' || normalized.startsWith('.void/') || normalized.includes('/.void/');
 }

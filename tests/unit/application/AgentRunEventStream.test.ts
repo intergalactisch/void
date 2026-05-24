@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { MemoryAgentRunStorageAdapter } from '$lib/adapters/memory/MemoryAgentRunStorageAdapter';
 import { LocalAgentEventStreamAdapter } from '$lib/adapters/agent/LocalAgentEventStreamAdapter';
 import { VoidAgentRunStorageAdapter } from '$lib/adapters/agent/VoidAgentRunStorageAdapter';
-import { createAgentRun, createAgentRunEvent } from '$lib/domain/entities/AgentRun';
+import { createAgentRun, createAgentRunEvent, createAgentWorkerMessage } from '$lib/domain/entities/AgentRun';
 import { AgentRunEngine } from '$lib/application/services/AgentRunEngine';
 import { formatAgentSseEvent } from '$lib/ports/outbound/AgentEventStreamPort';
 import { ok, type Result } from '$lib/core';
@@ -10,6 +10,7 @@ import type { VoidStoragePort } from '$lib/ports/outbound/VoidStoragePort';
 
 class FakeVoidStorage implements VoidStoragePort {
   files = new Map<string, unknown>();
+  readJsonlCalls: string[] = [];
 
   async ensureStructure(): Promise<Result<void, Error>> { return ok(undefined); }
   async appendProvenance(): Promise<Result<void, Error>> { return ok(undefined); }
@@ -20,6 +21,18 @@ class FakeVoidStorage implements VoidStoragePort {
   }
   async readJson<T>(_notesDir: string, relativePath: string): Promise<Result<T | null, Error>> {
     return ok((this.files.get(relativePath) as T | undefined) ?? null);
+  }
+  async appendJsonl(_notesDir: string, relativePath: string, entry: unknown): Promise<Result<void, Error>> {
+    const existing = this.files.get(relativePath);
+    const rows = Array.isArray(existing) ? [...existing] : [];
+    rows.push(structuredClone(entry));
+    this.files.set(relativePath, rows);
+    return ok(undefined);
+  }
+  async readJsonl<T>(_notesDir: string, relativePath: string): Promise<Result<T[], Error>> {
+    this.readJsonlCalls.push(relativePath);
+    const existing = this.files.get(relativePath);
+    return ok(Array.isArray(existing) ? structuredClone(existing) as T[] : []);
   }
   async listDir(_notesDir: string, relativePath: string): Promise<Result<string[], Error>> {
     const prefix = `${relativePath}/`;
@@ -99,6 +112,36 @@ describe('Agent run event journal and stream', () => {
     expect(loaded.ok).toBe(true);
     if (!loaded.ok || !loaded.value) return;
     expect(loaded.value.events.map((event) => event.id)).toEqual(['evt-a', 'evt-b']);
+    expect(voidStorage.files.get('agents/run-persisted.events.jsonl')).toHaveLength(2);
+  });
+
+  it('lists run summaries without hydrating JSONL event or worker logs', async () => {
+    const voidStorage = new FakeVoidStorage();
+    const adapter = new VoidAgentRunStorageAdapter(voidStorage, '/notes');
+    const run = createAgentRun({
+      id: 'run-summary',
+      prompt: 'Research command center scale',
+      conversationId: 'conv-summary',
+      approvalRequired: false,
+      orchestrationMode: 'swarm',
+    });
+
+    await adapter.save(run);
+    await adapter.appendWorkerMessage(run.id, createAgentWorkerMessage({
+      runId: run.id,
+      workerId: 'worker-a',
+      type: 'worker.progress',
+      message: 'Large log entry',
+    }));
+    voidStorage.readJsonlCalls = [];
+
+    const page = await adapter.listSummaries({ query: 'scale', conversationId: 'conv-summary' });
+
+    expect(page.ok).toBe(true);
+    if (!page.ok) return;
+    expect(page.value.items).toHaveLength(1);
+    expect(page.value.items[0]?.id).toBe('run-summary');
+    expect(voidStorage.readJsonlCalls).toEqual([]);
   });
 
   it('only emits source.verified for verified source artifacts', async () => {

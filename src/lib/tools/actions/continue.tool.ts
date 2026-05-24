@@ -1,6 +1,7 @@
 import { defineTool } from '../define';
 import { aiPrompt } from '../context';
 import { INTENT_AI_HINTS } from '$lib/domain/values/NoteIntent';
+import { assertProtectedAIReadAllowed, assertProtectedAIWriteAllowed } from '../protectionGuard';
 
 export default defineTool({
   id: 'action:continue',
@@ -15,6 +16,9 @@ export default defineTool({
   async execute(_args, { services, progress }) {
     progress(10, 'Reading note...');
     const state = services.editor.getState();
+    const path = state.document?.path ?? '';
+    await assertProtectedAIReadAllowed(services, path, 'note.read');
+    await assertProtectedAIWriteAllowed(services, path);
     const content = state.document?.blocks.map(b => b.content).join('\n') ?? '';
     const intent = state.document?.meta.intent ?? 'general';
 
@@ -27,7 +31,7 @@ export default defineTool({
     );
 
     progress(80, 'Appending...');
-    const currentContent = await services.documents.readContent(state.document?.path ?? '');
+    const currentContent = await services.documents.readContent(path);
     if (currentContent.ok && state.document) {
       await services.collaboration.applyNoteContent(
         state.document.path,

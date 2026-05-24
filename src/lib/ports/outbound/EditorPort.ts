@@ -19,10 +19,17 @@ import type { InlineAIThread } from '$lib/domain/entities/InlineAIThread';
 export type EditorMenuStatePayload = unknown;
 export type EditorBlockMenuMode = 'actions' | 'convert';
 
+export interface EditorMenuPosition {
+  top: number;
+  left: number;
+  openAbove?: boolean;
+  maxHeight?: number;
+}
+
 export interface EditorBlockMenuRequest {
   blockId: string;
   lineIndex: number;
-  position: { top: number; left: number };
+  position: EditorMenuPosition;
   currentType: BlockType;
   mode: EditorBlockMenuMode;
 }
@@ -30,7 +37,7 @@ export interface EditorBlockMenuRequest {
 export interface EditorLineageInspectRequest {
   blockId: string;
   lineIndex: number;
-  position: { top: number; left: number };
+  position: EditorMenuPosition;
   currentType: BlockType;
 }
 

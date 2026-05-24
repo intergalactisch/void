@@ -58,7 +58,7 @@ test.describe('AI Assistant', () => {
     await expect(aiButton).toBeVisible({ timeout: 5000 });
     await aiButton.click();
 
-    const commandCenter = page.getByRole('region', { name: /ai command center/i });
+    const commandCenter = page.getByRole('dialog', { name: /ai command center/i });
     await expect(commandCenter).toBeVisible();
     await expect(commandCenter.getByText('Install Codex CLI or Claude Code to enable AI features.')).toBeVisible();
     await expect(commandCenter.getByRole('textbox', { name: /ai command/i })).toBeHidden();
@@ -121,13 +121,13 @@ test.describe('AI Assistant', () => {
     });
 
     await page.keyboard.press('Meta+Shift+O');
-    if (!await page.getByRole('region', { name: /ai command center/i }).isVisible({ timeout: 1000 }).catch(() => false)) {
+    if (!await page.getByRole('dialog', { name: /ai command center/i }).isVisible({ timeout: 1000 }).catch(() => false)) {
       const aiButton = page.locator('button').filter({ hasText: /Ask/ }).first();
       await expect(aiButton).toBeVisible({ timeout: 5000 });
       await aiButton.click();
     }
 
-    const commandCenter = page.getByRole('region', { name: /ai command center/i });
+    const commandCenter = page.getByRole('dialog', { name: /ai command center/i });
     await expect(commandCenter).toBeVisible();
     await commandCenter.getByRole('button', { name: /new command thread/i }).click();
 
@@ -142,27 +142,32 @@ test.describe('AI Assistant', () => {
 
   test('shows an empty Command Center conversation state without a run inspector', async ({ page }) => {
     await page.keyboard.press('Meta+Shift+O');
-    if (!await page.getByRole('region', { name: /ai command center/i }).isVisible({ timeout: 1000 }).catch(() => false)) {
+    if (!await page.getByRole('dialog', { name: /ai command center/i }).isVisible({ timeout: 1000 }).catch(() => false)) {
       const aiButton = page.locator('button').filter({ hasText: /Ask/ }).first();
       await expect(aiButton).toBeVisible({ timeout: 5000 });
       await aiButton.click();
     }
 
-    const commandCenter = page.getByRole('region', { name: /ai command center/i });
+    const commandCenter = page.getByRole('dialog', { name: /ai command center/i });
     await expect(commandCenter).toBeVisible();
     await expect(page.getByRole('heading', { name: /no conversation open/i })).toBeVisible();
+    const composer = commandCenter.getByRole('textbox', { name: /ai command/i });
+    await expect(composer).toBeVisible();
+    await expect(composer).toBeFocused();
+    await page.keyboard.press('Meta+f');
+    await expect(commandCenter.getByRole('searchbox', { name: /search command center work/i })).toBeFocused();
     await expect(page.locator('aside[aria-label="Agent status"]')).toBeHidden();
     await expect(page.getByText(/runs in this conversation/i)).toBeHidden();
   });
 
   test('shows global active swarms while an idle command thread is open', async ({ page }) => {
     await page.keyboard.press('Meta+Shift+O');
-    if (!await page.getByRole('region', { name: /ai command center/i }).isVisible({ timeout: 1000 }).catch(() => false)) {
+    if (!await page.getByRole('dialog', { name: /ai command center/i }).isVisible({ timeout: 1000 }).catch(() => false)) {
       const aiButton = page.locator('button').filter({ hasText: /Ask/ }).first();
       await expect(aiButton).toBeVisible({ timeout: 5000 });
       await aiButton.click();
     }
-    await expect(page.getByRole('region', { name: /ai command center/i })).toBeVisible();
+    await expect(page.getByRole('dialog', { name: /ai command center/i })).toBeVisible();
 
     await page.evaluate(async () => {
       const [{ aiStore, commandCenterStore }, { createConversation }, { createAgentRun }] = await Promise.all([
@@ -213,16 +218,18 @@ test.describe('AI Assistant', () => {
     await expect(fleet.getByText(/Research media leads in another thread/i)).toBeVisible();
     await expect(fleet.getByText(/Update shared todo planning from a second thread/i)).toBeVisible();
     await expect(fleet.getByText(/Thread conv-g/i).first()).toBeVisible();
+    await page.keyboard.press('Alt+3');
+    await expect(page.getByRole('tab', { name: /history/i })).toHaveAttribute('aria-selected', 'true');
   });
 
   test('keeps repair and close actions from overlapping', async ({ page }) => {
     await page.keyboard.press('Meta+Shift+O');
-    if (!await page.getByRole('region', { name: /ai command center/i }).isVisible({ timeout: 1000 }).catch(() => false)) {
+    if (!await page.getByRole('dialog', { name: /ai command center/i }).isVisible({ timeout: 1000 }).catch(() => false)) {
       const aiButton = page.locator('button').filter({ hasText: /Ask/ }).first();
       await expect(aiButton).toBeVisible({ timeout: 5000 });
       await aiButton.click();
     }
-    await expect(page.getByRole('region', { name: /ai command center/i })).toBeVisible();
+    await expect(page.getByRole('dialog', { name: /ai command center/i })).toBeVisible();
 
     await page.evaluate(async () => {
       const [{ aiStore, commandCenterStore }, { createConversation }, { createUserMessage, createAssistantMessage }, { createAgentRun }] = await Promise.all([
@@ -347,13 +354,13 @@ test.describe('AI Assistant', () => {
 
   test('routes a durable research prompt into mocked swarm work end to end', async ({ page }) => {
     await page.keyboard.press('Meta+Shift+O');
-    if (!await page.getByRole('region', { name: /ai command center/i }).isVisible({ timeout: 1000 }).catch(() => false)) {
+    if (!await page.getByRole('dialog', { name: /ai command center/i }).isVisible({ timeout: 1000 }).catch(() => false)) {
       const aiButton = page.locator('button').filter({ hasText: /Ask/ }).first();
       await expect(aiButton).toBeVisible({ timeout: 5000 });
       await aiButton.click();
     }
 
-    const commandCenter = page.getByRole('region', { name: /ai command center/i });
+    const commandCenter = page.getByRole('dialog', { name: /ai command center/i });
     await expect(commandCenter).toBeVisible();
     if (await page.getByRole('heading', { name: /no conversation open/i }).isVisible({ timeout: 1000 }).catch(() => false)) {
       await page.getByRole('button', { name: /new command thread/i }).click();

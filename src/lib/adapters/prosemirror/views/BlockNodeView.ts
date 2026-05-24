@@ -16,6 +16,13 @@ import { startCustomDrag } from '../plugins/dragDrop/customDrag';
 import { slashMenuKey } from '../plugins/slashMenu';
 import { clampToViewport } from '../plugins/positioning';
 import { aiBlockKey } from '../plugins/aiBlock';
+import {
+  buildCodeFence,
+  normalizeCodeLanguageLabel,
+  parseCodeBlockDisplayOptions,
+  parseCodeFenceInfo,
+  updateCodeFenceMeta,
+} from '$lib/core/codeFence';
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -27,7 +34,7 @@ export interface BlockNodeViewOptions {
     blockId: string,
     lineIndex: number,
     event: MouseEvent,
-    position: { top: number; left: number },
+    position: { top: number; left: number; openAbove?: boolean; maxHeight?: number },
   ) => void;
   onLineageClick?: (blockId: string, lineIndex: number, event: MouseEvent) => void;
   onDragStart?: (blockId: string, event: DragEvent) => void;
@@ -112,8 +119,17 @@ export class BlockNodeView implements NodeView {
 
   // Code block specific
   private headerEl?: HTMLDivElement;
+  private codeInfoEl?: HTMLDivElement;
   private langEl?: HTMLSpanElement;
+  private titleEl?: HTMLSpanElement;
+  private metaEl?: HTMLSpanElement;
   private copyBtn?: HTMLButtonElement;
+  private copyFenceBtn?: HTMLButtonElement;
+  private wrapBtn?: HTMLButtonElement;
+  private lineNumbersBtn?: HTMLButtonElement;
+  private codeShellEl?: HTMLDivElement;
+  private preEl?: HTMLPreElement;
+  private lineNumberEl?: HTMLDivElement;
   private copyTimeout: ReturnType<typeof setTimeout> | null = null;
 
   // Todo specific
@@ -253,11 +269,6 @@ export class BlockNodeView implements NodeView {
       this.dom.appendChild(this.imageFigureEl);
     }
 
-    // For code blocks, insert header before content
-    if (typeName === 'codeBlock' && this.headerEl) {
-      this.dom.appendChild(this.headerEl);
-    }
-
     if (this.contentDOM) {
       // For todo items, checkbox goes before content
       if (typeName === 'todoItem' && this.checkboxEl) {
@@ -266,6 +277,8 @@ export class BlockNodeView implements NodeView {
         todoWrapper.appendChild(this.checkboxEl);
         todoWrapper.appendChild(this.contentDOM);
         this.dom.appendChild(todoWrapper);
+      } else if (typeName === 'codeBlock' && this.codeShellEl) {
+        this.dom.appendChild(this.codeShellEl);
       } else {
         const contentWrapper = this.contentDOM.parentElement || this.contentDOM;
         if (contentWrapper !== this.contentDOM) {
@@ -312,13 +325,35 @@ export class BlockNodeView implements NodeView {
 
     switch (typeName) {
       case 'codeBlock': {
-        // Header bar with language label and copy button
+        this.codeShellEl = document.createElement('div');
+        this.codeShellEl.className = 'void-code-block-shell void-block-content';
+
+        // Header bar with language/meta controls and copy actions.
         this.headerEl = document.createElement('div');
         this.headerEl.className = 'void-code-block-header';
+        this.headerEl.setAttribute('contenteditable', 'false');
+
+        this.codeInfoEl = document.createElement('div');
+        this.codeInfoEl.className = 'void-code-block-info';
 
         this.langEl = document.createElement('span');
         this.langEl.className = 'void-code-block-lang';
-        this.langEl.textContent = (node.attrs.language as string) || 'plain text';
+
+        this.titleEl = document.createElement('span');
+        this.titleEl.className = 'void-code-block-title';
+
+        this.metaEl = document.createElement('span');
+        this.metaEl.className = 'void-code-block-meta';
+
+        this.codeInfoEl.appendChild(this.langEl);
+        this.codeInfoEl.appendChild(this.titleEl);
+        this.codeInfoEl.appendChild(this.metaEl);
+
+        const actionsEl = document.createElement('div');
+        actionsEl.className = 'void-code-block-actions';
+
+        this.wrapBtn = this.createCodeHeaderButton('Wrap code', 'Wrap');
+        this.lineNumbersBtn = this.createCodeHeaderButton('Toggle line numbers', 'Lines');
 
         this.copyBtn = document.createElement('button');
         this.copyBtn.className = 'void-code-block-copy';
@@ -326,15 +361,32 @@ export class BlockNodeView implements NodeView {
         this.copyBtn.setAttribute('aria-label', 'Copy code');
         this.copyBtn.textContent = 'Copy';
 
-        this.headerEl.appendChild(this.langEl);
-        this.headerEl.appendChild(this.copyBtn);
+        this.copyFenceBtn = this.createCodeHeaderButton('Copy fenced Markdown', 'Fence');
 
-        // pre > code structure — pre is contentDOM's parent, appended by constructor
-        const preEl = document.createElement('pre');
-        preEl.className = 'void-code-block void-block-content';
+        actionsEl.appendChild(this.wrapBtn);
+        actionsEl.appendChild(this.lineNumbersBtn);
+        actionsEl.appendChild(this.copyFenceBtn);
+        actionsEl.appendChild(this.copyBtn);
+
+        this.headerEl.appendChild(this.codeInfoEl);
+        this.headerEl.appendChild(actionsEl);
+
+        // pre > code structure — ProseMirror owns the nested code element.
+        this.preEl = document.createElement('pre');
+        this.preEl.className = 'void-code-block';
+
+        this.lineNumberEl = document.createElement('div');
+        this.lineNumberEl.className = 'void-code-line-numbers';
+        this.lineNumberEl.setAttribute('contenteditable', 'false');
+        this.lineNumberEl.setAttribute('aria-hidden', 'true');
+
         const codeEl = document.createElement('code');
-        preEl.appendChild(codeEl);
-        return codeEl; // contentDOM is the code element; parentElement (pre) gets appended
+        this.preEl.appendChild(this.lineNumberEl);
+        this.preEl.appendChild(codeEl);
+        this.codeShellEl.appendChild(this.headerEl);
+        this.codeShellEl.appendChild(this.preEl);
+        this.renderCodeBlockState(node);
+        return codeEl;
       }
 
       case 'todoItem': {
@@ -383,6 +435,85 @@ export class BlockNodeView implements NodeView {
         contentEl.className = 'void-block-content void-paragraph';
         return contentEl;
       }
+    }
+  }
+
+  private createCodeHeaderButton(ariaLabel: string, text: string): HTMLButtonElement {
+    const button = document.createElement('button');
+    button.className = 'void-code-block-copy';
+    button.setAttribute('type', 'button');
+    button.setAttribute('aria-label', ariaLabel);
+    button.textContent = text;
+    return button;
+  }
+
+  private renderCodeBlockState(node: ProseMirrorNode): void {
+    if (node.type.name !== 'codeBlock') return;
+
+    const language = node.attrs.language as string | null;
+    const meta = node.attrs.meta as string | null;
+    const code = node.textContent;
+    const options = parseCodeBlockDisplayOptions(meta, code);
+
+    if (this.langEl) {
+      this.langEl.textContent = normalizeCodeLanguageLabel(language);
+      this.langEl.setAttribute('aria-label', 'Edit code fence language and metadata');
+    }
+
+    if (this.titleEl) {
+      this.titleEl.textContent = options.title ?? '';
+      this.titleEl.toggleAttribute('hidden', !options.title);
+    }
+
+    if (this.metaEl) {
+      const visibleMeta = meta
+        ? meta
+            .replace(/(?:^|\s)title=(?:"[^"]*"|'[^']*'|\S+)/i, '')
+            .trim()
+        : '';
+      this.metaEl.textContent = visibleMeta;
+      this.metaEl.toggleAttribute('hidden', !visibleMeta);
+    }
+
+    this.preEl?.classList.toggle('is-wrapped', options.wrap);
+    this.preEl?.classList.toggle('has-line-numbers', options.lineNumbers);
+
+    if (this.wrapBtn) {
+      this.wrapBtn.classList.toggle('is-active', options.wrap);
+      this.wrapBtn.setAttribute('aria-pressed', String(options.wrap));
+    }
+    if (this.lineNumbersBtn) {
+      this.lineNumbersBtn.classList.toggle('is-active', options.lineNumbers);
+      this.lineNumbersBtn.setAttribute('aria-pressed', String(options.lineNumbers));
+    }
+
+    if (this.lineNumberEl) {
+      this.lineNumberEl.hidden = !options.lineNumbers;
+      if (options.lineNumbers) {
+        this.renderLineNumbers(code, options.highlightLines, options.focusLines);
+      } else {
+        this.lineNumberEl.textContent = '';
+      }
+    }
+  }
+
+  private renderLineNumbers(
+    code: string,
+    highlightLines: Set<number>,
+    focusLines: Set<number>
+  ): void {
+    if (!this.lineNumberEl) return;
+    const lines = code.split('\n');
+    const lineCount = Math.max(1, lines.length);
+    this.lineNumberEl.replaceChildren();
+    for (let line = 1; line <= lineCount; line++) {
+      const span = document.createElement('span');
+      span.textContent = String(line);
+      if (highlightLines.has(line)) span.classList.add('is-highlighted');
+      if (focusLines.has(line)) span.classList.add('is-focused');
+      if (/^\+/.test(lines[line - 1] ?? '')) span.classList.add('is-added');
+      if (/^-/.test(lines[line - 1] ?? '')) span.classList.add('is-removed');
+      this.lineNumberEl.appendChild(span);
     }
   }
 
@@ -491,11 +622,35 @@ export class BlockNodeView implements NodeView {
       });
     }
 
+    if (this.copyFenceBtn) {
+      this.copyFenceBtn.addEventListener('mousedown', (e) => e.preventDefault());
+      this.copyFenceBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        this.copyFencedCode();
+      });
+    }
+
+    if (this.wrapBtn) {
+      this.wrapBtn.addEventListener('mousedown', (e) => e.preventDefault());
+      this.wrapBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        this.toggleCodeMeta('wrap');
+      });
+    }
+
+    if (this.lineNumbersBtn) {
+      this.lineNumbersBtn.addEventListener('mousedown', (e) => e.preventDefault());
+      this.lineNumbersBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        this.toggleCodeMeta('lineNumbers');
+      });
+    }
+
     // ── Code block: editable language label ──
     if (this.langEl) {
       this.langEl.setAttribute('role', 'button');
       this.langEl.setAttribute('tabindex', '0');
-      this.langEl.title = 'Click to set language';
+      this.langEl.title = 'Edit code fence language and metadata';
       this.langEl.addEventListener('mousedown', (e) => e.preventDefault());
       this.langEl.addEventListener('click', (e) => {
         e.preventDefault();
@@ -741,33 +896,69 @@ export class BlockNodeView implements NodeView {
   private copyCode(): void {
     if (!this.contentDOM) return;
     const text = this.contentDOM.textContent || '';
-    navigator.clipboard.writeText(text).then(() => {
-      if (!this.copyBtn) return;
-      this.copyBtn.textContent = 'Copied!';
-      if (this.copyTimeout !== null) {
-        clearTimeout(this.copyTimeout);
-      }
-      this.copyTimeout = setTimeout(() => {
-        if (this.copyBtn) this.copyBtn.textContent = 'Copy';
-        this.copyTimeout = null;
-      }, 2000);
+    this.copyWithFeedback(text, this.copyBtn, 'Copy');
+  }
+
+  private copyFencedCode(): void {
+    if (!this.contentDOM) return;
+    const text = this.contentDOM.textContent || '';
+    const fenced = buildCodeFence({
+      code: text,
+      language: this.node.attrs.language as string | null,
+      meta: this.node.attrs.meta as string | null,
     });
+    this.copyWithFeedback(fenced, this.copyFenceBtn, 'Fence');
+  }
+
+  private copyWithFeedback(
+    text: string,
+    button: HTMLButtonElement | undefined,
+    restoreLabel: string
+  ): void {
+    navigator.clipboard.writeText(text).then(() => {
+      if (!button) return;
+      button.textContent = 'Copied';
+      if (this.copyTimeout !== null) clearTimeout(this.copyTimeout);
+      this.copyTimeout = setTimeout(() => {
+        button.textContent = restoreLabel;
+        this.copyTimeout = null;
+      }, 1600);
+    });
+  }
+
+  private toggleCodeMeta(kind: 'wrap' | 'lineNumbers'): void {
+    const pos = this.getPos();
+    if (pos === undefined) return;
+    const node = this.view.state.doc.nodeAt(pos);
+    if (!node || node.type.name !== 'codeBlock') return;
+
+    const options = parseCodeBlockDisplayOptions(node.attrs.meta as string | null, node.textContent);
+    const nextMeta = updateCodeFenceMeta(node.attrs.meta as string | null, {
+      [kind]: !options[kind],
+    });
+    const tr = this.view.state.tr.setNodeMarkup(pos, null, {
+      ...node.attrs,
+      meta: nextMeta,
+    });
+    this.view.dispatch(tr);
   }
 
   /**
    * Open an inline editor on the language label so the user can set the
-   * code block's language. Persists via setNodeMarkup so undo restores
-   * the previous language atomically.
+   * full fence info string: language plus optional metadata. Persists via
+   * setNodeMarkup so undo restores the previous fence attrs atomically.
    */
   private startEditingLanguage(): void {
     if (!this.langEl || !this.view) return;
 
     const currentLang = (this.node.attrs.language as string | null) || '';
+    const currentMeta = (this.node.attrs.meta as string | null) || '';
+    const currentInfo = [currentLang, currentMeta].filter(Boolean).join(' ');
     const input = document.createElement('input');
     input.type = 'text';
     input.className = 'void-code-block-lang-input';
-    input.value = currentLang;
-    input.placeholder = 'Language…';
+    input.value = currentInfo;
+    input.placeholder = 'ts title="api.ts" lineNumbers';
     input.spellcheck = false;
     input.autocapitalize = 'off';
     input.setAttribute('list', 'void-code-block-lang-suggestions');
@@ -795,23 +986,23 @@ export class BlockNodeView implements NodeView {
     const commit = (cancel = false) => {
       input.removeEventListener('blur', onBlur);
       input.removeEventListener('keydown', onKeydown);
-      const next = cancel ? currentLang : input.value.trim().toLowerCase();
+      const next = cancel ? currentInfo : input.value.trim();
       if (input.parentElement === this.langEl) {
         this.langEl.removeChild(input);
       }
-      if (this.langEl) {
-        this.langEl.textContent = next || 'plain text';
-      }
-      if (!cancel && next !== currentLang && this.view) {
+      if (!cancel && next !== currentInfo && this.view) {
         const pos = this.getPos();
         if (typeof pos === 'number') {
+          const info = parseCodeFenceInfo(next);
           const tr = this.view.state.tr.setNodeMarkup(pos, null, {
             ...this.node.attrs,
-            language: next || null,
+            language: info.language,
+            meta: info.meta,
           });
           this.view.dispatch(tr);
         }
       }
+      this.renderCodeBlockState(this.node);
     };
 
     const onBlur = () => commit(false);
@@ -865,9 +1056,9 @@ export class BlockNodeView implements NodeView {
       }
     }
 
-    // Update code block language label
-    if (node.type.name === 'codeBlock' && this.langEl) {
-      this.langEl.textContent = (node.attrs.language as string) || 'plain text';
+    // Update code block header and visual line state
+    if (node.type.name === 'codeBlock') {
+      this.renderCodeBlockState(node);
     }
 
     // Update image rendering when attrs change
@@ -903,6 +1094,10 @@ export class BlockNodeView implements NodeView {
 
     // Stop events on code block header
     if (this.headerEl && (target === this.headerEl || this.headerEl.contains(target))) {
+      return true;
+    }
+
+    if (this.lineNumberEl && (target === this.lineNumberEl || this.lineNumberEl.contains(target))) {
       return true;
     }
 
@@ -942,6 +1137,11 @@ export class BlockNodeView implements NodeView {
 
     // Ignore mutations in code header
     if (this.headerEl && (target === this.headerEl || this.headerEl.contains(target))) {
+      return true;
+    }
+
+    // Ignore generated line-number gutter; editable code remains ProseMirror-owned.
+    if (this.lineNumberEl && (target === this.lineNumberEl || this.lineNumberEl.contains(target))) {
       return true;
     }
 

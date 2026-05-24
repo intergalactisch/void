@@ -2,7 +2,7 @@
  * ContextBuilderAdapter - Builds operation context from notes
  *
  * Reads notes and assembles context based on requirements.
- * Depends on FileService and NotesService via DI.
+ * Depends on DocumentService, NotesService, and ProtectionService via DI.
  *
  * Part of the Hexagonal Architecture secondary adapters layer.
  */
@@ -12,20 +12,27 @@ import type {
   ContextBuilderPort,
   ContextBuildOptions,
 } from '$lib/ports/outbound/ContextBuilderPort';
-import type { FileService } from '$lib/ports/inbound/FileService';
+import type { DocumentService } from '$lib/ports/inbound/DocumentService';
 import type { NotesService } from '$lib/ports/inbound/NotesService';
-import type { OperationContext, NoteSummaryEntry } from '$lib/domain/values/OperationContext';
+import type { ProtectionService } from '$lib/ports/inbound/ProtectionService';
+import type { OperationContext } from '$lib/domain/values/OperationContext';
 import { createEmptyOperationContext } from '$lib/domain/values/OperationContext';
 import type { ContextRequirement } from '$lib/domain/values/OperationTemplate';
 import type { NotesListItem } from '$lib/ports/inbound/NotesService';
 
 export class ContextBuilderAdapter implements ContextBuilderPort {
-  #fileService: FileService;
+  #documentService: DocumentService;
   #notesService: NotesService;
+  #protectionService: ProtectionService;
 
-  constructor(fileService: FileService, notesService: NotesService) {
-    this.#fileService = fileService;
+  constructor(
+    documentService: DocumentService,
+    notesService: NotesService,
+    protectionService: ProtectionService,
+  ) {
+    this.#documentService = documentService;
     this.#notesService = notesService;
+    this.#protectionService = protectionService;
   }
 
   async buildContext(
@@ -39,9 +46,12 @@ export class ContextBuilderAdapter implements ContextBuilderPort {
         switch (req.type) {
           case 'currentNote': {
             if (options?.currentNotePath) {
-              const result = await this.#fileService.read(options.currentNotePath);
-              if (result.ok) {
-                context.noteContents.set(options.currentNotePath, result.value);
+              const note = this.#findNote(options.currentNotePath);
+              if (this.#canReadProtectedNote(note)) {
+                const result = await this.#documentService.readContent(options.currentNotePath);
+                if (result.ok) {
+                  context.noteContents.set(options.currentNotePath, result.value);
+                }
               }
             }
             break;
@@ -91,14 +101,14 @@ export class ContextBuilderAdapter implements ContextBuilderPort {
             const folder = req.folder ?? '';
             const folderNotes = flatNotes.filter((n) => n.path.startsWith(folder));
             for (const note of folderNotes) {
-              const result = await this.#fileService.read(note.path);
-              if (result.ok) {
-                context.noteContents.set(note.path, result.value);
-              }
+              const result = this.#canReadProtectedNote(note)
+                ? await this.#documentService.readContent(note.path)
+                : null;
+              if (result?.ok) context.noteContents.set(note.path, result.value);
               context.noteSummaries.push({
                 path: note.path,
                 title: note.title,
-                excerpt: result.ok ? result.value.slice(0, 200) : '',
+                excerpt: result?.ok ? result.value.slice(0, 200) : '',
               });
             }
             break;
@@ -160,6 +170,20 @@ export class ContextBuilderAdapter implements ContextBuilderPort {
       }
     }
     return result;
+  }
+
+  #findNote(path: string): NotesListItem | null {
+    return this.#flattenItems(this.#notesService.getState().items)
+      .find((item) => !item.isFolder && item.path === path) ?? null;
+  }
+
+  #canReadProtectedNote(note: NotesListItem | null): boolean {
+    const protection = note?.protection;
+    if (!protection || protection.level !== 'protected') return true;
+    if (protection.lockState === 'locked') return false;
+    const policy = this.#protectionService.currentPolicy();
+    if (!policy.requireAIApprovalForProtectedReads) return true;
+    return this.#protectionService.hasAIContextAuthorization(protection.noteId, 'note.read');
   }
 
   #buildSystemPrompt(context: OperationContext): string {

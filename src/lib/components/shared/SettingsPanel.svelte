@@ -9,7 +9,9 @@
   import { settingsStore, keymapStore, uiStore } from '$lib/stores';
   import UpdateSettingsSection from './UpdateSettingsSection.svelte';
   import CLIProviderDetails from './CLIProviderDetails.svelte';
-  import { Layers } from '@lucide/svelte';
+  import InfoPopover from './InfoPopover.svelte';
+  import SelectShell from './SelectShell.svelte';
+  import { Layers, Shield } from '@lucide/svelte';
   import {
     AI_REASONING_EFFORT_OPTIONS,
     CLI_PROVIDER_OPTIONS,
@@ -26,14 +28,12 @@
   import { createFocusTrap } from '$lib/utils/focusTrap';
   import {
     chordFromKeyboardEvent,
-    chordsEqual,
     formatChord,
     parseChord,
     serializeChord,
     detectPlatform,
     type KeyChord,
   } from '$lib/domain/values/KeyChord';
-  import type { KeyBinding } from '$lib/ports/inbound/KeymapService';
 
   interface Props {
     isOpen?: boolean;
@@ -53,6 +53,14 @@
   let contentWidthInput = $state(720);
   let saveStatus = $state<'idle' | 'saving' | 'saved' | 'error'>('idle');
   let saveError = $state<string | null>(null);
+  type ProtectionToggleKey = Exclude<keyof Settings['protection'], 'idleLockMinutes'>;
+  const privacyToggleOptions: Array<{ key: ProtectionToggleKey; label: string }> = [
+    { key: 'hideProtectedPreviews', label: 'Hide protected previews' },
+    { key: 'requireAIApprovalForProtectedReads', label: 'Approve AI reads' },
+    { key: 'requireAIApprovalForProtectedWrites', label: 'Approve AI writes' },
+    { key: 'lockOnAppClose', label: 'Lock on app close' },
+    { key: 'lockOnSleep', label: 'Lock on sleep' },
+  ];
 
   // Sync form inputs with loaded settings
   $effect(() => {
@@ -119,6 +127,22 @@
     }
   }
 
+  async function updateProtectionSetting<K extends keyof Settings['protection']>(
+    key: K,
+    value: Settings['protection'][K],
+  ) {
+    if (!settingsStore.settings) return;
+    await updateSetting('protection', {
+      ...settingsStore.settings.protection,
+      [key]: value,
+    });
+  }
+
+  async function updateProtectionToggle(key: ProtectionToggleKey) {
+    if (!settingsStore.settings) return;
+    await updateProtectionSetting(key, !settingsStore.settings.protection[key]);
+  }
+
   async function handleAutoSaveDelayUpdate() {
     const delay = parseInt(autoSaveDelayInput, 10);
     if (!isNaN(delay) && delay >= 0) {
@@ -181,23 +205,6 @@
     event.preventDefault();
     event.stopPropagation();
     recordedChord = chord;
-  }
-
-  function commandLabel(commandId: string): string {
-    const tail = commandId.split('.').slice(1).join('.') || commandId;
-    return tail
-      .replace(/([A-Z])/g, ' $1')
-      .replace(/[-_]/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .replace(/^./, (c) => c.toUpperCase());
-  }
-
-  function bindingHasConflict(binding: KeyBinding): boolean {
-    return keymapStore.conflicts.some((c) =>
-      c.bindings.some((b) => b.commandId === binding.commandId) &&
-      chordsEqual(c.chord, binding.chord)
-    );
   }
 
   // ─── Capture window settings ───
@@ -319,6 +326,54 @@
           <div bind:this={updateSectionRef}>
             <UpdateSettingsSection />
           </div>
+
+          <!-- Privacy & Locking -->
+          <fieldset class="setting-group">
+            <legend class="group-label group-label-help">
+              PRIVACY & LOCKING
+              <Shield size={14} strokeWidth={1.7} aria-hidden="true" />
+            </legend>
+
+            <div class="privacy-grid">
+              <label class="capture-setting-row" for="sp-idleLock">
+                <span class="capture-setting-label">Idle lock</span>
+                <SelectShell class="capture-setting-select-wrap">
+                  <select
+                    id="sp-idleLock"
+                    name="idle-lock-minutes"
+                    value={String(settingsStore.settings.protection.idleLockMinutes)}
+                    onchange={(e) => updateProtectionSetting('idleLockMinutes', Number((e.currentTarget as HTMLSelectElement).value))}
+                    class="capture-setting-select"
+                  >
+                    <option value="5">5 minutes</option>
+                    <option value="15">15 minutes</option>
+                    <option value="30">30 minutes</option>
+                    <option value="60">1 hour</option>
+                  </select>
+                </SelectShell>
+              </label>
+
+              {#each privacyToggleOptions as item}
+                <div class="toggle-row privacy-toggle-row">
+                  <button
+                    type="button"
+                    onclick={() => updateProtectionToggle(item.key)}
+                    role="switch"
+                    aria-checked={settingsStore.settings.protection[item.key]}
+                    aria-label={item.label}
+                    class="toggle-switch"
+                    class:toggle-on={settingsStore.settings.protection[item.key]}
+                  >
+                    <span
+                      class="toggle-knob"
+                      class:toggle-knob-on={settingsStore.settings.protection[item.key]}
+                    ></span>
+                  </button>
+                  <span class="toggle-label">{item.label}</span>
+                </div>
+              {/each}
+            </div>
+          </fieldset>
 
           <!-- Auto Save -->
           <div class="setting-group">
@@ -470,7 +525,19 @@
 
           <!-- Local AI CLI -->
           <fieldset class="setting-group">
-            <legend class="group-label">LOCAL AI CLI</legend>
+            <legend class="group-label group-label-help">
+              LOCAL AI CLI
+              <InfoPopover
+                title="Local AI CLI"
+                body="Void uses a local command-line AI tool to power assistant work."
+                items={[
+                  'Pick the provider you have installed.',
+                  'Detected tools show what Void can find on your PATH.',
+                  'Refresh after installing or updating a CLI.',
+                ]}
+                align="start"
+              />
+            </legend>
             <div class="option-group option-group-wrap" role="group" aria-label="Local AI CLI selection">
               {#each CLI_PROVIDER_OPTIONS as provider}
                 <button
@@ -488,7 +555,19 @@
 
           <!-- Reasoning Effort -->
           <fieldset class="setting-group">
-            <legend class="group-label">REASONING</legend>
+            <legend class="group-label group-label-help">
+              REASONING
+              <InfoPopover
+                title="Reasoning strength"
+                body="Reasoning changes how much thinking the local AI is asked to spend before responding."
+                items={[
+                  'Higher settings can improve hard tasks.',
+                  'Lower settings usually feel faster.',
+                  'This does not change your notes by itself.',
+                ]}
+                align="start"
+              />
+            </legend>
             <div class="option-group option-group-wrap" role="group" aria-label="Reasoning strength selection">
               {#each AI_REASONING_EFFORT_OPTIONS as effort}
                 <button
@@ -513,16 +592,19 @@
 
             <div class="capture-setting-row">
               <label class="capture-setting-label" for="sp-captureTarget">Default target</label>
-              <select
-                id="sp-captureTarget"
-                value={settingsStore.settings.captureTargetDefault}
-                onchange={(e) => updateSetting('captureTargetDefault', (e.currentTarget as HTMLSelectElement).value as CaptureTarget)}
-                class="capture-setting-select"
-              >
-                {#each CAPTURE_TARGET_OPTIONS as option}
-                  <option value={option}>{captureTargetLabels[option]}</option>
-                {/each}
-              </select>
+              <SelectShell class="capture-setting-select-wrap">
+                <select
+                  id="sp-captureTarget"
+                  name="capture-target-default"
+                  value={settingsStore.settings.captureTargetDefault}
+                  onchange={(e) => updateSetting('captureTargetDefault', (e.currentTarget as HTMLSelectElement).value as CaptureTarget)}
+                  class="capture-setting-select"
+                >
+                  {#each CAPTURE_TARGET_OPTIONS as option}
+                    <option value={option}>{captureTargetLabels[option]}</option>
+                  {/each}
+                </select>
+              </SelectShell>
             </div>
 
             <div class="capture-setting-row">
@@ -583,46 +665,57 @@
             <span class="group-label">KEYBINDINGS</span>
             <p class="settings-hint">Click a chord to record a new binding. Press <kbd>Escape</kbd> to cancel.</p>
             <div class="keybindings-list">
-              {#each keymapStore.bindings as binding (binding.commandId)}
-                {@const conflict = bindingHasConflict(binding)}
-                <div class="keybinding-row" class:keybinding-conflict={conflict}>
-                  <div class="keybinding-info">
-                    <span class="keybinding-label">{commandLabel(binding.commandId)}</span>
-                    {#if binding.isOverride}
-                      <span class="keybinding-flag" title="Custom binding">customized</span>
-                    {/if}
-                    {#if conflict}
-                      <span class="keybinding-flag keybinding-flag-warn" title="Conflicts with another binding">conflict</span>
-                    {/if}
+              {#each keymapStore.bindingGroups as group (group.context)}
+                <section class="keybinding-context-group" aria-label={`${group.label} shortcuts`}>
+                  <div class="keybinding-context-heading">
+                    <span>{group.label}</span>
                   </div>
-                  <div class="keybinding-actions">
-                    {#if recordingFor === binding.commandId}
-                      <button
-                        type="button"
-                        class="chord-record"
-                        onkeydown={handleRecordKeydown}
-                        aria-live="polite"
-                      >
-                        {recordedChord ? formatChord(recordedChord, platform) : 'Press a key…'}
-                      </button>
-                      <button type="button" class="chord-mini" onclick={confirmRecording} disabled={!recordedChord}>Save</button>
-                      <button type="button" class="chord-mini" onclick={cancelRecording}>Cancel</button>
-                    {:else}
-                      <!-- svelte-ignore a11y_consider_explicit_label -->
-                      <button
-                        type="button"
-                        class="chord-display"
-                        onclick={() => startRecording(binding.commandId)}
-                        title="Click to rebind"
-                      >
-                        {binding.chord.key ? formatChord(binding.chord, platform) : 'Unbound'}
-                      </button>
-                      {#if binding.isOverride}
-                        <button type="button" class="chord-mini" onclick={() => resetBinding(binding.commandId)}>Reset</button>
-                      {/if}
-                    {/if}
-                  </div>
-                </div>
+                  {#each group.bindings as binding (binding.commandId)}
+                    <div class="keybinding-row" class:keybinding-conflict={binding.hasConflict}>
+                      <div class="keybinding-info">
+                        <span class="keybinding-copy">
+                          <span class="keybinding-label">{binding.label}</span>
+                          {#if binding.description}
+                            <span class="keybinding-description">{binding.description}</span>
+                          {/if}
+                        </span>
+                        {#if binding.isOverride}
+                          <span class="keybinding-flag" title="Custom binding">customized</span>
+                        {/if}
+                        {#if binding.hasConflict}
+                          <span class="keybinding-flag keybinding-flag-warn" title="Conflicts with another binding">conflict</span>
+                        {/if}
+                      </div>
+                      <div class="keybinding-actions">
+                        {#if recordingFor === binding.commandId}
+                          <button
+                            type="button"
+                            class="chord-record"
+                            onkeydown={handleRecordKeydown}
+                            aria-live="polite"
+                          >
+                            {recordedChord ? formatChord(recordedChord, platform) : 'Press a key…'}
+                          </button>
+                          <button type="button" class="chord-mini" onclick={confirmRecording} disabled={!recordedChord}>Save</button>
+                          <button type="button" class="chord-mini" onclick={cancelRecording}>Cancel</button>
+                        {:else}
+                          <!-- svelte-ignore a11y_consider_explicit_label -->
+                          <button
+                            type="button"
+                            class="chord-display"
+                            onclick={() => startRecording(binding.commandId)}
+                            title="Click to rebind"
+                          >
+                            {binding.chord.key ? formatChord(binding.chord, platform) : 'Unbound'}
+                          </button>
+                          {#if binding.isOverride}
+                            <button type="button" class="chord-mini" onclick={() => resetBinding(binding.commandId)}>Reset</button>
+                          {/if}
+                        {/if}
+                      </div>
+                    </div>
+                  {/each}
+                </section>
               {/each}
             </div>
           </div>
@@ -775,6 +868,12 @@
     color: var(--text-tertiary);
   }
 
+  .group-label-help {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+
   .input-row {
     display: flex;
     gap: 6px;
@@ -861,6 +960,22 @@
   .toggle-label {
     font-size: 13px;
     color: var(--text-secondary);
+  }
+
+  .privacy-grid {
+    display: grid;
+    gap: 8px;
+    padding: 10px 0 2px;
+  }
+
+  .privacy-toggle-row {
+    justify-content: space-between;
+    min-height: 28px;
+  }
+
+  .privacy-toggle-row .toggle-label {
+    flex: 1;
+    min-width: 0;
   }
 
   /* ─── Workspaces pointer ─────────────────────────────────────────── */
@@ -1007,6 +1122,28 @@
     overflow: hidden;
   }
 
+  .keybinding-context-group {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .keybinding-context-group + .keybinding-context-group {
+    border-top: 1px solid var(--border-light);
+  }
+
+  .keybinding-context-heading {
+    display: flex;
+    align-items: center;
+    min-height: 28px;
+    padding: 0 12px;
+    background: var(--bg-secondary);
+    color: var(--text-muted);
+    font-size: 10px;
+    font-weight: 650;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
   .keybinding-row {
     display: flex;
     align-items: center;
@@ -1016,7 +1153,7 @@
     gap: 12px;
   }
 
-  .keybinding-row:last-child {
+  .keybinding-context-group .keybinding-row:last-child {
     border-bottom: none;
   }
 
@@ -1032,9 +1169,25 @@
     min-width: 0;
   }
 
+  .keybinding-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
   .keybinding-label {
     font-size: 13px;
     color: var(--text-primary);
+  }
+
+  .keybinding-description {
+    overflow: hidden;
+    color: var(--text-tertiary);
+    font-size: 11px;
+    line-height: 1.3;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .keybinding-flag {
@@ -1103,15 +1256,18 @@
     color: var(--text-secondary);
   }
 
+  :global(.capture-setting-select-wrap) {
+    --select-radius: var(--radius-sm);
+    --select-min-height: 28px;
+    --select-padding-x: 9px;
+    --select-padding-y: 4px;
+    --select-chevron-size: 22px;
+    width: min(190px, 100%);
+  }
+
   .capture-setting-select {
     font-family: inherit;
     font-size: 12px;
-    color: var(--text-primary);
-    background: var(--bg-card);
-    border: 1px solid var(--border-light);
-    border-radius: var(--radius-sm);
-    padding: 4px 8px;
-    cursor: pointer;
   }
 
   .capture-shortcut-controls {

@@ -23,8 +23,12 @@ export type ToolNamespace =
   | 'content'       // Content generation
   | 'transform'     // Content transformation
   | 'intelligence'  // Cross-note analysis
+  | 'action'        // Document actions (/distill, /synthesize, etc.)
+  | 'lineage'       // Line-level history and version tools
+  | 'commitment'    // Commitment source/staleness tools
   | 'fs'            // File system (CLI-exclusive)
   | 'system'        // System-level operations
+  | 'ai'            // AI meta tools
   | 'custom';       // User-defined tools
 
 /**
@@ -55,7 +59,8 @@ export function parseToolId(id: string): { namespace: ToolNamespace; action: str
   const [namespace, action] = parts;
   const validNamespaces: ToolNamespace[] = [
     'note', 'editor', 'search', 'navigation', 'todo', 'content',
-    'transform', 'intelligence', 'fs', 'system', 'custom',
+    'transform', 'intelligence', 'action', 'lineage', 'commitment',
+    'fs', 'system', 'ai', 'custom',
   ];
 
   if (!validNamespaces.includes(namespace as ToolNamespace) || !action) {
@@ -110,6 +115,8 @@ export const TOOL_IDS = {
   EDITOR_FORMAT: createToolId('editor', 'format'),
   EDITOR_INSERT: createToolId('editor', 'insert'),
   EDITOR_REPLACE: createToolId('editor', 'replace'),
+  EDITOR_INSERT_CODE_BLOCK: createToolId('editor', 'insert-code-block'),
+  EDITOR_UPDATE_CODE_BLOCK: createToolId('editor', 'update-code-block'),
   EDITOR_SELECT: createToolId('editor', 'select'),
 
   // Search tools

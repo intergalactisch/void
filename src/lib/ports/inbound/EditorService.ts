@@ -45,6 +45,26 @@ export interface EditorTabInfo {
 export type ConflictResolution = 'keep-local' | 'take-remote';
 
 /**
+ * Live editor state for one mounted workspace pane.
+ *
+ * Legacy top-level editor fields are still derived from the last-focused pane,
+ * so existing toolbar/status/AI flows keep targeting the focused editor.
+ */
+export interface EditorPaneState {
+  paneId: string;
+  path: string | null;
+  document: Document | null;
+  selection: Selection;
+  isReady: boolean;
+  isDirty: boolean;
+  isSaving: boolean;
+  conflictState: 'clean' | 'external-modified' | 'external-deleted';
+  aiProcessing: EditorState['aiProcessing'];
+  aiInlineComposers: EditorInlineAIComposerView[];
+  activeAIInlineComposerId: string | null;
+}
+
+/**
  * Editor state exposed to the UI.
  *
  * The `document`, `isDirty`, `isSaving`, and `aiProcessing` fields all
@@ -59,6 +79,10 @@ export interface EditorState {
   tabs: EditorTabInfo[];
   /** Path of the active tab (matches `document?.path` when document is set) */
   activePath: string | null;
+  /** ID of the last-focused mounted editor pane, if any. */
+  activePaneId: string | null;
+  /** Live mounted pane states keyed by paneId. */
+  panes: Record<string, EditorPaneState>;
   /** Current selection state */
   selection: Selection;
   /** Whether the editor is mounted and ready */
@@ -101,6 +125,39 @@ export interface EditorService {
   mount(element: HTMLElement, document?: Document, options?: EditorMountOptions): Promise<Result<void, Error>>;
 
   /**
+   * Mount a note document into a specific workspace pane.
+   */
+  mountPane(
+    paneId: string,
+    element: HTMLElement,
+    path: string,
+    document?: Document,
+    options?: EditorMountOptions,
+  ): Promise<Result<void, Error>>;
+
+  /**
+   * Unmount a specific workspace pane while preserving its session snapshot.
+   * When `element` is passed, the pane is only unmounted if that DOM host still
+   * owns the mounted editor instance.
+   */
+  unmountPane(paneId: string, element?: HTMLElement | null): void;
+
+  /**
+   * Make a mounted pane the focused command target.
+   */
+  focusPane(paneId: string): void;
+
+  /**
+   * Save a specific mounted pane/session.
+   */
+  savePane(paneId: string, lineage?: LineageRecordOptions): Promise<Result<void, Error>>;
+
+  /**
+   * Lookup live pane state by pane id.
+   */
+  getPaneState(paneId: string): EditorPaneState | null;
+
+  /**
    * Destroy the mounted editor instance.
    */
   destroy(): void;
@@ -119,6 +176,23 @@ export interface EditorService {
    * @returns Result containing the opened document or an error
    */
   openDocument(path: string): Promise<Result<Document, Error>>;
+
+  /**
+   * Re-read a document from storage even if it already has an open session.
+   * Used when an external boundary changes representation, such as vault
+   * lock/unlock or note protection.
+   */
+  reloadDocument(path: string, options?: { flushDirty?: boolean }): Promise<Result<Document, Error>>;
+
+  /**
+   * Flush dirty protected sessions before the vault is locked.
+   */
+  prepareProtectedDocumentsForLock(): Promise<Result<void, Error>>;
+
+  /**
+   * Re-read all open protected sessions after a vault state change.
+   */
+  reloadProtectedDocuments(options?: { flushDirty?: boolean }): Promise<Result<void, Error>>;
 
   /**
    * Save current document.
@@ -218,7 +292,7 @@ export interface EditorService {
   /**
    * Get current editor text content.
    */
-  getTextContent(): string;
+  getTextContent(paneId?: string): string;
 
   /**
    * Serialize current editor content to markdown.

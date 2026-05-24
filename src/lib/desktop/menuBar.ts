@@ -8,6 +8,7 @@ export const MENU_BAR_COMMAND_EVENT = 'void:menu-command';
 
 export type MenuBarCommand =
   | 'new-note'
+  | 'open-markdown-file'
   | 'open-search'
   | 'ask-void'
   | 'open-tasks'
@@ -18,9 +19,10 @@ interface MenuBarCommandPayload {
   command?: unknown;
 }
 
-function isMenuBarCommand(command: unknown): command is MenuBarCommand {
+export function isMenuBarCommand(command: unknown): command is MenuBarCommand {
   return (
     command === 'new-note' ||
+    command === 'open-markdown-file' ||
     command === 'open-search' ||
     command === 'ask-void' ||
     command === 'open-tasks' ||

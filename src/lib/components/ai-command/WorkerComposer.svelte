@@ -51,7 +51,7 @@
   }
 
   function handleKeydown(event: KeyboardEvent) {
-    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey || !event.shiftKey)) {
       event.preventDefault();
       void send();
     }
@@ -115,13 +115,16 @@
         <span>@orchestrator</span>
       </button>
     </div>
-    <span class="composer-hint">Cmd+Enter to send</span>
+    <span class="composer-hint">Enter sends / Shift+Enter newline</span>
   </div>
 
   <div class="composer-row">
     <textarea
       bind:this={textareaRef}
       bind:value={draft}
+      name="worker-command"
+      aria-label={`Message ${target === 'worker' ? 'worker' : 'orchestrator'}`}
+      aria-keyshortcuts="Enter Control+Enter Meta+Enter Shift+Enter"
       rows="2"
       {placeholder}
       disabled={sending || aiUnavailable}

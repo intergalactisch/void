@@ -17,7 +17,32 @@ export type { Selection } from './Selection';
 export { createDocumentMeta } from './DocumentMeta';
 export type { DocumentMeta } from './DocumentMeta';
 
+export {
+  DEFAULT_PROTECTION_POLICY,
+  PROTECTED_FRONTMATTER_KEYS,
+  PROTECTED_NOTE_ALGORITHM,
+  PROTECTED_NOTE_ENVELOPE_VERSION,
+  createProtectedNoteMeta,
+  customFromProtectionMeta,
+  isLockedProtectedMeta,
+  isProtectedDocumentMeta,
+  isProtectedNoteMeta,
+  normalizeProtectionPolicy,
+  protectionMetaFromCustom,
+  stripProtectionCustom,
+} from './Protection';
+export type {
+  AIContextAuthorization,
+  AIContextAuthorizationScope,
+  LockState,
+  ProtectedNoteMeta,
+  ProtectionLevel,
+  ProtectionPolicy,
+} from './Protection';
+
 export { formatDailyDate, formatDailyTime, dailyNotePath } from './DailyDate';
+export { deriveTextNoteTitle } from './TextNoteTitle';
+export type { TextNoteTitleOptions } from './TextNoteTitle';
 
 export { deriveResearchTopic } from './ResearchTopic';
 export type { DerivedResearchTopic } from './ResearchTopic';
@@ -42,7 +67,26 @@ export { BUILTIN_COMMANDS } from './Command';
 export type { SlashCommand, CommandGroup, CommandCategory } from './Command';
 
 export { EMPTY_SCOPE } from './ScopeSnapshot';
-export type { ScopeSnapshot } from './ScopeSnapshot';
+export type { ActiveKeymapContext, ScopeSnapshot } from './ScopeSnapshot';
+
+export {
+  EMPTY_NOTE_WORKSPACE_LAYOUT,
+  NOTE_WORKSPACE_LAYOUT_VERSION,
+  isNotePaneLeaf,
+  isNotePaneSplit,
+} from './NoteWorkspaceLayout';
+export type {
+  NotePaneDirection,
+  NotePaneDragPayload,
+  NotePaneDropIntent,
+  NotePaneMoveIntent,
+  NotePaneMoveResult,
+  NotePaneLeaf,
+  NotePaneNode,
+  NotePaneSplit,
+  NoteWorkspaceLayoutState,
+  NoteWorkspaceTab,
+} from './NoteWorkspaceLayout';
 
 export {
   NULL_CHORD,

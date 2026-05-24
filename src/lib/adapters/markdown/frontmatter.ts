@@ -16,6 +16,10 @@ import type { DocumentMeta } from '$lib/domain/values';
 import { normalizeNoteTags } from '$lib/domain/values';
 import { isValidIntent } from '$lib/domain/values/NoteIntent';
 import { isValidStatus } from '$lib/domain/values/NoteStatus';
+import {
+  PROTECTED_FRONTMATTER_KEYS,
+  protectionMetaFromCustom,
+} from '$lib/domain/values/Protection';
 
 /**
  * Result of parsing markdown with frontmatter
@@ -42,6 +46,13 @@ const KNOWN_META_KEYS = [
   'status',
   'intent',
   'ai_touches',
+  PROTECTED_FRONTMATTER_KEYS.level,
+  PROTECTED_FRONTMATTER_KEYS.noteId,
+  PROTECTED_FRONTMATTER_KEYS.keyId,
+  PROTECTED_FRONTMATTER_KEYS.algorithm,
+  PROTECTED_FRONTMATTER_KEYS.version,
+  PROTECTED_FRONTMATTER_KEYS.protectedAt,
+  PROTECTED_FRONTMATTER_KEYS.titleVisible,
 ] as const;
 
 /**
@@ -270,10 +281,24 @@ function extractDocumentMeta(data: Record<string, unknown>): Partial<DocumentMet
     meta.aiTouches = aiTouchesRaw;
   }
 
-  // Custom metadata (everything else)
-  const customKeys = Object.keys(data).filter(
-    (key) => !KNOWN_META_KEYS.includes(key as (typeof KNOWN_META_KEYS)[number])
-  );
+  const protectionCustom = {
+    [PROTECTED_FRONTMATTER_KEYS.level]: data[PROTECTED_FRONTMATTER_KEYS.level],
+    [PROTECTED_FRONTMATTER_KEYS.noteId]: data[PROTECTED_FRONTMATTER_KEYS.noteId],
+    [PROTECTED_FRONTMATTER_KEYS.keyId]: data[PROTECTED_FRONTMATTER_KEYS.keyId],
+    [PROTECTED_FRONTMATTER_KEYS.algorithm]: data[PROTECTED_FRONTMATTER_KEYS.algorithm],
+    [PROTECTED_FRONTMATTER_KEYS.version]: data[PROTECTED_FRONTMATTER_KEYS.version],
+    [PROTECTED_FRONTMATTER_KEYS.protectedAt]: data[PROTECTED_FRONTMATTER_KEYS.protectedAt],
+    [PROTECTED_FRONTMATTER_KEYS.titleVisible]: data[PROTECTED_FRONTMATTER_KEYS.titleVisible],
+  };
+  meta.protection = protectionMetaFromCustom(protectionCustom);
+
+  // Custom metadata (everything else, plus persisted protection headers)
+  const customKeys = Object.keys(data).filter((key) => {
+    if (KNOWN_META_KEYS.includes(key as (typeof KNOWN_META_KEYS)[number])) return false;
+    return !Object.values(PROTECTED_FRONTMATTER_KEYS).includes(
+      key as (typeof PROTECTED_FRONTMATTER_KEYS)[keyof typeof PROTECTED_FRONTMATTER_KEYS]
+    );
+  });
 
   if (customKeys.length > 0) {
     meta.custom = {};
@@ -383,6 +408,7 @@ export function updateFrontmatter(
     status: updates.status ?? existingMeta.status ?? 'draft',
     intent: updates.intent ?? existingMeta.intent ?? 'general',
     aiTouches: updates.aiTouches ?? existingMeta.aiTouches ?? 0,
+    protection: updates.protection ?? existingMeta.protection ?? null,
     custom: { ...existingMeta.custom, ...updates.custom },
   };
 

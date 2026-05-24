@@ -8,8 +8,12 @@
 import {
   DEFAULT_TODO_VIEW,
   isValidTodoView,
+  TODO_LISTS,
   type TodoView,
+  type TodoList,
 } from '../values/TodoView';
+import { ALL_TODO_PRIORITIES, type TodoPriority } from '../values/TodoPriority';
+import { ALL_TODO_SOURCES, type TodoSource } from '../values/TodoSource';
 import {
   cloneDefaultSyncSettings,
   validateSyncSettings,
@@ -23,6 +27,11 @@ import {
   type GitHubAccountRef,
   type Workspace,
 } from './Workspace';
+import {
+  DEFAULT_PROTECTION_POLICY,
+  normalizeProtectionPolicy,
+  type ProtectionPolicy,
+} from '../values/Protection';
 
 /** Known local CLI provider identifiers */
 export type CLIProviderId = 'claude-code' | 'codex';
@@ -36,9 +45,131 @@ export type UIDensity = 'compact' | 'comfortable' | 'spacious';
 /** Where a quick-capture entry is saved. */
 export type CaptureTarget = 'inbox' | 'daily';
 
+export type TodoSortMode =
+  | 'viewDefault'
+  | 'completedNewest'
+  | 'createdNewest'
+  | 'planningDateAsc'
+  | 'priority'
+  | 'sourceOrder';
+
+export type TodoGroupMode =
+  | 'viewDefault'
+  | 'smartDate'
+  | 'completedDate'
+  | 'createdDate'
+  | 'planningDate'
+  | 'sourceFile'
+  | 'priority'
+  | 'tag'
+  | 'none';
+
+export type TodoDateFilterField =
+  | 'smart'
+  | 'createdAt'
+  | 'dueDate'
+  | 'scheduledDate'
+  | 'completedAt';
+
+export type TodoDateFilterPreset =
+  | 'any'
+  | 'today'
+  | 'yesterday'
+  | 'last7Days'
+  | 'last30Days'
+  | 'custom';
+
+export type TodoTagFilterMode = 'any' | 'all';
+
+export type TodoRecurrenceFilter = 'all' | 'with' | 'without';
+
+export interface TodoAdvancedFilter {
+  status?: 'all' | 'open' | 'completed';
+  source?: 'all' | TodoSource;
+  list?: 'all' | TodoList;
+  priority?: TodoPriority[];
+  tags?: string[];
+  tagMode?: TodoTagFilterMode;
+  recurrence?: TodoRecurrenceFilter;
+  search?: string;
+  dateField?: TodoDateFilterField;
+  datePreset?: TodoDateFilterPreset;
+  dateFrom?: string;
+  dateTo?: string;
+}
+
+export interface TodoWorkspacePreference {
+  sortMode: TodoSortMode;
+  groupMode: TodoGroupMode;
+  filters: TodoAdvancedFilter;
+}
+
 export const CAPTURE_TARGET_OPTIONS: CaptureTarget[] = ['inbox', 'daily'];
 export const DEFAULT_CAPTURE_TARGET: CaptureTarget = 'inbox';
 export const DEFAULT_CAPTURE_SHORTCUT = 'mod+shift+enter';
+
+export const TODO_SORT_MODES: TodoSortMode[] = [
+  'viewDefault',
+  'completedNewest',
+  'createdNewest',
+  'planningDateAsc',
+  'priority',
+  'sourceOrder',
+];
+
+export const TODO_GROUP_MODES: TodoGroupMode[] = [
+  'viewDefault',
+  'smartDate',
+  'completedDate',
+  'createdDate',
+  'planningDate',
+  'sourceFile',
+  'priority',
+  'tag',
+  'none',
+];
+
+export const TODO_DATE_FILTER_FIELDS: TodoDateFilterField[] = [
+  'smart',
+  'createdAt',
+  'dueDate',
+  'scheduledDate',
+  'completedAt',
+];
+
+export const TODO_DATE_FILTER_PRESETS: TodoDateFilterPreset[] = [
+  'any',
+  'today',
+  'yesterday',
+  'last7Days',
+  'last30Days',
+  'custom',
+];
+
+export const TODO_TAG_FILTER_MODES: TodoTagFilterMode[] = ['any', 'all'];
+
+export const TODO_RECURRENCE_FILTERS: TodoRecurrenceFilter[] = ['all', 'with', 'without'];
+
+export const DEFAULT_TODO_ADVANCED_FILTER: TodoAdvancedFilter = {
+  status: 'all',
+  source: 'all',
+  list: 'all',
+  priority: [],
+  tags: [],
+  tagMode: 'any',
+  recurrence: 'all',
+  search: '',
+  dateField: 'smart',
+  datePreset: 'any',
+  dateFrom: '',
+  dateTo: '',
+};
+
+export const DEFAULT_TODO_WORKSPACE_PREFERENCE: TodoWorkspacePreference = {
+  sortMode: 'viewDefault',
+  groupMode: 'viewDefault',
+  filters: DEFAULT_TODO_ADVANCED_FILTER,
+};
 
 export const CLI_PROVIDER_OPTIONS: CLIProviderId[] = ['codex', 'claude-code'];
 export const AI_REASONING_EFFORT_OPTIONS: AIReasoningEffort[] = [
@@ -84,6 +215,8 @@ export interface Settings {
   contentWidth: number;
   /** Full task workspace startup view */
   taskDefaultView: TodoView;
+  /** Per-view/list filtering, sorting, and grouping preferences for Tasks. */
+  taskWorkspacePreferences: Record<string, TodoWorkspacePreference>;
   /**
    * User-defined keyboard shortcut overrides.
    * Map of `commandId → serializedChord` (e.g. `'mod+shift+f'`). An empty
@@ -101,6 +234,8 @@ export interface Settings {
   captureShortcut: string;
   /** Default save target selected when the capture window opens. */
   captureTargetDefault: CaptureTarget;
+  /** Privacy controls for selected protected notes and AI context access. */
+  protection: ProtectionPolicy;
   /**
    * Legacy mirror of the active workspace sync configuration.
    * Updating this field updates the active workspace during validation.
@@ -133,10 +268,12 @@ export const DEFAULT_SETTINGS: Settings = {
   lineHeight: 1.6,
   contentWidth: 720,
   taskDefaultView: DEFAULT_TODO_VIEW,
+  taskWorkspacePreferences: {},
   keymapOverrides: {},
   density: DEFAULT_UI_DENSITY,
   captureShortcut: DEFAULT_CAPTURE_SHORTCUT,
   captureTargetDefault: DEFAULT_CAPTURE_TARGET,
+  protection: DEFAULT_PROTECTION_POLICY,
   sync: cloneDefaultSyncSettings(),
 };
 
@@ -216,6 +353,7 @@ export function validateSettings(input: Partial<Settings>): Settings {
     taskDefaultView: isValidTodoView(merged.taskDefaultView)
       ? merged.taskDefaultView
       : DEFAULT_TODO_VIEW,
+    taskWorkspacePreferences: normalizeTaskWorkspacePreferences(merged.taskWorkspacePreferences),
     keymapOverrides: normalizeKeymapOverrides(merged.keymapOverrides),
     density: UI_DENSITY_OPTIONS.includes(merged.density as UIDensity)
       ? merged.density
@@ -226,11 +364,99 @@ export function validateSettings(input: Partial<Settings>): Settings {
     captureTargetDefault: CAPTURE_TARGET_OPTIONS.includes(merged.captureTargetDefault as CaptureTarget)
       ? merged.captureTargetDefault
       : DEFAULT_CAPTURE_TARGET,
+    protection: normalizeProtectionPolicy(merged.protection),
     workspaces: merged.workspaces.map(cloneWorkspace),
     activeWorkspaceId: merged.activeWorkspaceId,
     githubAccount: merged.githubAccount,
     sync: validateSyncSettings(merged.sync),
   };
+}
+
+export function normalizeTodoWorkspacePreference(value: unknown): TodoWorkspacePreference {
+  const candidate = value && typeof value === 'object'
+    ? value as Partial<TodoWorkspacePreference>
+    : {};
+  return {
+    sortMode: TODO_SORT_MODES.includes(candidate.sortMode as TodoSortMode)
+      ? candidate.sortMode as TodoSortMode
+      : DEFAULT_TODO_WORKSPACE_PREFERENCE.sortMode,
+    groupMode: TODO_GROUP_MODES.includes(candidate.groupMode as TodoGroupMode)
+      ? candidate.groupMode as TodoGroupMode
+      : DEFAULT_TODO_WORKSPACE_PREFERENCE.groupMode,
+    filters: normalizeTodoAdvancedFilter(candidate.filters),
+  };
+}
+
+function normalizeTaskWorkspacePreferences(value: unknown): Record<string, TodoWorkspacePreference> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([key]) => key.trim().length > 0)
+    .map(([key, preference]) => [key, normalizeTodoWorkspacePreference(preference)] as const);
+  return Object.fromEntries(entries);
+}
+
+function normalizeTodoAdvancedFilter(value: unknown): TodoAdvancedFilter {
+  const candidate = value && typeof value === 'object'
+    ? value as Partial<TodoAdvancedFilter>
+    : {};
+  const status: NonNullable<TodoAdvancedFilter['status']> =
+    candidate.status === 'open' || candidate.status === 'completed' || candidate.status === 'all'
+      ? candidate.status
+      : 'all';
+  const source: NonNullable<TodoAdvancedFilter['source']> =
+    candidate.source === 'all' || ALL_TODO_SOURCES.includes(candidate.source as TodoSource)
+      ? candidate.source as NonNullable<TodoAdvancedFilter['source']>
+      : 'all';
+  const list: NonNullable<TodoAdvancedFilter['list']> =
+    candidate.list === 'all' || TODO_LISTS.includes(candidate.list as TodoList)
+      ? candidate.list as NonNullable<TodoAdvancedFilter['list']>
+      : 'all';
+  const tagMode: TodoTagFilterMode =
+    TODO_TAG_FILTER_MODES.includes(candidate.tagMode as TodoTagFilterMode)
+      ? candidate.tagMode as TodoTagFilterMode
+      : DEFAULT_TODO_ADVANCED_FILTER.tagMode!;
+  const recurrence: TodoRecurrenceFilter =
+    TODO_RECURRENCE_FILTERS.includes(candidate.recurrence as TodoRecurrenceFilter)
+      ? candidate.recurrence as TodoRecurrenceFilter
+      : DEFAULT_TODO_ADVANCED_FILTER.recurrence!;
+  const dateField: TodoDateFilterField =
+    TODO_DATE_FILTER_FIELDS.includes(candidate.dateField as TodoDateFilterField)
+      ? candidate.dateField as TodoDateFilterField
+      : DEFAULT_TODO_ADVANCED_FILTER.dateField!;
+  const datePreset: TodoDateFilterPreset =
+    TODO_DATE_FILTER_PRESETS.includes(candidate.datePreset as TodoDateFilterPreset)
+      ? candidate.datePreset as TodoDateFilterPreset
+      : DEFAULT_TODO_ADVANCED_FILTER.datePreset!;
+
+  return {
+    status,
+    source,
+    list,
+    priority: Array.isArray(candidate.priority)
+      ? uniqueValues(candidate.priority).filter((priority): priority is TodoPriority =>
+          ALL_TODO_PRIORITIES.includes(priority as TodoPriority)
+        )
+      : [],
+    tags: Array.isArray(candidate.tags)
+      ? uniqueValues(candidate.tags.map((tag) => typeof tag === 'string' ? tag.trim().replace(/^#/, '') : ''))
+          .filter(Boolean)
+      : [],
+    tagMode,
+    recurrence,
+    search: typeof candidate.search === 'string' ? candidate.search : '',
+    dateField,
+    datePreset,
+    dateFrom: isDateInputString(candidate.dateFrom) ? candidate.dateFrom : '',
+    dateTo: isDateInputString(candidate.dateTo) ? candidate.dateTo : '',
+  };
+}
+
+function uniqueValues<T>(values: T[]): T[] {
+  return Array.from(new Set(values));
+}
+
+function isDateInputString(value: unknown): value is string {
+  return typeof value === 'string' && (/^\d{4}-\d{2}-\d{2}$/.test(value) || value === '');
 }
 
 function normalizeWorkspaces(

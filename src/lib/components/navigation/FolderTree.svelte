@@ -23,7 +23,7 @@
     /** Set of expanded folder paths */
     expandedFolders: Set<string>;
     /** Callback when a note is selected */
-    onSelectNote: (path: string) => void;
+    onSelectNote: (path: string, event?: MouseEvent | KeyboardEvent) => void;
     /** Callback when a folder label is selected */
     onSelectFolder?: ((path: string) => void) | undefined;
     /** Callback when a folder is toggled */
@@ -60,7 +60,7 @@
   let sortableListAction = $derived(folderDnd?.listAction ?? noopAction);
 
   /** Handle item click */
-  function handleItemClick(item: NotesListItem) {
+  function handleItemClick(item: NotesListItem, event?: MouseEvent | KeyboardEvent) {
     if (item.isFolder) {
       if (onSelectFolder) {
         onSelectFolder(item.path);
@@ -68,7 +68,7 @@
         onToggleFolder(item.path);
       }
     } else {
-      onSelectNote(item.path);
+      onSelectNote(item.path, event);
     }
   }
 

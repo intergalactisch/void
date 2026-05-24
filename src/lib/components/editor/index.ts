@@ -7,6 +7,12 @@
 export { default as ConflictBanner } from './ConflictBanner.svelte';
 export { default as EditorShell } from './EditorShell.svelte';
 export { default as EditorTabs } from './EditorTabs.svelte';
+export { default as WorkspaceTabs } from './WorkspaceTabs.svelte';
+export { default as NotePaneWorkspace } from './NotePaneWorkspace.svelte';
+export { default as NotePaneNode } from './NotePaneNode.svelte';
+export { default as NotePaneHeader } from './NotePaneHeader.svelte';
+export { default as NotePaneResizer } from './NotePaneResizer.svelte';
+export { default as SplitNotePicker } from './SplitNotePicker.svelte';
 export { default as EditorToolbar } from './EditorToolbar.svelte';
 export { default as SlashMenu } from './SlashMenu.svelte';
 export { default as AIRewritePopup } from './AIRewritePopup.svelte';

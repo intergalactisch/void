@@ -12,6 +12,7 @@
   import { ChevronDown, ChevronRight } from '@lucide/svelte';
   import ToolExecution from './ToolExecution.svelte';
   import StreamingText from './StreamingText.svelte';
+  import { renderCodeFenceHtml } from '$lib/core/codeFence';
 
   const md = new MarkdownIt({
     html: false,
@@ -19,6 +20,12 @@
     typographer: true,
     breaks: true,
   });
+
+  md.renderer.rules.fence = (tokens, idx) => {
+    const token = tokens[idx];
+    if (!token) return '';
+    return renderCodeFenceHtml(token.content, token.info);
+  };
 
   interface Props {
     /** The message to display */

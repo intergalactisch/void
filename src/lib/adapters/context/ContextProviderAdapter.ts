@@ -23,6 +23,8 @@ import type { Document } from '$lib/domain/entities/Document';
 import type { EditorService } from '$lib/ports/inbound/EditorService';
 import type { Selection } from '$lib/domain/values/Selection';
 import { isCollapsed } from '$lib/domain/values/Selection';
+import type { AIContextAuthorizationScope } from '$lib/domain/values/Protection';
+import { isProtectedNoteMeta } from '$lib/domain/values/Protection';
 
 /**
  * Configuration for the context provider adapter.
@@ -60,6 +62,7 @@ export class ContextProviderAdapter implements ContextProviderPort {
   private currentView: NavigationContext['currentView'] = 'editor';
   private navigationHistory: string[] = [];
   private navigationIndex = -1;
+  private protectionGuard: ((noteId: string, scope: AIContextAuthorizationScope) => boolean) | null = null;
   private subscribers: Set<(context: PromptContext) => void> = new Set();
 
   constructor(config: ContextProviderConfig = {}) {
@@ -85,6 +88,10 @@ export class ContextProviderAdapter implements ContextProviderPort {
     this.notesBasePath = path;
   }
 
+  setProtectionGuard(guard: (noteId: string, scope: AIContextAuthorizationScope) => boolean): void {
+    this.protectionGuard = guard;
+  }
+
   /**
    * Set the currently open document.
    * Called from the UI when the active document changes.
@@ -108,7 +115,15 @@ export class ContextProviderAdapter implements ContextProviderPort {
    * Track a note access for recent notes list.
    */
   trackNoteAccess(document: Document): void {
-    const summary = createNoteSummary(document);
+    const summary = isProtectedNoteMeta(document.meta.protection)
+      ? {
+          path: document.path,
+          title: document.meta.title,
+          preview: '',
+          modifiedAt: document.meta.updatedAt,
+          wordCount: 0,
+        }
+      : createNoteSummary(document);
 
     // Remove existing entry for this note
     this.recentNotes = this.recentNotes.filter((n) => n.path !== summary.path);
@@ -193,12 +208,12 @@ export class ContextProviderAdapter implements ContextProviderPort {
     if (this.editorService) {
       const state = this.editorService.getState();
       if (state.document) {
-        return state.document;
+        return this.redactProtectedDocument(state.document, 'note.read');
       }
     }
 
     if (this.currentDocument) {
-      return this.currentDocument;
+      return this.redactProtectedDocument(this.currentDocument, 'note.read');
     }
 
     return null;
@@ -216,11 +231,12 @@ export class ContextProviderAdapter implements ContextProviderPort {
     }
 
     const selection = this.editorService.getSelection();
-    const selectedText = this.getSelectedText(state.document, selection);
+    const canExposeSelection = this.canExposeProtectedDocument(state.document, 'selection.read');
+    const selectedText = canExposeSelection ? this.getSelectedText(state.document, selection) : '';
 
     // Count words in document
     const wordCount = state.document.blocks.reduce((count, block) => {
-      if (block.content) {
+      if (canExposeSelection && block.content) {
         return count + block.content.split(/\s+/).filter((w) => w.length > 0).length;
       }
       return count;
@@ -309,6 +325,24 @@ export class ContextProviderAdapter implements ContextProviderPort {
     // how selection maps to document content
     // This would require integration with the editor adapter
     return '';
+  }
+
+  private redactProtectedDocument(document: Document, scope: AIContextAuthorizationScope): Document {
+    if (this.canExposeProtectedDocument(document, scope)) return document;
+    if (!isProtectedNoteMeta(document.meta.protection)) return document;
+    return {
+      ...document,
+      blocks: [],
+    };
+  }
+
+  private canExposeProtectedDocument(document: Document, scope: AIContextAuthorizationScope): boolean {
+    const protection = document.meta.protection;
+    if (!isProtectedNoteMeta(protection)) return true;
+    if (protection.lockState === 'locked') return false;
+    if (!this.protectionGuard) return false;
+    return this.protectionGuard(protection.noteId, scope)
+      || (scope === 'selection.read' && this.protectionGuard(protection.noteId, 'note.read'));
   }
 
   /**

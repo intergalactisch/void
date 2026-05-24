@@ -9,6 +9,7 @@
 import type {
   AIAssistantService,
   EditorMountOptions,
+  EditorPaneState,
   EditorService,
   EditorState,
   FrecencyService,
@@ -27,6 +28,7 @@ import type {
   EditorInlineGenerateCallbacks,
   EditorInlineGenerateRequest,
   EditorInlineGenerateResult,
+  EditorInlineAIComposerView,
   EditorInlineAIRangeAnchorInput,
   EditorInlineAIRangeAnchorResult,
   EditorNotesProvider,
@@ -41,6 +43,7 @@ import type { Document, Block, EditorSession } from '$lib/domain';
 import { createEditorSession, ConflictError } from '$lib/domain';
 import type { DocumentMeta, Selection } from '$lib/domain/values';
 import { normalizeNoteTags } from '$lib/domain/values';
+import { isProtectedDocumentMeta } from '$lib/domain/values/Protection';
 import { AI_UNAVAILABLE_MESSAGE } from '$lib/domain/values/AIAvailability';
 import { EMPTY_SELECTION } from '$lib/domain/values/Selection';
 import type { ToolId } from '$lib/domain/values/ToolId';
@@ -55,6 +58,8 @@ const INITIAL_STATE: EditorState = {
   document: null,
   tabs: [],
   activePath: null,
+  activePaneId: null,
+  panes: {},
   selection: EMPTY_SELECTION,
   isReady: false,
   isDirty: false,
@@ -72,6 +77,8 @@ const INLINE_SELECTION_TOOL_IDS = [
   'editor:replace',
   'editor:replace-block',
   'editor:insert-blocks',
+  'editor:insert-code-block',
+  'editor:update-code-block',
   'editor:apply-note-patch',
 ] as ToolId[];
 
@@ -83,6 +90,8 @@ Choose the least invasive correct outcome:
 - If only one exact substring inside the selection should change, call editor:replace with targetText and occurrence, or with an explicit subrange if provided.
 - If a whole visible block should be rewritten, call editor:replace-block with one of the supplied block IDs.
 - If new blocks should be inserted after a visible block, call editor:insert-blocks with afterBlockId.
+- If the edit creates a fenced code snippet, call editor:insert-code-block so code, language, title, line numbers, wrap, and highlighted/focused lines are preserved.
+- If the edit changes an existing code block, call editor:update-code-block instead of generic text replacement; preserve unspecified code, language, and metadata.
 - If the entire note must change, call editor:apply-note-patch with complete markdown for the note.
 
 Tool calls are staged proposals. They will not be executed until the user explicitly accepts them. Never claim that an edit has already been applied.
@@ -94,12 +103,29 @@ Only use these editor write tools when the user's request truly asks for an edit
 Never invent a broader edit when an answer or smaller replacement is enough.
 Always include a concise user-facing response. When you edit, summarize what changed; do not paste the entire replacement unless that is genuinely useful.`;
 
+interface MountedEditorPane {
+  paneId: string;
+  path: string;
+  element: HTMLElement;
+  port: EditorPort;
+  unsubscribers: Array<() => void>;
+  saveTimeout: ReturnType<typeof setTimeout> | null;
+  isReady: boolean;
+  selection: Selection;
+  aiProcessing: EditorState['aiProcessing'];
+  aiInlineComposers: EditorInlineAIComposerView[];
+  activeAIInlineComposerId: string | null;
+}
+
 export class EditorServiceImpl implements EditorService {
   private state: EditorState = { ...INITIAL_STATE };
   private subscribers: Set<(state: EditorState) => void> = new Set();
   private editorPort: EditorPort | null = null;
   private editorElement: HTMLElement | null = null;
   private editorUnsubscribers: Array<() => void> = [];
+  private readonly legacyPaneId = '__legacy__';
+  private mountedPanes: Map<string, MountedEditorPane> = new Map();
+  private paneMountVersions: Map<string, number> = new Map();
   private todoSyncCleanup: (() => void) | null = null;
   private autoSaveDelayMs = 1000;
   private saveTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -198,9 +224,11 @@ export class EditorServiceImpl implements EditorService {
       matched.document = result.value;
       matched.conflictState = 'clean';
 
-      // If this is the active session, refresh the editor mount.
-      if (this.state.activePath === matched.path && this.editorElement) {
-        await this.mount(this.editorElement, matched.document);
+      for (const pane of this.mountedPanes.values()) {
+        if (pane.path === matched.path) {
+          pane.port.update(matched.document);
+          pane.isReady = true;
+        }
       }
       this.updateState({
         document: this.state.activePath === matched.path ? matched.document : this.state.document,
@@ -260,6 +288,11 @@ export class EditorServiceImpl implements EditorService {
 
     if (oldPath === newPath) {
       current.document = renamedDocument;
+      for (const pane of this.mountedPanes.values()) {
+        if (pane.path === oldPath) {
+          pane.port.updateMetadata(renamedDocument.meta);
+        }
+      }
       if (this.state.activePath === oldPath) {
         this.editorPort?.updateMetadata(renamedDocument.meta);
         this.updateState({ document: renamedDocument });
@@ -283,7 +316,12 @@ export class EditorServiceImpl implements EditorService {
     this.sessions = nextSessions;
 
     if (this.state.activePath === oldPath) {
-      this.editorPort?.update(renamedDocument);
+      for (const pane of this.mountedPanes.values()) {
+        if (pane.path === oldPath) {
+          pane.path = newPath;
+          pane.port.update(renamedDocument);
+        }
+      }
       this.updateState({
         document: renamedDocument,
         activePath: newPath,
@@ -291,6 +329,12 @@ export class EditorServiceImpl implements EditorService {
         isSaving: renamedSession.isSaving,
       });
     } else {
+      for (const pane of this.mountedPanes.values()) {
+        if (pane.path === oldPath) {
+          pane.path = newPath;
+          pane.port.update(renamedDocument);
+        }
+      }
       this.updateState({});
     }
   }
@@ -334,59 +378,168 @@ export class EditorServiceImpl implements EditorService {
     document: Document | undefined = this.state.document ?? undefined,
     options: EditorMountOptions = {},
   ): Promise<Result<void, Error>> {
-    if (options.autoSaveDelayMs !== undefined) {
-      this.setAutoSaveDelay(options.autoSaveDelayMs);
-    }
-
     const documentToMount = document ?? this.state.document;
     if (!documentToMount) {
       return err(new Error('No document open'));
     }
 
-    this.editorElement = element;
+    return this.mountPane(this.legacyPaneId, element, documentToMount.path, documentToMount, options);
+  }
 
-    if (this.editorPortFactory) {
-      this.cleanupEditorSubscriptions();
-      this.editorPort?.destroy();
-      const notesProvider = this.createNotesProvider();
-      const factoryOptions = {
-        commandRegistry: this.commandRegistry,
-        enableDragDrop: true,
-        enableAIRewrite: true,
-        onBlockMenuRequest: () => undefined,
-        onLineageInspectRequest: () => undefined,
-        onTodoToggle: () => undefined,
-        onExternalLinkClick: () => undefined,
-      };
-      if (notesProvider) {
-        Object.assign(factoryOptions, { notesProvider });
-      }
+  async mountPane(
+    paneId: string,
+    element: HTMLElement,
+    path: string,
+    document?: Document,
+    options: EditorMountOptions = {},
+  ): Promise<Result<void, Error>> {
+    const mountVersion = (this.paneMountVersions.get(paneId) ?? 0) + 1;
+    this.paneMountVersions.set(paneId, mountVersion);
 
-      this.editorPort = this.editorPortFactory.create(factoryOptions);
-      this.subscribeToEditorPort(this.editorPort);
+    if (options.autoSaveDelayMs !== undefined) {
+      this.setAutoSaveDelay(options.autoSaveDelayMs);
     }
 
-    if (!this.editorPort) {
-      return err(new Error('Editor port not set'));
+    const documentToMountResult = await this.ensureSessionDocument(path, document);
+    if (!documentToMountResult.ok) return documentToMountResult;
+    if (this.paneMountVersions.get(paneId) !== mountVersion) return ok(undefined);
+    const documentToMount = documentToMountResult.value;
+
+    this.unmountPane(paneId);
+    if (this.paneMountVersions.get(paneId) !== mountVersion) return ok(undefined);
+
+    if (!this.editorPortFactory) {
+      return err(new Error('Editor port factory not set'));
     }
 
-    const result = await this.editorPort.mount(element, documentToMount);
-    if (!result.ok) return result;
-
-    this.updateState({
-      document: documentToMount,
-      isReady: true,
-      isDirty: false,
-      isSaving: false,
+    const port = this.createEditorPort();
+    const pane: MountedEditorPane = {
+      paneId,
+      path: documentToMount.path,
+      element,
+      port,
+      unsubscribers: [],
+      saveTimeout: null,
+      isReady: false,
+      selection: EMPTY_SELECTION,
+      aiProcessing: null,
       aiInlineComposers: [],
       activeAIInlineComposerId: null,
-    });
+    };
+
+    pane.unsubscribers = this.subscribeToEditorPort(port, paneId);
+    this.mountedPanes.set(paneId, pane);
+
+    const result = await port.mount(element, documentToMount);
+    if (this.paneMountVersions.get(paneId) !== mountVersion || this.mountedPanes.get(paneId)?.port !== port) {
+      this.teardownPane(paneId, port);
+      port.destroy();
+      return ok(undefined);
+    }
+    if (!result.ok) {
+      this.teardownPane(paneId, port);
+      return result;
+    }
+
+    const legacyWasActive = this.state.activePaneId === this.legacyPaneId;
+    if (paneId !== this.legacyPaneId && this.mountedPanes.has(this.legacyPaneId)) {
+      this.syncPaneSessionFromEditor(this.legacyPaneId);
+      this.teardownPane(this.legacyPaneId);
+      if (legacyWasActive) {
+        this.editorPort = null;
+        this.editorElement = null;
+        this.state = { ...this.state, activePaneId: null };
+      }
+    }
+
+    pane.isReady = true;
+    this.updatePaneState(paneId);
+
+    if (legacyWasActive || !this.state.activePaneId || this.state.activePaneId === paneId || this.state.activePath === documentToMount.path) {
+      this.focusPane(paneId);
+    } else {
+      this.updateState({});
+    }
 
     return ok(undefined);
   }
 
+  unmountPane(paneId: string, element?: HTMLElement | null): void {
+    const currentPane = this.mountedPanes.get(paneId);
+    if (element && (!currentPane || currentPane.element !== element)) return;
+
+    const wasActive = this.state.activePaneId === paneId;
+    const fallbackSession = currentPane ? this.sessions.get(currentPane.path) : undefined;
+    this.syncPaneSessionFromEditor(paneId);
+    this.teardownPane(paneId, undefined, element ?? undefined);
+
+    if (wasActive) {
+      const nextPane = this.mountedPanes.values().next().value as MountedEditorPane | undefined;
+      if (nextPane) {
+        this.focusPane(nextPane.paneId);
+      } else {
+        this.editorPort = null;
+        this.editorElement = null;
+        this.updateState({
+          activePaneId: null,
+          document: fallbackSession?.document ?? null,
+          activePath: fallbackSession?.path ?? null,
+          selection: EMPTY_SELECTION,
+          isReady: false,
+          isDirty: fallbackSession?.isDirty ?? false,
+          isSaving: fallbackSession?.isSaving ?? false,
+          aiProcessing: null,
+          aiInlineComposers: [],
+          activeAIInlineComposerId: null,
+        });
+      }
+      return;
+    }
+
+    this.updateState({});
+  }
+
+  focusPane(paneId: string): void {
+    const pane = this.mountedPanes.get(paneId);
+    if (!pane) return;
+
+    if (this.state.activePaneId && this.state.activePaneId !== paneId) {
+      this.syncPaneSessionFromEditor(this.state.activePaneId);
+    }
+
+    const session = this.sessions.get(pane.path);
+    const document = this.readPaneDocument(paneId) ?? session?.document ?? null;
+    if (session && document) session.document = document;
+
+    this.editorPort = pane.port;
+    this.editorElement = pane.element;
+
+    this.updateState({
+      activePaneId: paneId,
+      document,
+      activePath: pane.path,
+      selection: pane.selection,
+      isReady: pane.isReady,
+      isDirty: session?.isDirty ?? false,
+      isSaving: session?.isSaving ?? false,
+      aiProcessing: pane.aiProcessing,
+      aiInlineComposers: pane.aiInlineComposers,
+      activeAIInlineComposerId: pane.activeAIInlineComposerId,
+    });
+
+    events.emit('editor:focus');
+  }
+
+  getPaneState(paneId: string): EditorPaneState | null {
+    return this.computePaneStates()[paneId] ?? null;
+  }
+
   destroy(): void {
     this.clearSaveTimer();
+    for (const paneId of [...this.mountedPanes.keys()]) {
+      this.syncPaneSessionFromEditor(paneId);
+      this.teardownPane(paneId);
+    }
     this.cleanupEditorSubscriptions();
     this.editorPort?.destroy();
     this.editorPort = null;
@@ -410,24 +563,29 @@ export class EditorServiceImpl implements EditorService {
     // If the path is already open in a tab, just activate it — preserve
     // any unsaved edits in that session.
     if (this.sessions.has(path)) {
-      const switchResult = await this.switchTab(path);
-      if (!switchResult.ok) return err(switchResult.error);
       const session = this.sessions.get(path)!;
+      const pane = this.findMountedPaneByPath(path);
+      if (pane) {
+        this.focusPane(pane.paneId);
+      } else {
+        this.syncActiveSessionFromEditor();
+        this.updateState({
+          document: session.document,
+          activePath: session.path,
+          selection: EMPTY_SELECTION,
+          isReady: false,
+          isDirty: session.isDirty,
+          isSaving: session.isSaving,
+          aiProcessing: null,
+          aiInlineComposers: [],
+          activeAIInlineComposerId: null,
+        });
+      }
+      events.emit('document:opened', { document: session.document });
       return ok(session.document);
     }
 
-    // Capture the active editor's content into its session before
-    // swapping; this happens inside switchTab on subsequent activations,
-    // but for the initial open we do it here so the previous session's
-    // in-memory state stays current after the port is destroyed.
     this.syncActiveSessionFromEditor();
-    this.clearSaveTimer();
-
-    if (this.editorPort) {
-      this.cleanupEditorSubscriptions();
-      this.editorPort.destroy();
-      this.editorPort = null;
-    }
 
     const result = await this.documentPort.load(path);
     if (!result.ok) {
@@ -451,19 +609,100 @@ export class EditorServiceImpl implements EditorService {
       isDirty: false,
       isSaving: false,
       aiProcessing: null,
+      aiInlineComposers: [],
+      activeAIInlineComposerId: null,
     });
 
     events.emit('document:opened', { document });
 
-    if (this.editorElement) {
-      const mountResult = await this.mount(this.editorElement, document);
-      if (!mountResult.ok) {
-        events.emit('document:load-failed', { path, error: mountResult.error });
-        return err(mountResult.error);
+    return ok(document);
+  }
+
+  async reloadDocument(path: string, options: { flushDirty?: boolean } = {}): Promise<Result<Document, Error>> {
+    const session = this.sessions.get(path);
+    if (session) {
+      for (const pane of this.mountedPanes.values()) {
+        if (pane.path === path) this.syncPaneSessionFromEditor(pane.paneId);
+      }
+      if (this.state.activePath === path) this.syncActiveSessionFromEditor();
+
+      if (session.isDirty) {
+        if (!options.flushDirty) {
+          return err(new Error(`Cannot reload ${path}: it has unsaved changes.`));
+        }
+        const saved = await this.saveDocumentSnapshot(session.document, undefined, this.firstPaneIdForPath(path));
+        if (!saved.ok) return err(saved.error);
       }
     }
 
+    const result = await this.documentPort.load(path);
+    if (!result.ok) {
+      events.emit('document:load-failed', { path, error: result.error });
+      return result;
+    }
+
+    const document = result.value;
+    if (!isLockedProtectedDocument(document)) {
+      await this.ensureLineageBaseline(document);
+    }
+
+    const nextSession = this.upsertSession(document);
+    nextSession.document = document;
+    nextSession.isDirty = false;
+    nextSession.isSaving = false;
+    nextSession.conflictState = 'clean';
+
+    for (const pane of this.mountedPanes.values()) {
+      if (pane.path !== path) continue;
+      pane.port.update(document);
+      pane.isReady = true;
+    }
+
+    if (this.state.activePath === path) {
+      this.updateState({
+        document,
+        selection: EMPTY_SELECTION,
+        isReady: true,
+        isDirty: false,
+        isSaving: false,
+        aiProcessing: null,
+        aiInlineComposers: [],
+        activeAIInlineComposerId: null,
+      });
+    } else {
+      this.updateState({});
+    }
+
+    events.emit('document:opened', { document });
     return ok(document);
+  }
+
+  async prepareProtectedDocumentsForLock(): Promise<Result<void, Error>> {
+    for (const pane of this.mountedPanes.values()) {
+      this.syncPaneSessionFromEditor(pane.paneId);
+    }
+    if (this.state.activePath) this.syncActiveSessionFromEditor();
+
+    for (const session of this.sessions.values()) {
+      if (!isProtectedDocumentMeta(session.document.meta) || !session.isDirty) continue;
+      const saved = await this.saveDocumentSnapshot(session.document, undefined, this.firstPaneIdForPath(session.path));
+      if (!saved.ok) return err(saved.error);
+    }
+
+    return ok(undefined);
+  }
+
+  async reloadProtectedDocuments(options: { flushDirty?: boolean } = {}): Promise<Result<void, Error>> {
+    const protectedPaths = [...this.sessions.values()]
+      .filter((session) => isProtectedDocumentMeta(session.document.meta))
+      .map((session) => session.path);
+
+    for (const path of protectedPaths) {
+      const reloaded = await this.reloadDocument(path, options);
+      if (!reloaded.ok) return err(reloaded.error);
+    }
+
+    return ok(undefined);
   }
 
   async switchTab(path: string): Promise<Result<void, Error>> {
@@ -475,17 +714,13 @@ export class EditorServiceImpl implements EditorService {
       return ok(undefined);
     }
 
-    // Capture current editor state into its session, then clear the
-    // pending autosave for the outgoing tab — its session.document now
-    // holds the latest content, and a save against that snapshot can be
-    // re-scheduled if the user comes back to it dirty.
     this.syncActiveSessionFromEditor();
-    this.clearSaveTimer();
 
-    if (this.editorPort) {
-      this.cleanupEditorSubscriptions();
-      this.editorPort.destroy();
-      this.editorPort = null;
+    const pane = this.findMountedPaneByPath(path);
+    if (pane) {
+      this.focusPane(pane.paneId);
+      events.emit('document:opened', { document: target.document });
+      return ok(undefined);
     }
 
     this.updateState({
@@ -496,17 +731,11 @@ export class EditorServiceImpl implements EditorService {
       isDirty: target.isDirty,
       isSaving: target.isSaving,
       aiProcessing: null,
+      aiInlineComposers: [],
+      activeAIInlineComposerId: null,
     });
 
     events.emit('document:opened', { document: target.document });
-
-    if (this.editorElement) {
-      const mountResult = await this.mount(this.editorElement, target.document);
-      if (!mountResult.ok) {
-        events.emit('document:load-failed', { path, error: mountResult.error });
-        return err(mountResult.error);
-      }
-    }
     return ok(undefined);
   }
 
@@ -529,10 +758,11 @@ export class EditorServiceImpl implements EditorService {
       session.isDirty = false;
       session.conflictState = 'clean';
 
-      // If this is the active session, refresh the editor mount.
-      if (this.state.activePath === path && this.editorElement) {
-        const mountResult = await this.mount(this.editorElement, session.document);
-        if (!mountResult.ok) return mountResult;
+      for (const pane of this.mountedPanes.values()) {
+        if (pane.path === path) {
+          pane.port.update(session.document);
+          pane.isReady = true;
+        }
       }
       this.updateState({
         document: this.state.activePath === path ? session.document : this.state.document,
@@ -569,20 +799,29 @@ export class EditorServiceImpl implements EditorService {
     const openPaths = [...this.sessions.keys()];
     const closedIndex = openPaths.indexOf(path);
     const adjacentPath = openPaths[closedIndex + 1] ?? openPaths[closedIndex - 1] ?? null;
+    const panesToClose = [...this.mountedPanes.values()]
+      .filter((pane) => pane.path === path)
+      .map((pane) => pane.paneId);
+
+    for (const paneId of panesToClose) {
+      this.syncPaneSessionFromEditor(paneId);
+    }
 
     // If closing the active tab, capture its latest state and flush any
     // pending save so we never lose work to a half-completed timer.
     const wasActive = this.state.activePath === path;
-    if (wasActive) {
-      this.syncActiveSessionFromEditor();
-      if (session.isDirty) {
-        const saveResult = await this.saveDocument();
-        if (!saveResult.ok) return err(saveResult.error);
-      } else {
-        this.clearSaveTimer();
-      }
+    if (wasActive) this.syncActiveSessionFromEditor();
+    if (session.isDirty) {
+      const saveResult = await this.saveDocumentSnapshot(session.document, undefined, panesToClose[0] ?? null);
+      if (!saveResult.ok) return err(saveResult.error);
+    } else {
+      for (const paneId of panesToClose) this.clearSaveTimer(paneId);
+      if (wasActive) this.clearSaveTimer();
     }
 
+    for (const paneId of panesToClose) {
+      this.teardownPane(paneId);
+    }
     this.sessions.delete(path);
     await this.clearTodoSnapshotForPath(path);
     events.emit('document:closed', { path });
@@ -596,7 +835,9 @@ export class EditorServiceImpl implements EditorService {
     // The active tab was closed. Activate the next available, or fully
     // tear down the editor if none remain.
     if (!adjacentPath || !this.sessions.has(adjacentPath)) {
-      this.destroy();
+      this.editorPort = null;
+      this.editorElement = null;
+      this.updateState({ ...INITIAL_STATE });
       return ok(undefined);
     }
     return this.switchTab(adjacentPath);
@@ -604,6 +845,27 @@ export class EditorServiceImpl implements EditorService {
 
   async saveDocument(lineage?: LineageRecordOptions): Promise<Result<void, Error>> {
     const currentDocument = this.getCurrentDocumentForSave();
+    return this.saveDocumentSnapshot(currentDocument, lineage, this.state.activePaneId);
+  }
+
+  async savePane(paneId: string, lineage?: LineageRecordOptions): Promise<Result<void, Error>> {
+    const pane = this.mountedPanes.get(paneId);
+    if (!pane) {
+      const error = new Error(`Pane not mounted: ${paneId}`);
+      events.emit('document:save-failed', { path: null, error });
+      return err(error);
+    }
+
+    this.syncPaneSessionFromEditor(paneId);
+    const currentDocument = this.readPaneDocument(paneId) ?? this.sessions.get(pane.path)?.document ?? null;
+    return this.saveDocumentSnapshot(currentDocument, lineage, paneId);
+  }
+
+  private async saveDocumentSnapshot(
+    currentDocument: Document | null,
+    lineage?: LineageRecordOptions,
+    paneId?: string | null,
+  ): Promise<Result<void, Error>> {
     if (!currentDocument) {
       const error = new Error('No document open');
       events.emit('document:save-failed', { path: null, error });
@@ -625,8 +887,13 @@ export class EditorServiceImpl implements EditorService {
       return err(error);
     }
 
-    this.clearSaveTimer();
-    this.updateState({ isSaving: true });
+    this.clearSaveTimer(paneId ?? undefined);
+    if (session) session.isSaving = true;
+    if (this.state.activePath === currentDocument.path) {
+      this.updateState({ isSaving: true });
+    } else {
+      this.updateState({});
+    }
 
     // Mark the session saving while the disk write is in flight, and
     // snapshot the edit counter so we can tell whether any editor:change
@@ -634,13 +901,16 @@ export class EditorServiceImpl implements EditorService {
     // counter is robust to non-content noise in proseMirrorToDomain (e.g.
     // fresh block ids for nodes whose PM attrs.id is null) that would
     // otherwise make two derived snapshots look unequal.
-    if (session) session.isSaving = true;
     const editCounterAtStart = session?.editCounter ?? 0;
 
     const result = await this.documentPort.save(currentDocument);
     if (!result.ok) {
       if (session) session.isSaving = false;
-      this.updateState({ isSaving: false });
+      if (this.state.activePath === currentDocument.path) {
+        this.updateState({ isSaving: false });
+      } else {
+        this.updateState({});
+      }
       events.emit('document:save-failed', {
         path: currentDocument.path,
         error: result.error,
@@ -674,11 +944,15 @@ export class EditorServiceImpl implements EditorService {
       session.lastSavedAt = new Date();
     }
 
-    this.updateState({
-      document: { ...stateDocument, isDirty: dirtyAfterSave },
-      isDirty: dirtyAfterSave,
-      isSaving: false,
-    });
+    if (this.state.activePath === currentDocument.path) {
+      this.updateState({
+        document: { ...stateDocument, isDirty: dirtyAfterSave },
+        isDirty: dirtyAfterSave,
+        isSaving: false,
+      });
+    } else {
+      this.updateState({});
+    }
     events.emit('document:saved', { path: currentDocument.path });
 
     return ok(undefined);
@@ -787,7 +1061,11 @@ export class EditorServiceImpl implements EditorService {
     this.editorPort?.execute('insertContent', markdown);
   }
 
-  getTextContent(): string {
+  getTextContent(paneId?: string): string {
+    if (paneId) {
+      const pane = this.mountedPanes.get(paneId);
+      if (pane) return pane.port.getTextContent();
+    }
     if (this.editorPort) return this.editorPort.getTextContent();
     return this.state.document?.blocks.map((block) => block.content).join('\n') ?? '';
   }
@@ -1055,41 +1333,71 @@ export class EditorServiceImpl implements EditorService {
     };
   }
 
-  private subscribeToEditorPort(editorPort: EditorPort): void {
-    this.editorUnsubscribers = [
+  private subscribeToEditorPort(editorPort: EditorPort, paneId?: string): Array<() => void> {
+    const pane = () => (paneId ? this.mountedPanes.get(paneId) ?? null : null);
+    const isActive = () => !paneId || this.state.activePaneId === paneId;
+    const focusForEvent = () => {
+      if (paneId) this.focusPane(paneId);
+    };
+    const activePayload = <T>(callback: () => T): T | undefined => {
+      if (!isActive()) return undefined;
+      return callback();
+    };
+
+    const unsubscribers = [
       editorPort.on('editor:ready', () => {
-        this.updateState({ isReady: true });
+        const mountedPane = pane();
+        if (mountedPane) mountedPane.isReady = true;
+        this.updateState(isActive() ? { isReady: true } : {});
         events.emit('editor:ready');
       }),
       editorPort.on('editor:change', ({ document }) => {
-        const session = this.state.activePath
-          ? this.sessions.get(this.state.activePath)
-          : null;
-        if (session) session.editCounter += 1;
-        this.updateState({ document: { ...document, isDirty: true }, isDirty: true });
+        const mountedPane = pane();
+        const path = mountedPane?.path ?? this.state.activePath;
+        const session = path ? this.sessions.get(path) : null;
+        if (session) {
+          session.document = { ...document, isDirty: true };
+          session.isDirty = true;
+          session.editCounter += 1;
+        }
+        if (isActive()) {
+          this.updateState({ document: { ...document, isDirty: true }, isDirty: true });
+        } else {
+          this.updateState({});
+        }
         events.emit('editor:change', { document });
-        this.syncTodoSnapshotFromEditor(document);
-        this.scheduleAutosave();
+        this.syncTodoSnapshotFromEditor(document, editorPort);
+        this.scheduleAutosave(paneId ?? null);
       }),
       editorPort.on('editor:selection', ({ selection }) => {
-        this.updateState({ selection });
-        events.emit('editor:selection', { selection });
+        const mountedPane = pane();
+        if (mountedPane) mountedPane.selection = selection;
+        if (isActive()) {
+          this.updateState({ selection });
+          events.emit('editor:selection', { selection });
+        } else {
+          this.updateState({});
+        }
       }),
-      editorPort.on('editor:focus', () => events.emit('editor:focus')),
+      editorPort.on('editor:focus', () => {
+        focusForEvent();
+        events.emit('editor:focus');
+      }),
       editorPort.on('editor:blur', () => events.emit('editor:blur')),
       editorPort.on('editor:slash-menu-change', (payload) =>
-        events.emit('editor:slash-menu-change', payload),
+        activePayload(() => events.emit('editor:slash-menu-change', payload)),
       ),
       editorPort.on('editor:page-link-menu-change', (payload) =>
-        events.emit('editor:page-link-menu-change', payload),
+        activePayload(() => events.emit('editor:page-link-menu-change', payload)),
       ),
       editorPort.on('editor:block-menu-request', (payload) =>
-        this.handleBlockMenuRequest(payload),
+        activePayload(() => this.handleBlockMenuRequest(payload)),
       ),
       editorPort.on('editor:lineage-inspect-request', (payload) =>
-        events.emit('editor:lineage-inspect-request', payload),
+        activePayload(() => events.emit('editor:lineage-inspect-request', payload)),
       ),
       editorPort.on('editor:page-link-clicked', ({ path }) => {
+        focusForEvent();
         const resolvedPath = this.resolvePageLinkPath(path);
         events.emit('editor:page-link-clicked', { path: resolvedPath });
         this.notesService?.selectNote(resolvedPath);
@@ -1098,51 +1406,78 @@ export class EditorServiceImpl implements EditorService {
         events.emit('editor:external-link-clicked', { url });
         this.externalNavigation?.openUrl(url);
       }),
-      editorPort.on('editor:todo-toggled', (payload) => this.handleEditorTodoToggle(payload)),
+      editorPort.on('editor:todo-toggled', (payload) => {
+        focusForEvent();
+        this.handleEditorTodoToggle(payload);
+      }),
       editorPort.on('editor:block-selected', (payload) =>
-        events.emit('editor:block-selected', payload),
+        activePayload(() => events.emit('editor:block-selected', payload)),
       ),
       editorPort.on('editor:block-moved', (payload) =>
-        events.emit('editor:block-moved', payload),
+        activePayload(() => events.emit('editor:block-moved', payload)),
       ),
       editorPort.on('editor:block-converted', (payload) =>
-        events.emit('editor:block-converted', payload),
+        activePayload(() => events.emit('editor:block-converted', payload)),
       ),
       editorPort.on('editor:block-ai-locked', ({ blockId, operation }) => {
-        this.updateState({ aiProcessing: { blockId, operation } });
-        events.emit('editor:block-ai-locked', { blockId, operation });
+        const mountedPane = pane();
+        if (mountedPane) mountedPane.aiProcessing = { blockId, operation };
+        if (isActive()) this.updateState({ aiProcessing: { blockId, operation } });
+        else this.updateState({});
+        activePayload(() => events.emit('editor:block-ai-locked', { blockId, operation }));
       }),
       editorPort.on('editor:block-ai-unlocked', ({ blockId }) => {
-        if (this.state.aiProcessing?.blockId === blockId) {
+        const mountedPane = pane();
+        if (mountedPane?.aiProcessing?.blockId === blockId) mountedPane.aiProcessing = null;
+        if (isActive() && this.state.aiProcessing?.blockId === blockId) {
           this.updateState({ aiProcessing: null });
+        } else {
+          this.updateState({});
         }
-        events.emit('editor:block-ai-unlocked', { blockId });
+        activePayload(() => events.emit('editor:block-ai-unlocked', { blockId }));
       }),
       editorPort.on('editor:block-ai-phase', (payload) => {
-        this.updateState({
-          aiProcessing: payload.phase === 'complete'
-            ? this.state.aiProcessing
-            : { blockId: payload.blockId, operation: payload.operation },
-        });
-        events.emit('editor:block-ai-phase', payload);
+        const mountedPane = pane();
+        const nextProcessing = payload.phase === 'complete'
+          ? mountedPane?.aiProcessing ?? this.state.aiProcessing
+          : { blockId: payload.blockId, operation: payload.operation };
+        if (mountedPane) mountedPane.aiProcessing = nextProcessing;
+        if (isActive()) this.updateState({ aiProcessing: nextProcessing });
+        else this.updateState({});
+        activePayload(() => events.emit('editor:block-ai-phase', payload));
       }),
       editorPort.on('editor:block-ai-active-target', (payload) =>
-        events.emit('editor:block-ai-active-target', payload),
+        activePayload(() => events.emit('editor:block-ai-active-target', payload)),
       ),
       editorPort.on('editor:block-scrolled-into-view', (payload) =>
-        events.emit('editor:block-scrolled-into-view', payload),
+        activePayload(() => events.emit('editor:block-scrolled-into-view', payload)),
       ),
       editorPort.on('editor:ai-inline-composers-change', (payload) => {
-        this.updateState({
-          aiInlineComposers: payload.composers,
-          activeAIInlineComposerId: payload.activeComposerId,
-        });
-        events.emit('editor:ai-inline-composers-change', payload);
+        const mountedPane = pane();
+        if (mountedPane) {
+          mountedPane.aiInlineComposers = payload.composers;
+          mountedPane.activeAIInlineComposerId = payload.activeComposerId;
+        }
+        if (isActive()) {
+          this.updateState({
+            aiInlineComposers: payload.composers,
+            activeAIInlineComposerId: payload.activeComposerId,
+          });
+          events.emit('editor:ai-inline-composers-change', payload);
+        } else {
+          this.updateState({});
+        }
       }),
       editorPort.on('editor:ai-inline-generate', ({ prompt, selectionText, callbacks, request }) => {
+        focusForEvent();
         this.handleAIInlineGenerate(prompt, selectionText, callbacks, request);
       }),
     ];
+
+    if (!paneId) {
+      this.editorUnsubscribers = unsubscribers;
+    }
+    return unsubscribers;
   }
 
   private handleBlockMenuRequest(payload: EditorBlockMenuRequest): void {
@@ -1379,20 +1714,46 @@ export class EditorServiceImpl implements EditorService {
     };
   }
 
-  private scheduleAutosave(): void {
-    this.clearSaveTimer();
-    this.saveTimeout = setTimeout(async () => {
-      const result = await this.saveDocument();
+  private scheduleAutosave(paneId: string | null = this.state.activePaneId): void {
+    this.clearSaveTimer(paneId ?? undefined);
+    const pane = paneId ? this.mountedPanes.get(paneId) : null;
+    const saveTargetPath = pane?.path ?? this.state.document?.path ?? null;
+    const timeout = setTimeout(async () => {
+      const result = pane ? await this.savePane(pane.paneId) : await this.saveDocument();
       if (!result.ok) {
         events.emit('document:save-failed', {
-          path: this.state.document?.path ?? null,
+          path: saveTargetPath,
           error: result.error,
         });
       }
     }, this.autoSaveDelayMs);
+
+    if (pane) {
+      pane.saveTimeout = timeout;
+    } else {
+      this.saveTimeout = timeout;
+    }
   }
 
-  private clearSaveTimer(): void {
+  private clearSaveTimer(paneId?: string): void {
+    if (paneId) {
+      const pane = this.mountedPanes.get(paneId);
+      if (pane?.saveTimeout) {
+        clearTimeout(pane.saveTimeout);
+        pane.saveTimeout = null;
+      }
+      return;
+    }
+
+    if (this.state.activePaneId) {
+      const pane = this.mountedPanes.get(this.state.activePaneId);
+      if (pane?.saveTimeout) {
+        clearTimeout(pane.saveTimeout);
+        pane.saveTimeout = null;
+        return;
+      }
+    }
+
     if (this.saveTimeout) {
       clearTimeout(this.saveTimeout);
       this.saveTimeout = null;
@@ -1400,12 +1761,9 @@ export class EditorServiceImpl implements EditorService {
   }
 
   private getCurrentDocumentForSave(): Document | null {
-    if (this.editorPort && this.editorElement && this.state.isReady) {
-      try {
-        return this.editorPort.getDocument();
-      } catch {
-        return this.state.document;
-      }
+    if (this.state.activePaneId) {
+      const paneDocument = this.readPaneDocument(this.state.activePaneId);
+      if (paneDocument) return paneDocument;
     }
     return this.state.document;
   }
@@ -1422,11 +1780,160 @@ export class EditorServiceImpl implements EditorService {
     return `${this.notesPath.replace(/\/$/, '')}/${docPath}`;
   }
 
+  private firstPaneIdForPath(path: string): string | null {
+    for (const pane of this.mountedPanes.values()) {
+      if (pane.path === path) return pane.paneId;
+    }
+    return null;
+  }
+
   private normalizeAbsolutePath(path: string | null | undefined): string | null {
     if (!path) return null;
     const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '');
     const absolute = normalized.startsWith('/') ? normalized : this.getAbsolutePath(normalized);
     return absolute?.replace(/\\/g, '/').replace(/\/+$/, '') ?? normalized;
+  }
+
+  private async ensureSessionDocument(path: string, document?: Document): Promise<Result<Document, Error>> {
+    const existing = this.sessions.get(path);
+    if (existing) {
+      if (document && document.path === path && !existing.isDirty) {
+        existing.document = document;
+      }
+      return ok(existing.document);
+    }
+
+    const loaded = document?.path === path ? ok(document) : await this.documentPort.load(path);
+    if (!loaded.ok) {
+      events.emit('document:load-failed', { path, error: loaded.error });
+      return loaded;
+    }
+
+    await this.ensureLineageBaseline(loaded.value);
+    const session = this.upsertSession(loaded.value);
+    session.document = loaded.value;
+    session.isDirty = false;
+    session.isSaving = false;
+    session.conflictState = 'clean';
+    return ok(loaded.value);
+  }
+
+  private createEditorPort(): EditorPort {
+    if (!this.editorPortFactory) {
+      throw new Error('Editor port factory not set');
+    }
+
+    const notesProvider = this.createNotesProvider();
+    const factoryOptions = {
+      commandRegistry: this.commandRegistry,
+      enableDragDrop: true,
+      enableAIRewrite: true,
+      onBlockMenuRequest: () => undefined,
+      onLineageInspectRequest: () => undefined,
+      onTodoToggle: () => undefined,
+      onExternalLinkClick: () => undefined,
+    };
+    if (notesProvider) {
+      Object.assign(factoryOptions, { notesProvider });
+    }
+
+    return this.editorPortFactory.create(factoryOptions);
+  }
+
+  private teardownPane(
+    paneId: string,
+    expectedPort?: EditorPort,
+    expectedElement?: HTMLElement,
+  ): void {
+    const pane = this.mountedPanes.get(paneId);
+    if (!pane) return;
+    if (expectedPort && pane.port !== expectedPort) return;
+    if (expectedElement && pane.element !== expectedElement) return;
+
+    if (pane.saveTimeout) {
+      clearTimeout(pane.saveTimeout);
+      pane.saveTimeout = null;
+    }
+    for (const unsubscribe of pane.unsubscribers) {
+      unsubscribe();
+    }
+    pane.unsubscribers = [];
+    pane.port.destroy();
+    this.mountedPanes.delete(paneId);
+  }
+
+  private readPaneDocument(paneId: string): Document | null {
+    const pane = this.mountedPanes.get(paneId);
+    if (!pane || !pane.isReady) return null;
+    try {
+      return pane.port.getDocument();
+    } catch {
+      return this.sessions.get(pane.path)?.document ?? null;
+    }
+  }
+
+  private syncPaneSessionFromEditor(paneId: string): void {
+    const pane = this.mountedPanes.get(paneId);
+    if (!pane) return;
+    const session = this.sessions.get(pane.path);
+    if (!session) return;
+    const liveDoc = this.readPaneDocument(paneId);
+    if (!liveDoc) return;
+    session.document = liveDoc;
+    if (this.state.activePaneId === paneId) {
+      session.isDirty = this.state.isDirty;
+    }
+  }
+
+  private updatePaneState(paneId: string): void {
+    const pane = this.mountedPanes.get(paneId);
+    if (!pane) return;
+    const session = this.sessions.get(pane.path);
+    const document = this.readPaneDocument(paneId) ?? session?.document ?? null;
+    this.state = {
+      ...this.state,
+      panes: {
+        ...this.state.panes,
+        [paneId]: this.createPaneState(pane, session, document),
+      },
+    };
+  }
+
+  private createPaneState(
+    pane: MountedEditorPane,
+    session: EditorSession | undefined,
+    document: Document | null,
+  ): EditorPaneState {
+    return {
+      paneId: pane.paneId,
+      path: pane.path,
+      document,
+      selection: pane.selection,
+      isReady: pane.isReady,
+      isDirty: session?.isDirty ?? false,
+      isSaving: session?.isSaving ?? false,
+      conflictState: session?.conflictState ?? 'clean',
+      aiProcessing: pane.aiProcessing,
+      aiInlineComposers: pane.aiInlineComposers,
+      activeAIInlineComposerId: pane.activeAIInlineComposerId,
+    };
+  }
+
+  private computePaneStates(): Record<string, EditorPaneState> {
+    const panes: Record<string, EditorPaneState> = {};
+    for (const pane of this.mountedPanes.values()) {
+      const session = this.sessions.get(pane.path);
+      const document = this.readPaneDocument(pane.paneId) ?? session?.document ?? null;
+      panes[pane.paneId] = this.createPaneState(pane, session, document);
+    }
+    return panes;
+  }
+
+  private findMountedPaneByPath(path: string): MountedEditorPane | null {
+    for (const pane of this.mountedPanes.values()) {
+      if (pane.path === path) return pane;
+    }
+    return null;
   }
 
   private rememberInAppMutation(path: string): void {
@@ -1465,13 +1972,13 @@ export class EditorServiceImpl implements EditorService {
     return filePath === docPath || filePath.endsWith('/' + docPath) || absolute === filePath;
   }
 
-  private syncTodoSnapshotFromEditor(document: Document): void {
-    if (!this.todoService || !this.editorPort) return;
+  private syncTodoSnapshotFromEditor(document: Document, editorPort: EditorPort | null = this.editorPort): void {
+    if (!this.todoService || !editorPort) return;
     const filePath = this.getAbsolutePath(document.path);
     if (!filePath) return;
 
     try {
-      const markdown = this.editorPort.getMarkdown();
+      const markdown = editorPort.getMarkdown();
       this.todoService.syncFileSnapshot(filePath, markdown).catch((error) => {
         console.warn('[EditorService] Todo snapshot sync failed:', error);
       });
@@ -1656,6 +2163,7 @@ export class EditorServiceImpl implements EditorService {
       ...this.state,
       tabs: this.computeTabs(),
       conflictState: this.computeActiveConflictState(),
+      panes: this.computePaneStates(),
     };
     this.notifySubscribers();
   }
@@ -1793,6 +2301,10 @@ export class EditorServiceImpl implements EditorService {
    * we destroy the port (on switch / close).
    */
   private syncActiveSessionFromEditor(): void {
+    if (this.state.activePaneId) {
+      this.syncPaneSessionFromEditor(this.state.activePaneId);
+      return;
+    }
     if (!this.editorPort || !this.state.activePath) return;
     const session = this.sessions.get(this.state.activePath);
     if (!session) return;
@@ -1934,4 +2446,8 @@ function inferEditorCaptureReason(lineage?: LineageRecordOptions): NonNullable<L
   if (lineage?.intentKind === 'restore') return 'restore';
   if (lineage?.intentKind === 'external-reconcile') return 'external-reconcile';
   return 'autosave';
+}
+
+function isLockedProtectedDocument(document: Document): boolean {
+  return isProtectedDocumentMeta(document.meta) && document.meta.protection.lockState === 'locked';
 }

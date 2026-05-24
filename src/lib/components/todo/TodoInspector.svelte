@@ -6,6 +6,7 @@
   import { todoStore, toastStore } from '$lib/stores';
   import { buildRefId } from '$lib/domain/values';
   import { copyTextToClipboard } from '$lib/utils/clipboard';
+  import SelectShell from '$lib/components/shared/SelectShell.svelte';
 
   interface Props {
     todo: Todo | null;
@@ -188,21 +189,25 @@
 
       <label>
         <span><Flag size={14} strokeWidth={2} /> Priority</span>
-        <select name="task-priority" bind:value={priority} onchange={saveMetadata}>
-          <option value="none">None</option>
-          <option value="high">High</option>
-          <option value="medium">Medium</option>
-          <option value="low">Low</option>
-        </select>
+        <SelectShell class="inspector-select-shell">
+          <select name="task-priority" bind:value={priority} onchange={saveMetadata}>
+            <option value="none">None</option>
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+            <option value="low">Low</option>
+          </select>
+        </SelectShell>
       </label>
 
       <label>
         <span><Archive size={14} strokeWidth={2} /> Area</span>
-        <select name="task-list" bind:value={list} onchange={saveMetadata} disabled={todo.source !== 'dedicated'}>
-          <option value="inbox">Inbox</option>
-          <option value="anytime">Anytime</option>
-          <option value="someday">Someday</option>
-        </select>
+        <SelectShell class="inspector-select-shell">
+          <select name="task-list" bind:value={list} onchange={saveMetadata} disabled={todo.source !== 'dedicated'}>
+            <option value="inbox">Inbox</option>
+            <option value="anytime">Anytime</option>
+            <option value="someday">Someday</option>
+          </select>
+        </SelectShell>
       </label>
 
       <label>
@@ -319,6 +324,17 @@
     font: inherit;
     padding: 8px 9px;
     outline: none;
+  }
+
+  :global(.inspector-select-shell) {
+    --select-min-height: 38px;
+    --select-padding-x: 9px;
+    --select-padding-y: 8px;
+    width: 100%;
+  }
+
+  select {
+    padding-right: 34px;
   }
 
   textarea:focus,

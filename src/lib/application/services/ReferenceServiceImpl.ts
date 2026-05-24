@@ -3,11 +3,12 @@ import type { AgentRunStoragePort } from '$lib/ports/outbound/AgentRunStoragePor
 import type { ConversationStoragePort } from '$lib/ports/outbound/ConversationStoragePort';
 import type { ContextProviderPort } from '$lib/ports/outbound/ContextProviderPort';
 import type { OperationStoragePort } from '$lib/ports/outbound/OperationStoragePort';
-import type { DocumentService, NotesListItem, NotesService, ReferenceService, TodoService } from '$lib/ports/inbound';
+import type { DocumentService, NotesListItem, NotesService, ProtectionService, ReferenceService, TodoService } from '$lib/ports/inbound';
 import type { ResolvedPromptReference } from '$lib/domain/values/PromptContext';
 import type { RefId, RefIdKind, ParsedRefId } from '$lib/domain/values/RefId';
 import { buildRefId, extractRefIds, parseRefId } from '$lib/domain/values/RefId';
 import { findBlock } from '$lib/domain/entities/Document';
+import { isProtectedNoteMeta } from '$lib/domain/values/Protection';
 import type { TodoId } from '$lib/domain/values/TodoId';
 import type { OperationId } from '$lib/domain/values/OperationId';
 
@@ -24,6 +25,7 @@ export class ReferenceServiceImpl implements ReferenceService {
     private readonly conversations: ConversationStoragePort,
     private readonly agentRuns: AgentRunStoragePort,
     private readonly operations: OperationStoragePort,
+    private readonly protection: ProtectionService,
   ) {}
 
   async resolve(refId: string): Promise<Result<ResolvedPromptReference, Error>> {
@@ -75,8 +77,27 @@ export class ReferenceServiceImpl implements ReferenceService {
 
   private async resolveNote(ref: Extract<ParsedRefId, { kind: 'note' }>): Promise<ResolvedPromptReference> {
     const meta = await this.documents.readMeta(ref.notePath);
+    if (!meta.ok) {
+      return unresolved(ref.raw, 'note', ref.notePath, 'Note was not found or could not be read');
+    }
+    if (!this.canReadProtectedMeta(meta.value.protection)) {
+      return {
+        refId: ref.raw,
+        kind: 'note',
+        status: 'resolved',
+        label: meta.value.title || ref.notePath,
+        summary: `Protected note at ${ref.notePath}`,
+        metadata: {
+          path: ref.notePath,
+          title: meta.value.title,
+          protected: true,
+          lockState: meta.value.protection?.lockState ?? 'locked',
+        },
+      };
+    }
+
     const content = await this.documents.readContent(ref.notePath);
-    if (!meta.ok || !content.ok) {
+    if (!content.ok) {
       return unresolved(ref.raw, 'note', ref.notePath, 'Note was not found or could not be read');
     }
 
@@ -176,17 +197,19 @@ export class ReferenceServiceImpl implements ReferenceService {
     if (current?.path === ref.notePath) {
       const block = findBlock(current, ref.blockId);
       if (block) {
+        const canRead = this.canReadProtectedMeta(current.meta.protection);
         return {
           refId: ref.raw,
           kind: 'block',
           status: 'resolved',
           label: `${current.meta.title} / ${block.type}`,
           summary: `Block ${ref.blockId} in ${ref.notePath}`,
-          content: clip(block.content, OBJECT_CONTENT_LIMIT),
+          ...(canRead ? { content: clip(block.content, OBJECT_CONTENT_LIMIT) } : {}),
           metadata: {
             notePath: ref.notePath,
             blockId: ref.blockId,
             blockType: block.type,
+            protected: !canRead,
           },
         };
       }
@@ -311,6 +334,14 @@ export class ReferenceServiceImpl implements ReferenceService {
         targetNotes: operation.targetNotes,
       },
     };
+  }
+
+  private canReadProtectedMeta(meta: unknown): boolean {
+    if (!isProtectedNoteMeta(meta)) return true;
+    if (meta.lockState === 'locked') return false;
+    const policy = this.protection.currentPolicy();
+    if (!policy.requireAIApprovalForProtectedReads) return true;
+    return this.protection.hasAIContextAuthorization(meta.noteId, 'note.read');
   }
 }
 

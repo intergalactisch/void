@@ -9,6 +9,7 @@
   import { onDestroy, onMount, tick } from 'svelte';
   import {
     editorStore,
+    protectionStore,
     settingsStore,
     toastStore,
     aiStore,
@@ -19,6 +20,11 @@
     uiStore,
   } from '$lib/stores';
   import type { Document } from '$lib/domain/entities/Document';
+  import type { AIContextAuthorization, AIContextAuthorizationScope } from '$lib/domain/values/Protection';
+  import {
+    createAISelectionResource,
+    isAISelectionResource,
+  } from '$lib/domain/values/Protection';
   import { normalizeNoteTag } from '$lib/domain/values';
   import { events } from '$lib/events';
   import { buildRefId } from '$lib/domain/values';
@@ -30,10 +36,14 @@
   import type { BlockMenuAction } from '$lib/components/editor/BlockMenu.svelte';
   import type { EditorInlineAIComposerView, RegisteredCommand } from '$lib/ports/outbound';
   import type { BlockType } from '$lib/domain/values/BlockType';
-  import { LocateFixed, MessageSquare, Plus, Send, Sparkles, X } from '@lucide/svelte';
+  import { CheckCircle2, KeyRound, LocateFixed, Lock, MessageSquare, Plus, Send, Shield, ShieldOff, Sparkles, Unlock, X } from '@lucide/svelte';
+
+  const LEGACY_EDITOR_PANE_ID = '__legacy__';
 
   interface Props {
     document: Document;
+    paneId?: string;
+    activateOnMount?: boolean;
     onSaveStatusChange?: (status: 'saved' | 'saving' | 'unsaved') => void;
     onCountsChange?: (wordCount: number, charCount: number) => void;
     onError?: (error: string | null) => void;
@@ -43,6 +53,8 @@
 
   let {
     document: doc,
+    paneId,
+    activateOnMount = false,
     onSaveStatusChange,
     onCountsChange,
     onError,
@@ -68,6 +80,10 @@
   let editorScrollElement: HTMLDivElement | undefined = $state(undefined);
   let titleElement: HTMLHeadingElement | undefined = $state(undefined);
   let previousDocId: string | null = null;
+  let recoveredEmptyHost = false;
+  let mountRunId = 0;
+  let destroyed = false;
+  let mountedHost: HTMLDivElement | null = null;
   let countTimeout: ReturnType<typeof setTimeout> | null = null;
   let wordCount = $state(0);
   let charCount = $state(0);
@@ -88,6 +104,10 @@
     visible: boolean;
   }>>({});
   let focusedComposerInputId: string | null = null;
+  let aiApprovalOpen = $state(false);
+  let grantingAIApproval = $state(false);
+  let pendingInlineApprovalComposerId: string | null = $state(null);
+  let grantingInlineAIApproval = $state(false);
 
   const slashMenuState = $derived.by(() =>
     (editorStore.slashMenuState as SlashMenuState | null) ?? DEFAULT_SLASH_MENU_STATE
@@ -109,13 +129,43 @@
     };
   });
 
+  const paneState = $derived.by(() => paneId ? editorStore.getPaneState(paneId) : null);
+  const shellIsActive = $derived(!paneId || editorStore.activePaneId === paneId);
+  const currentPaneDocument = $derived(paneState?.document ?? doc);
   const saveStatus = $derived.by(() =>
-    editorStore.isSaving ? 'saving' : editorStore.isDirty ? 'unsaved' : 'saved'
+    paneId
+      ? paneState?.isSaving
+        ? 'saving'
+        : paneState?.isDirty
+          ? 'unsaved'
+          : 'saved'
+      : editorStore.isSaving ? 'saving' : editorStore.isDirty ? 'unsaved' : 'saved'
   );
 
-  const noteTags = $derived(editorStore.document?.meta.tags ?? doc.meta.tags);
-  const aiActiveBlockId = $derived(editorStore.aiActiveBlockId);
-  const inlineAIComposers = $derived(editorStore.aiInlineComposers);
+  const noteTags = $derived(currentPaneDocument.meta.tags ?? doc.meta.tags);
+  const protection = $derived(currentPaneDocument.meta.protection ?? doc.meta.protection ?? null);
+  const isProtected = $derived(protection?.level === 'protected');
+  const isLocked = $derived(protection?.lockState === 'locked');
+  const noteLevelAIAuthorization = $derived.by(() => {
+    if (!protection || protection.level !== 'protected') return null;
+    const active = protectionStore.authorizations
+      .filter((authorization) =>
+        authorization.noteIds.includes(protection.noteId) &&
+        (
+          authorization.resources.length === 0 ||
+          authorization.resources.some((resource) => !isAISelectionResource(resource))
+        )
+      )
+      .sort((a, b) => new Date(b.expiresAt).getTime() - new Date(a.expiresAt).getTime());
+    return active[0] ?? null;
+  });
+  const aiAccessSummary = $derived.by(() =>
+    noteLevelAIAuthorization
+      ? `AI approved · ${formatAuthorizationScopes(noteLevelAIAuthorization.scopes)} · ${formatAuthorizationTimeLeft(noteLevelAIAuthorization)}`
+      : 'AI blocked'
+  );
+  const aiActiveBlockId = $derived(shellIsActive ? editorStore.aiActiveBlockId : null);
+  const inlineAIComposers = $derived(shellIsActive ? editorStore.aiInlineComposers : []);
   const offscreenInlineAIComposers = $derived.by(() =>
     inlineAIComposers.filter((composer) => {
       const position = inlineAIComposerPositions[composer.id];
@@ -124,7 +174,7 @@
   );
 
   function updateCounts() {
-    const text = editorStore.getTextContent();
+    const text = editorStore.getTextContent(paneId);
     charCount = text.length;
     wordCount = text.trim() ? text.trim().split(/\s+/).length : 0;
     onCountsChange?.(wordCount, charCount);
@@ -135,63 +185,121 @@
     countTimeout = setTimeout(updateCounts, 150);
   }
 
+  function nextFrame(): Promise<void> {
+    if (typeof requestAnimationFrame !== 'function') {
+      return new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+  }
+
+  function mountIsCurrent(runId: number): boolean {
+    return !destroyed && runId === mountRunId;
+  }
+
+  async function waitForEditorContainer(runId: number): Promise<HTMLDivElement | null> {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await tick();
+      if (!mountIsCurrent(runId)) return null;
+      if (editorContainer?.isConnected) return editorContainer;
+      await nextFrame();
+      if (!mountIsCurrent(runId)) return null;
+      if (editorContainer?.isConnected) return editorContainer;
+    }
+    return null;
+  }
+
   async function mountEditor(document: Document) {
-    if (!editorContainer) {
-      onError?.('Editor container not found');
+    const runId = ++mountRunId;
+    mountedHost = null;
+    if (document.meta.protection?.lockState === 'locked') {
+      onCountsChange?.(0, 0);
       return;
     }
 
-    const result = await editorStore.mount(
-      editorContainer,
-      document,
-      settingsStore.settings?.autoSaveDelay ?? 1000,
-    );
+    const container = await waitForEditorContainer(runId);
+    if (!container || !mountIsCurrent(runId)) return;
+
+    const autoSaveDelay = settingsStore.settings?.autoSaveDelay ?? 1000;
+    const result = paneId
+      ? await editorStore.mountPane(paneId, container, document.path, document, autoSaveDelay)
+      : await editorStore.mount(container, document, autoSaveDelay);
+
+    if (!mountIsCurrent(runId) || editorContainer !== container || !container.isConnected) {
+      editorStore.unmountPane(paneId ?? LEGACY_EDITOR_PANE_ID, container);
+      return;
+    }
 
     if (!result.ok) {
       onError?.(result.error.message);
       return;
     }
 
+    mountedHost = container;
     onError?.(null);
     updateCounts();
-    aiStore.setActiveDocument(document);
-    requestAnimationFrame(() => editorStore.focus());
+    if (paneId && activateOnMount) {
+      editorStore.focusPane(paneId);
+      requestAnimationFrame(() => editorStore.focusPane(paneId));
+    }
+    requestAnimationFrame(() => {
+      if (!mountIsCurrent(runId) || recoveredEmptyHost || !editorContainer?.isConnected || editorContainer.childElementCount > 0) return;
+      recoveredEmptyHost = true;
+      void (paneId
+        ? editorStore.mountPane(paneId, editorContainer, document.path, document, autoSaveDelay)
+        : editorStore.mount(editorContainer, document, autoSaveDelay));
+    });
+    if (shellIsActive) aiStore.setActiveDocument(document);
+    if (!paneId || editorStore.activePaneId === paneId) {
+      requestAnimationFrame(() => editorStore.focus());
+    }
+  }
+
+  function focusShellPane() {
+    if (paneId) editorStore.focusPane(paneId);
   }
 
   function handleBlockMenuAction(action: BlockMenuAction) {
-    const blockId = blockMenuState.blockId;
+    const menuContext = {
+      blockId: blockMenuState.blockId,
+      lineIndex: blockMenuState.lineIndex,
+      position: blockMenuState.position,
+      currentType: blockMenuState.currentType,
+    };
+
+    editorStore.clearBlockMenuRequest();
+    focusShellPane();
 
     switch (action.type) {
       case 'turnInto':
-        editorStore.selectBlock(blockId);
+        editorStore.selectBlock(menuContext.blockId);
         editorStore.setBlockType(action.blockType);
         break;
       case 'inspectLineage':
         events.emit('editor:lineage-inspect-request', {
-          blockId,
-          lineIndex: blockMenuState.lineIndex,
-          position: blockMenuState.position,
-          currentType: blockMenuState.currentType,
+          blockId: menuContext.blockId,
+          lineIndex: menuContext.lineIndex,
+          position: menuContext.position,
+          currentType: menuContext.currentType,
         });
-        break;
+        return;
       case 'duplicate':
-        editorStore.duplicateBlock(blockId);
+        editorStore.duplicateBlock(menuContext.blockId);
         break;
       case 'copyLink':
-        copyBlockRef(blockId);
+        copyBlockRef(menuContext.blockId);
         break;
       case 'delete':
-        editorStore.deleteBlock(blockId);
+        editorStore.deleteBlock(menuContext.blockId);
         toastStore.info('Block deleted. Press Cmd+Z to undo');
         break;
     }
 
-    editorStore.clearBlockMenuRequest();
     editorStore.focus();
   }
 
   async function copyBlockRef(blockId: string) {
-    const notePath = editorStore.activePath ?? editorStore.document?.path ?? doc.path;
+    focusShellPane();
+    const notePath = (paneId ? currentPaneDocument.path : editorStore.activePath) ?? editorStore.document?.path ?? doc.path;
     const success = await copyTextToClipboard(buildRefId({ kind: 'block', notePath, blockId }));
     if (success) toastStore.info('Ref copied');
     else toastStore.error('Failed to copy ref');
@@ -199,10 +307,12 @@
 
   function handleBlockMenuClose() {
     editorStore.clearBlockMenuRequest();
+    focusShellPane();
     editorStore.focus();
   }
 
   function handleAIPrompt(text: string, range: Range) {
+    focusShellPane();
     if (!aiStore.ensureAIAvailable()) {
       toastStore.info(aiStore.availabilityMessage ?? AI_UNAVAILABLE_MESSAGE);
       return;
@@ -272,9 +382,10 @@
     editorStore.updateAIInlineComposerDraft(composer.id, target?.value ?? '');
   }
 
-  function submitComposer(composer: EditorInlineAIComposerView) {
+  async function submitComposer(composer: EditorInlineAIComposerView) {
     const prompt = composer.draftPrompt.trim();
     if (!prompt) return;
+    if (!(await ensureInlineAIApproval(composer))) return;
     focusedComposerInputId = null;
     editorStore.submitAIInlineComposer(composer.id, prompt);
     requestAnimationFrame(refreshInlineAIComposerPositions);
@@ -286,7 +397,9 @@
     requestAnimationFrame(refreshInlineAIComposerPositions);
   }
 
-  function focusComposer(composerId: string) {
+  async function focusComposer(composerId: string) {
+    const composer = inlineAIComposers.find((candidate) => candidate.id === composerId);
+    if (composer && !(await ensureInlineAIApproval(composer))) return;
     editorStore.focusAIInlineComposer(composerId);
     void focusInlineAIComposerInput(composerId);
   }
@@ -298,7 +411,7 @@
     event.stopPropagation();
     if (event.key === 'Enter') {
       event.preventDefault();
-      submitComposer(composer);
+      void submitComposer(composer);
       return;
     }
     if (event.key === 'Escape') {
@@ -316,7 +429,182 @@
     toastStore.info(aiStore.availabilityMessage ?? AI_UNAVAILABLE_MESSAGE);
   }
 
+  async function reloadDocument() {
+    await editorStore.reloadDocument(doc.path, { flushDirty: true });
+  }
+
+  async function handleProtectNote() {
+    if (editorStore.activePath === doc.path && editorStore.isDirty) {
+      const saved = await editorStore.saveDocument();
+      if (!saved.ok) {
+        toastStore.error(saved.error.message);
+        return;
+      }
+    }
+    const result = await protectionStore.protectNote(doc.path);
+    if (!result) {
+      toastStore.error(protectionStore.error?.message ?? 'Could not protect note');
+      return;
+    }
+    toastStore.success('Note protected');
+    await reloadDocument();
+  }
+
+  async function handleUnlockNote() {
+    const unlocked = await protectionStore.unlockWithRecoveryPrompt();
+    if (!unlocked) {
+      toastStore.error(protectionStore.error?.message ?? 'Could not unlock protected notes');
+      return;
+    }
+    toastStore.success('Protected notes unlocked');
+    await reloadDocument();
+  }
+
+  async function handleLockNotes() {
+    const prepared = await editorStore.prepareProtectedDocumentsForLock();
+    if (!prepared.ok) {
+      toastStore.error(prepared.error.message);
+      return;
+    }
+    const locked = await protectionStore.lock();
+    if (!locked) {
+      toastStore.error(protectionStore.error?.message ?? 'Could not lock protected notes');
+      return;
+    }
+    toastStore.info('Protected notes locked');
+    const reloaded = await editorStore.reloadProtectedDocuments({ flushDirty: false });
+    if (!reloaded.ok) {
+      toastStore.error(reloaded.error.message);
+    }
+  }
+
+  async function handleUnprotectNote() {
+    const confirmed = typeof window === 'undefined' || window.confirm(
+      'Remove protection from this note?\n\nThis will decrypt the note and save it as normal markdown on disk.'
+    );
+    if (!confirmed) return;
+
+    const unprotected = await protectionStore.unprotectNote(doc.path);
+    if (!unprotected) {
+      toastStore.error(protectionStore.error?.message ?? 'Could not remove protection');
+      return;
+    }
+    toastStore.success('Protection removed');
+    await reloadDocument();
+  }
+
+  async function handleGrantNoteAIAccess(scopes: AIContextAuthorizationScope[] = ['note.read', 'note.write']) {
+    const noteProtection = protection;
+    if (!noteProtection) return;
+    grantingAIApproval = true;
+    const authorization = await protectionStore.authorizeContext(noteProtection, doc.path, {
+      scopes,
+      durationMinutes: 30,
+      reason: 'Approved from protected note editor',
+    });
+    grantingAIApproval = false;
+    if (!authorization) {
+      toastStore.error(protectionStore.error?.message ?? 'Could not authorize AI access');
+      return;
+    }
+    aiApprovalOpen = false;
+    toastStore.info('AI access granted for this note');
+  }
+
+  function handleRevokeAI() {
+    if (!noteLevelAIAuthorization) return;
+    protectionStore.revokeContext(noteLevelAIAuthorization.id);
+    aiApprovalOpen = false;
+    toastStore.info('AI access revoked for this note');
+  }
+
+  function inlineSelectionResource(composer: EditorInlineAIComposerView): string {
+    return createAISelectionResource({
+      notePath: doc.path,
+      from: composer.from,
+      to: composer.to,
+      selectedText: composer.selectionText,
+    });
+  }
+
+  function hasInlineAIApproval(composer: EditorInlineAIComposerView): boolean {
+    if (!protection || protection.level !== 'protected') return true;
+    if (protection.lockState === 'locked') return false;
+    const resource = inlineSelectionResource(composer);
+    return protectionStore.hasAuthorization(protection.noteId, 'selection.read', resource)
+      && protectionStore.hasAuthorization(protection.noteId, 'note.write', resource);
+  }
+
+  async function ensureInlineAIApproval(composer: EditorInlineAIComposerView): Promise<boolean> {
+    if (hasInlineAIApproval(composer)) {
+      pendingInlineApprovalComposerId = null;
+      return true;
+    }
+    pendingInlineApprovalComposerId = composer.id;
+    requestAnimationFrame(refreshInlineAIComposerPositions);
+    return false;
+  }
+
+  async function grantInlineAIApproval(composer: EditorInlineAIComposerView) {
+    const noteProtection = protection;
+    if (!noteProtection || noteProtection.level !== 'protected') return;
+    if (noteProtection.lockState === 'locked') {
+      toastStore.error('Unlock the vault first');
+      return;
+    }
+
+    grantingInlineAIApproval = true;
+    const authorization = await protectionStore.authorizeContext(noteProtection, doc.path, {
+      scopes: ['selection.read', 'note.write'],
+      resources: [inlineSelectionResource(composer)],
+      durationMinutes: 15,
+      reason: 'Approved inline Ask for highlighted text',
+    });
+    grantingInlineAIApproval = false;
+    if (!authorization) {
+      toastStore.error(protectionStore.error?.message ?? 'Could not grant AI access');
+      return;
+    }
+    pendingInlineApprovalComposerId = null;
+    editorStore.focusAIInlineComposer(composer.id);
+    void focusInlineAIComposerInput(composer.id);
+    toastStore.info('AI access granted for this highlighted text');
+  }
+
+  function cancelInlineAIApproval(composerId: string) {
+    if (pendingInlineApprovalComposerId === composerId) {
+      pendingInlineApprovalComposerId = null;
+    }
+  }
+
+  function formatAuthorizationScopes(scopes: AIContextAuthorizationScope[]): string {
+    const labels: string[] = [];
+    if (scopes.includes('selection.read')) labels.push('Selected text');
+    if (scopes.includes('note.read')) labels.push('This note');
+    if (scopes.includes('related.read')) labels.push('Related notes');
+    if (scopes.includes('history.read')) labels.push('History');
+    if (scopes.includes('note.write')) labels.push('Edit proposals');
+    if (labels.length === 0) return 'Custom access';
+    if (labels.length === 2 && labels[1] === 'Edit proposals') {
+      return `${labels[0]} + edit proposals`;
+    }
+    return labels.join(' + ');
+  }
+
+  function formatAuthorizationTimeLeft(authorization: AIContextAuthorization): string {
+    const remainingMs = new Date(authorization.expiresAt).getTime() - Date.now();
+    if (remainingMs <= 0) return 'expired';
+    const remainingMinutes = Math.max(1, Math.ceil(remainingMs / 60_000));
+    if (remainingMinutes >= 60) {
+      const hours = Math.floor(remainingMinutes / 60);
+      const minutes = remainingMinutes % 60;
+      return minutes ? `${hours}h ${minutes}m left` : `${hours}h left`;
+    }
+    return `${remainingMinutes}m left`;
+  }
+
   function handleToolbarAction(action: string, value?: string) {
+    focusShellPane();
     switch (action) {
       case 'bold':
       case 'italic':
@@ -352,6 +640,7 @@
   }
 
   function handleSlashMenuSelect(command: RegisteredCommand) {
+    focusShellPane();
     editorStore.executeSlashMenuCommand(command);
   }
 
@@ -360,27 +649,33 @@
   }
 
   function handlePageLinkSelect(note: PageLinkNote) {
+    focusShellPane();
     editorStore.selectPageLink(note);
     editorStore.focus();
   }
 
   function handlePageLinkClose() {
+    focusShellPane();
     editorStore.closePageLinkMenu();
     editorStore.focus();
   }
 
   function handlePageLinkQueryChange(query: string) {
+    focusShellPane();
     editorStore.updatePageLinkQuery(query);
   }
 
   function handlePageLinkNavigate(direction: 'next' | 'prev') {
+    focusShellPane();
     editorStore.movePageLinkSelection(direction);
   }
 
   function handleTitleBlur() {
+    if (isLocked) return;
+    focusShellPane();
     if (!titleElement) return;
     const newTitle = titleElement.textContent?.trim() || '';
-    const currentTitle = editorStore.document?.meta.title ?? doc.meta.title;
+    const currentTitle = currentPaneDocument.meta.title ?? doc.meta.title;
     if (newTitle && newTitle !== currentTitle) {
       onTitleRename?.(newTitle);
     } else if (!newTitle) {
@@ -389,21 +684,26 @@
   }
 
   function handleTitleKeyDown(e: KeyboardEvent) {
+    if (isLocked) return;
     if (e.key === 'Enter' || e.key === 'ArrowDown') {
       e.preventDefault();
       titleElement?.blur();
+      focusShellPane();
       editorStore.focus();
     } else if (e.key === 'Escape') {
       e.preventDefault();
       if (titleElement) {
-        titleElement.textContent = editorStore.document?.meta.title ?? doc.meta.title;
+        titleElement.textContent = currentPaneDocument.meta.title ?? doc.meta.title;
       }
       titleElement?.blur();
+      focusShellPane();
       editorStore.focus();
     }
   }
 
   function openTagInput() {
+    if (isLocked) return;
+    focusShellPane();
     tagInputOpen = true;
     requestAnimationFrame(() => tagInputElement?.focus());
   }
@@ -414,6 +714,7 @@
   }
 
   function addTag() {
+    focusShellPane();
     const tag = normalizeNoteTag(tagDraft);
     if (!tag) {
       closeTagInput();
@@ -434,6 +735,8 @@
   }
 
   function removeTag(tag: string) {
+    if (isLocked) return;
+    focusShellPane();
     const result = editorStore.updateDocumentMeta({
       tags: noteTags.filter((item) => item !== tag),
     });
@@ -451,6 +754,7 @@
     if (event.key === 'Escape') {
       event.preventDefault();
       closeTagInput();
+      focusShellPane();
       editorStore.focus();
     }
   }
@@ -465,14 +769,14 @@
   }
 
   function scrollToActiveAIBlock(mode: 'nearest' | 'center' | 'smart' = 'smart') {
-    const blockId = editorStore.aiActiveBlockId;
+    const blockId = aiActiveBlockId;
     if (!blockId) return;
     markProgrammaticAIFollow();
     editorStore.scrollBlockIntoView(blockId, mode);
   }
 
   function pauseAIFollow() {
-    if (!editorStore.aiActiveBlockId || aiFollowProgrammatic) return;
+    if (!aiActiveBlockId || aiFollowProgrammatic) return;
     aiFollowPaused = true;
   }
 
@@ -590,6 +894,7 @@
   }
 
   async function handleInlineAIAction(event: Event) {
+    if (!shellIsActive) return;
     const detail = (event as CustomEvent<{
       action: string;
       threadId: string;
@@ -664,11 +969,12 @@
   }
 
   export async function triggerSave() {
-    await editorStore.saveDocument();
+    if (paneId) await editorStore.savePane(paneId);
+    else await editorStore.saveDocument();
   }
 
   export function getCurrentDocument(): Document | null {
-    return editorStore.document;
+    return paneId ? currentPaneDocument : editorStore.document;
   }
 
   export function getSaveStatus(): 'saved' | 'saving' | 'unsaved' {
@@ -684,9 +990,16 @@
   }
 
   $effect(() => {
-    const docId = doc?.meta?.id ?? null;
-    if (docId && docId !== previousDocId && editorContainer) {
-      previousDocId = docId;
+    const docKey = doc?.meta?.id ? `${doc.meta.id}:${doc.meta.protection?.lockState ?? 'normal'}` : null;
+    if (doc.meta.protection?.lockState === 'locked') {
+      mountRunId += 1;
+      previousDocId = docKey;
+      onCountsChange?.(0, 0);
+      return;
+    }
+    if (docKey && docKey !== previousDocId && editorContainer) {
+      previousDocId = docKey;
+      recoveredEmptyHost = false;
       mountEditor(doc);
     }
   });
@@ -696,9 +1009,11 @@
   });
 
   $effect(() => {
-    const document = editorStore.document;
-    if (document) {
+    const document = currentPaneDocument;
+    if (document && shellIsActive) {
       aiStore.setActiveDocument(document);
+    }
+    if (document) {
       scheduleCountUpdate();
     }
   });
@@ -714,7 +1029,7 @@
   $effect(() => {
     const threads = inlineAIStore.visibleThreads;
     const isReady = editorStore.isReady;
-    if (isReady) {
+    if (shellIsActive && isReady) {
       editorStore.setInlineAIThreads(threads);
     }
     requestAnimationFrame(() => {
@@ -725,8 +1040,8 @@
 
   $effect(() => {
     const composers = inlineAIComposers;
-    const activeComposerId = editorStore.activeAIInlineComposerId;
-    if (!editorStore.isReady) {
+    const activeComposerId = shellIsActive ? editorStore.activeAIInlineComposerId : null;
+    if (!shellIsActive || !editorStore.isReady) {
       inlineAIComposerPositions = {};
       return;
     }
@@ -772,15 +1087,20 @@
   });
 
   onDestroy(() => {
+    destroyed = true;
+    mountRunId += 1;
+    editorStore.unmountPane(paneId ?? LEGACY_EDITOR_PANE_ID, mountedHost ?? editorContainer ?? null);
     if (countTimeout) clearTimeout(countTimeout);
     if (aiFollowClearTimer) clearTimeout(aiFollowClearTimer);
     inlineAIObserver?.disconnect();
   });
 </script>
 
-<div class="editor-shell-wrap">
+<div class="editor-shell-wrap" class:pane-mode={paneId}>
 <div class="editor-area">
-  <FindReplaceBar />
+  {#if shellIsActive}
+    <FindReplaceBar />
+  {/if}
   <div
     bind:this={editorScrollElement}
     class="scrollbar-thin editor-scroll"
@@ -794,13 +1114,97 @@
         <h1
           bind:this={titleElement}
           class="note-title"
-          contenteditable="true"
+          contenteditable={!isLocked}
           spellcheck="false"
           onblur={handleTitleBlur}
           onkeydown={handleTitleKeyDown}
           role="textbox"
           aria-label="Note title"
         >{doc.meta.title}</h1>
+
+        <div class="protection-bar" class:protected={isProtected} class:locked={isLocked}>
+          {#if isProtected}
+            <span class="protection-state">
+              {#if isLocked}
+                <Lock size={14} strokeWidth={2} aria-hidden="true" />
+                <span>Locked</span>
+              {:else}
+                <Unlock size={14} strokeWidth={2} aria-hidden="true" />
+                <span>Unlocked for this session</span>
+              {/if}
+            </span>
+            {#if isLocked}
+              <button type="button" class="protection-action" onclick={handleUnlockNote}>
+                <KeyRound size={14} strokeWidth={2} aria-hidden="true" />
+                <span>Unlock to edit</span>
+              </button>
+            {:else}
+              <div class="protection-ai-control">
+                <span class="protection-state ai-state" class:approved={Boolean(noteLevelAIAuthorization)}>
+                  {#if noteLevelAIAuthorization}
+                    <CheckCircle2 size={14} strokeWidth={2} aria-hidden="true" />
+                  {:else}
+                    <Sparkles size={14} strokeWidth={2} aria-hidden="true" />
+                  {/if}
+                  <span>{aiAccessSummary}</span>
+                </span>
+                <button
+                  type="button"
+                  class="protection-action"
+                  onclick={() => { aiApprovalOpen = !aiApprovalOpen; }}
+                  aria-expanded={aiApprovalOpen}
+                >
+                  <Sparkles size={14} strokeWidth={2} aria-hidden="true" />
+                  <span>{noteLevelAIAuthorization ? 'Change' : 'Grant AI access'}</span>
+                </button>
+                {#if noteLevelAIAuthorization}
+                  <button type="button" class="protection-action subtle" onclick={handleRevokeAI}>
+                    <X size={14} strokeWidth={2} aria-hidden="true" />
+                    <span>Revoke</span>
+                  </button>
+                {/if}
+                {#if aiApprovalOpen}
+                  <div class="protection-ai-popover" role="dialog" aria-label="Protected note AI access">
+                    <strong>Grant AI access</strong>
+                    <p>Allows AI to read this protected note and propose edits for 30 minutes.</p>
+                    <div class="protection-ai-popover-actions">
+                      <button
+                        type="button"
+                        class="protection-action"
+                        onclick={() => handleGrantNoteAIAccess(['note.read', 'note.write'])}
+                        disabled={grantingAIApproval}
+                      >
+                        <Sparkles size={14} strokeWidth={2} aria-hidden="true" />
+                        <span>{grantingAIApproval ? 'Granting' : 'This note + edits'}</span>
+                      </button>
+                      <button
+                        type="button"
+                        class="protection-action subtle"
+                        onclick={() => handleGrantNoteAIAccess(['note.read'])}
+                        disabled={grantingAIApproval}
+                      >
+                        <span>This note only</span>
+                      </button>
+                    </div>
+                  </div>
+                {/if}
+              </div>
+              <button type="button" class="protection-action lock-action" onclick={handleLockNotes} title="Lock protected notes" aria-label="Lock protected notes">
+                <Lock size={14} strokeWidth={2} aria-hidden="true" />
+                <span>Lock vault</span>
+              </button>
+              <button type="button" class="protection-action remove-protection-action" onclick={handleUnprotectNote} title="Remove protection" aria-label="Remove protection">
+                <ShieldOff size={14} strokeWidth={2} aria-hidden="true" />
+                <span>Remove protection</span>
+              </button>
+            {/if}
+          {:else}
+            <button type="button" class="protection-action subtle" onclick={handleProtectNote}>
+              <Shield size={14} strokeWidth={2} aria-hidden="true" />
+              <span>Protect note</span>
+            </button>
+          {/if}
+        </div>
 
         <div class="note-tags" aria-label="Note tags">
           {#each noteTags as tag (tag)}
@@ -812,15 +1216,17 @@
                 title={`See all notes tagged #${tag}`}
                 aria-label={`Open #${tag} detail view`}
               >#{tag}</button>
-              <button
-                type="button"
-                class="tag-remove"
-                onclick={() => removeTag(tag)}
-                aria-label={`Remove #${tag}`}
-                title={`Remove #${tag}`}
-              >
-                <X size={12} strokeWidth={2} aria-hidden="true" />
-              </button>
+              {#if !isLocked}
+                <button
+                  type="button"
+                  class="tag-remove"
+                  onclick={() => removeTag(tag)}
+                  aria-label={`Remove #${tag}`}
+                  title={`Remove #${tag}`}
+                >
+                  <X size={12} strokeWidth={2} aria-hidden="true" />
+                </button>
+              {/if}
             </span>
           {/each}
 
@@ -840,7 +1246,7 @@
                 }}
               />
             </form>
-          {:else}
+          {:else if !isLocked}
             <button
               type="button"
               class="tag-add"
@@ -854,14 +1260,26 @@
           {/if}
         </div>
 
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div
-          bind:this={editorContainer}
-          class="void-editor"
-          onkeydown={handleEditorUserIntent}
-          onbeforeinput={handleEditorUserIntent}
-          onpointerdown={handleEditorUserIntent}
-        ></div>
+        {#if isLocked}
+          <div class="locked-note-surface" role="status">
+            <Lock size={22} strokeWidth={1.8} aria-hidden="true" />
+            <p>Protected content is hidden while this note is locked.</p>
+            <button type="button" onclick={handleUnlockNote}>
+              <KeyRound size={14} strokeWidth={2} aria-hidden="true" />
+              <span>Unlock to edit</span>
+            </button>
+          </div>
+        {:else}
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div
+            bind:this={editorContainer}
+            class="void-editor"
+            data-pane-editor={paneId ?? LEGACY_EDITOR_PANE_ID}
+            onkeydown={handleEditorUserIntent}
+            onbeforeinput={handleEditorUserIntent}
+            onpointerdown={handleEditorUserIntent}
+          ></div>
+        {/if}
       </div>
     {/key}
   </div>
@@ -880,7 +1298,7 @@
     </button>
   {/if}
 
-  {#if inlineAIStore.unreadCount > 0}
+  {#if shellIsActive && inlineAIStore.unreadCount > 0}
     <button
       type="button"
       class="inline-ai-jump-pill"
@@ -895,7 +1313,7 @@
     </button>
   {/if}
 
-  {#if offscreenInlineAIComposers.length > 0}
+  {#if shellIsActive && offscreenInlineAIComposers.length > 0}
     <button
       type="button"
       class="inline-ai-composer-jump-pill"
@@ -911,7 +1329,7 @@
     </button>
   {/if}
 
-  {#if inlineAIMarkers.length > 0}
+  {#if shellIsActive && inlineAIMarkers.length > 0}
     <div class="inline-ai-scroll-markers" aria-label="AI response markers">
       {#each inlineAIMarkers as marker (marker.id)}
         <button
@@ -941,7 +1359,37 @@
         onmousedown={stopComposerEvent}
         onclick={stopComposerEvent}
       >
-        {#if composer.isActive}
+        {#if pendingInlineApprovalComposerId === composer.id && !hasInlineAIApproval(composer)}
+          <div class="floating-inline-ai-approval">
+            <div class="floating-inline-ai-approval-copy">
+              <Sparkles size={15} strokeWidth={2} aria-hidden="true" />
+              <div>
+                <strong>Grant AI access to this highlighted text?</strong>
+                <span>AI can read this highlighted text and propose edits for 15 minutes.</span>
+              </div>
+            </div>
+            <div class="floating-inline-ai-approval-actions">
+              <button
+                type="button"
+                class="floating-inline-ai-send"
+                onclick={() => grantInlineAIApproval(composer)}
+                disabled={grantingInlineAIApproval}
+              >
+                <Sparkles size={14} strokeWidth={2} aria-hidden="true" />
+                <span>{grantingInlineAIApproval ? 'Granting' : 'Grant access'}</span>
+              </button>
+              <button
+                type="button"
+                class="floating-inline-ai-close"
+                onclick={() => cancelInlineAIApproval(composer.id)}
+                title="Cancel"
+                aria-label="Cancel inline AI approval"
+              >
+                <X size={14} strokeWidth={2} aria-hidden="true" />
+              </button>
+            </div>
+          </div>
+        {:else if composer.isActive}
           <div class="floating-inline-ai-composer-shell">
             <Sparkles size={15} strokeWidth={2} aria-hidden="true" />
             <input
@@ -995,50 +1443,56 @@
     {/if}
   {/each}
 
-  <EditorToolbar
-    editorElement={editorContainer}
-    onAction={handleToolbarAction}
-    onAIPrompt={handleAIPrompt}
-    aiUnavailable={!aiStore.canStartAIWork}
-    aiUnavailableMessage={aiStore.availabilityMessage ?? AI_UNAVAILABLE_MESSAGE}
-    onAIUnavailable={showAIUnavailableMessage}
-  />
-
-  <SlashMenu
-    menuState={slashMenuState}
-    onSelect={handleSlashMenuSelect}
-    onClose={handleSlashMenuClose}
-    aiUnavailable={!aiStore.canStartAIWork}
-    aiUnavailableMessage={aiStore.availabilityMessage ?? AI_UNAVAILABLE_MESSAGE}
-    onAIUnavailable={showAIUnavailableMessage}
-  />
-
-  {#if pageLinkState}
-    <PageLinkPopup
-      state={pageLinkState}
-      onSelect={handlePageLinkSelect}
-      onClose={handlePageLinkClose}
-      onQueryChange={handlePageLinkQueryChange}
-      onNavigate={handlePageLinkNavigate}
+  {#if !isLocked && shellIsActive}
+    <EditorToolbar
+      editorElement={editorContainer ?? null}
+      onAction={handleToolbarAction}
+      onAIPrompt={handleAIPrompt}
+      aiUnavailable={!aiStore.canStartAIWork}
+      aiUnavailableMessage={aiStore.availabilityMessage ?? AI_UNAVAILABLE_MESSAGE}
+      onAIUnavailable={showAIUnavailableMessage}
     />
-  {/if}
 
-  {#if blockMenuState.isOpen}
-    <BlockMenu
-      blockId={blockMenuState.blockId}
-      position={blockMenuState.position}
-      currentType={blockMenuState.currentType}
-      mode={blockMenuState.mode}
-      onAction={handleBlockMenuAction}
-      onClose={handleBlockMenuClose}
+    <SlashMenu
+      menuState={slashMenuState}
+      onSelect={handleSlashMenuSelect}
+      onClose={handleSlashMenuClose}
+      aiUnavailable={!aiStore.canStartAIWork}
+      aiUnavailableMessage={aiStore.availabilityMessage ?? AI_UNAVAILABLE_MESSAGE}
+      onAIUnavailable={showAIUnavailableMessage}
     />
+
+    {#if pageLinkState}
+      <PageLinkPopup
+        state={pageLinkState}
+        onSelect={handlePageLinkSelect}
+        onClose={handlePageLinkClose}
+        onQueryChange={handlePageLinkQueryChange}
+        onNavigate={handlePageLinkNavigate}
+      />
+    {/if}
+
+    {#if blockMenuState.isOpen}
+      <BlockMenu
+        blockId={blockMenuState.blockId}
+        position={blockMenuState.position}
+        currentType={blockMenuState.currentType}
+        mode={blockMenuState.mode}
+        onAction={handleBlockMenuAction}
+        onClose={handleBlockMenuClose}
+      />
+    {/if}
   {/if}
 </div>
-<RelationsPanel />
-<LineageHistoryWorkspace />
+{#if shellIsActive}
+  <RelationsPanel />
+  <LineageHistoryWorkspace />
+{/if}
 </div>
 
-<BranchPicker />
+{#if shellIsActive}
+  <BranchPicker />
+{/if}
 
 <style>
   .editor-shell-wrap {
@@ -1057,12 +1511,159 @@
     overflow: hidden;
     position: relative;
     background: var(--bg-editor);
+    container-type: inline-size;
   }
 
   .editor-scroll {
     flex: 1;
     overflow-y: auto;
     overflow-x: hidden;
+  }
+
+  .protection-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    min-height: 28px;
+    margin: -4px 0 12px;
+    color: var(--text-tertiary);
+    font-size: var(--text-caption);
+  }
+
+  .protection-ai-control {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .protection-state,
+  .protection-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-height: 26px;
+    border-radius: var(--radius-sm);
+    letter-spacing: 0;
+  }
+
+  .protection-state {
+    padding: 0 8px;
+    border: 1px solid var(--border-light);
+    background: var(--bg-subtle);
+    color: var(--text-secondary);
+    font-weight: 600;
+  }
+
+  .protection-state.ai-state.approved {
+    border-color: color-mix(in srgb, var(--accent-primary) 35%, var(--border-light));
+    color: var(--text-primary);
+  }
+
+  .protection-bar.locked .protection-state {
+    border-color: color-mix(in srgb, var(--color-warning, #b98500) 35%, var(--border-light));
+    color: var(--color-warning, #8a6200);
+  }
+
+  .protection-action,
+  .locked-note-surface button {
+    border: 1px solid var(--border-light);
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    font: inherit;
+    font-size: var(--text-caption);
+    font-weight: 650;
+    cursor: pointer;
+    transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+  }
+
+  .protection-action {
+    padding: 0 9px;
+  }
+
+  .protection-action.subtle {
+    background: transparent;
+  }
+
+  .remove-protection-action {
+    color: var(--color-danger, #b42318);
+  }
+
+  .protection-ai-popover {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 45;
+    display: grid;
+    gap: 8px;
+    width: min(280px, calc(100vw - 48px));
+    padding: 10px;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-md);
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    box-shadow: var(--shadow-md);
+  }
+
+  .protection-ai-popover strong {
+    color: var(--text-primary);
+    font-size: var(--text-caption);
+  }
+
+  .protection-ai-popover p {
+    margin: 0;
+    font-size: var(--text-caption);
+    line-height: 1.4;
+  }
+
+  .protection-ai-popover-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .protection-action:hover,
+  .protection-action:focus-visible,
+  .locked-note-surface button:hover,
+  .locked-note-surface button:focus-visible {
+    border-color: var(--accent-primary);
+    background: var(--bg-hover);
+    color: var(--text-primary);
+    outline: none;
+  }
+
+  .locked-note-surface {
+    display: flex;
+    min-height: 260px;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 12px;
+    padding: 32px;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-md);
+    background: var(--bg-subtle);
+    color: var(--text-secondary);
+    text-align: center;
+  }
+
+  .locked-note-surface p {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: var(--text-small);
+  }
+
+  .locked-note-surface button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 30px;
+    padding: 0 11px;
+    border-radius: var(--radius-sm);
   }
 
   .ai-follow-jump {
@@ -1260,6 +1861,54 @@
     box-shadow: 0 10px 28px rgba(15, 23, 42, 0.12);
   }
 
+  .floating-inline-ai-approval {
+    display: grid;
+    gap: 9px;
+    width: min(360px, calc(100vw - 32px));
+    max-width: inherit;
+    padding: 10px;
+    border: 1px solid color-mix(in srgb, var(--accent-primary) 28%, var(--border-light));
+    border-radius: var(--radius-md);
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    box-shadow: 0 10px 28px rgba(15, 23, 42, 0.12);
+  }
+
+  .floating-inline-ai-approval-copy {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .floating-inline-ai-approval-copy :global(svg) {
+    margin-top: 1px;
+    color: var(--accent-primary);
+    flex-shrink: 0;
+  }
+
+  .floating-inline-ai-approval-copy strong,
+  .floating-inline-ai-approval-copy span {
+    display: block;
+  }
+
+  .floating-inline-ai-approval-copy strong {
+    color: var(--text-primary);
+    font-size: var(--text-caption);
+  }
+
+  .floating-inline-ai-approval-copy span {
+    margin-top: 2px;
+    font-size: var(--text-caption);
+    line-height: 1.35;
+  }
+
+  .floating-inline-ai-approval-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    justify-content: flex-end;
+  }
+
   .floating-inline-ai-composer-shell input {
     flex: 1;
     min-width: 0;
@@ -1355,6 +2004,24 @@
     margin: 0 auto;
     padding: 64px 60px 180px;
     animation: editor-fade-in 280ms var(--ease-out-soft);
+  }
+
+  .pane-mode .editor-content-wrapper {
+    width: 100%;
+    max-width: min(var(--content-max-width), calc(100% - 28px));
+    padding: 34px clamp(18px, 6cqw, 46px) 128px;
+  }
+
+  @container (max-width: 560px) {
+    .pane-mode .editor-content-wrapper {
+      max-width: calc(100% - 20px);
+      padding-inline: 16px;
+    }
+
+    .pane-mode .note-title {
+      font-size: calc(var(--text-note-title) * 0.82);
+      line-height: 1.14;
+    }
   }
 
   .note-title {

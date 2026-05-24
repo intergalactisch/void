@@ -19,6 +19,7 @@ import type { SessionService } from '$lib/ports/inbound/SessionService';
 import type { ReferenceService } from '$lib/ports/inbound/ReferenceService';
 import type { IndexService } from '$lib/ports/inbound/IndexService';
 import type { LineageRecordOptions } from '$lib/ports/inbound/LineageService';
+import type { ProtectionService } from '$lib/ports/inbound/ProtectionService';
 import type { AgentRunStoragePort } from '$lib/ports/outbound/AgentRunStoragePort';
 import type { AgentEventStreamPort } from '$lib/ports/outbound/AgentEventStreamPort';
 import type { ResearchSourcePort } from '$lib/ports/outbound/ResearchSourcePort';
@@ -135,7 +136,8 @@ export class AgentOrchestrationServiceImpl implements AgentOrchestrationService 
     private readonly collaboration?: NoteCollaborationService | null,
     private readonly deepResearchPipeline?: DeepResearchPipeline | null,
     private readonly sessionService?: SessionService | null,
-    private readonly referenceService?: ReferenceService | null
+    private readonly referenceService?: ReferenceService | null,
+    private readonly protection?: ProtectionService | null
   ) {
     this.engine = new AgentRunEngine(storage, eventStream);
   }
@@ -741,6 +743,12 @@ export class AgentOrchestrationServiceImpl implements AgentOrchestrationService 
       this.notify();
     }
     return result;
+  }
+
+  async listRunSummaries(
+    query?: Parameters<AgentOrchestrationService['listRunSummaries']>[0]
+  ): ReturnType<AgentOrchestrationService['listRunSummaries']> {
+    return this.storage.listSummaries(query);
   }
 
   getState(): AgentRunState {
@@ -2220,6 +2228,16 @@ export class AgentOrchestrationServiceImpl implements AgentOrchestrationService 
 
     for (const batch of batches) {
       const batchMatches = await Promise.all(batch.map(async (item): Promise<VaultMatch | null> => {
+        if (item.protection?.level === 'protected') {
+          if (item.protection.lockState === 'locked') return null;
+          const policy = this.protection?.currentPolicy();
+          if (
+            policy?.requireAIApprovalForProtectedReads !== false &&
+            !this.protection?.hasAIContextAuthorization(item.protection.noteId, 'note.read')
+          ) {
+            return null;
+          }
+        }
         const contentResult = await this.documents.readContent(item.path);
         if (!contentResult.ok) return null;
         const content = contentResult.value.slice(0, 75_000);
@@ -3587,9 +3605,9 @@ function allowedToolsForWorkerScope(allowedTools: string[], writeScope: AgentWor
   const extras = writeScope === 'staged_draft'
     ? ['note:create']
     : writeScope === 'proposed_patch'
-      ? ['editor:apply-note-patch', 'editor:insert-blocks', 'editor:replace-block', 'note:update']
+      ? ['editor:apply-note-patch', 'editor:insert-blocks', 'editor:insert-code-block', 'editor:replace-block', 'editor:update-code-block', 'note:update']
       : writeScope === 'direct_scoped'
-        ? ['note:create', 'note:update', 'editor:apply-note-patch', 'todo:create', 'todo:update', 'todo:toggle']
+        ? ['note:create', 'note:update', 'editor:apply-note-patch', 'editor:insert-code-block', 'editor:update-code-block', 'todo:create', 'todo:update', 'todo:toggle']
         : [];
   return unique([...allowedTools, ...extras]);
 }

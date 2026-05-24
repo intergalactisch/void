@@ -2,6 +2,7 @@
   import MarkdownIt from 'markdown-it';
   import { Bot, ChevronDown, ChevronRight, FileText, Layers, Quote } from '@lucide/svelte';
   import type { AgentWorkerMessage } from '$lib/domain/entities/AgentRun';
+  import { renderCodeFenceHtml } from '$lib/core/codeFence';
 
   const md = new MarkdownIt({
     html: false,
@@ -9,6 +10,12 @@
     typographer: true,
     breaks: true,
   });
+
+  md.renderer.rules.fence = (tokens, idx) => {
+    const token = tokens[idx];
+    if (!token) return '';
+    return renderCodeFenceHtml(token.content, token.info);
+  };
 
   interface Props {
     message: AgentWorkerMessage;

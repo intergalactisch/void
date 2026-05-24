@@ -21,6 +21,8 @@
   import type { AgentRun } from '$lib/domain/entities/AgentRun';
   import type { ResourceLockSnapshot } from '$lib/events';
   import { aiStore, commandCenterStore, lineageStore, operationsStore, uiStore } from '$lib/stores';
+  import type { CommandInspectorMode } from '$lib/stores/commandCenter.svelte';
+  import { InfoPopover } from '$lib/components/shared';
   import OperationDetail from '$lib/components/operations/OperationDetail.svelte';
   import OperationItem from '$lib/components/operations/OperationItem.svelte';
   import CommandRunCard from './CommandRunCard.svelte';
@@ -58,6 +60,8 @@
   let activeOperations = $derived(operationsStore.activeOperations);
   let unappliedResults = $derived(operationsStore.unappliedResultOperations);
   let selectedResultOperation = $derived(commandCenterStore.selectedResultOperation);
+  let tabListRef: HTMLElement | null = $state(null);
+  const inspectorModes: CommandInspectorMode[] = ['now', 'inbox', 'history', 'templates'];
 
   /** Run shown in the "Now" tab — selected takes priority, then active. */
   let nowRun = $derived(selectedRun ?? activeRun ?? null);
@@ -197,6 +201,66 @@
 
   function formatStatus(value: string): string {
     return value.replace(/_/g, ' ');
+  }
+
+  function tabId(value: CommandInspectorMode): string {
+    return `command-inspector-tab-${value}`;
+  }
+
+  function panelId(value: CommandInspectorMode): string {
+    return `command-inspector-panel-${value}`;
+  }
+
+  function focusTab(value: CommandInspectorMode): void {
+    requestAnimationFrame(() => {
+      tabListRef
+        ?.querySelector<HTMLButtonElement>(`[data-inspector-tab="${value}"]`)
+        ?.focus();
+    });
+  }
+
+  function selectInspectorMode(value: CommandInspectorMode, focus = false): void {
+    switch (value) {
+      case 'now':
+        commandCenterStore.showNow();
+        break;
+      case 'inbox':
+        commandCenterStore.showInbox();
+        break;
+      case 'history':
+        commandCenterStore.showHistory();
+        break;
+      case 'templates':
+        commandCenterStore.showTemplates();
+        break;
+    }
+    if (focus) focusTab(value);
+  }
+
+  function inspectorModeAt(index: number): CommandInspectorMode {
+    return inspectorModes[index] ?? 'now';
+  }
+
+  function handleTabKeydown(event: KeyboardEvent, current: CommandInspectorMode): void {
+    const index = inspectorModes.indexOf(current);
+    if (index === -1) return;
+
+    let next: CommandInspectorMode | null = null;
+    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+      next = inspectorModeAt((index + 1) % inspectorModes.length);
+    } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+      next = inspectorModeAt((index - 1 + inspectorModes.length) % inspectorModes.length);
+    } else if (event.key === 'Home') {
+      next = inspectorModeAt(0);
+    } else if (event.key === 'End') {
+      next = inspectorModeAt(inspectorModes.length - 1);
+    } else if (event.altKey && ['1', '2', '3', '4'].includes(event.key)) {
+      next = inspectorModes[Number(event.key) - 1] ?? null;
+    }
+
+    if (!next) return;
+    event.preventDefault();
+    selectInspectorMode(next, true);
   }
 
   function formatTime(iso: string): string {
@@ -443,15 +507,20 @@
     {/if}
   </header>
 
-  <div class="inspector-tabs" role="tablist" aria-label="Inspector views">
+  <div class="inspector-tabs" role="tablist" aria-label="Inspector views" bind:this={tabListRef}>
     <div class="tab-row">
       <button
         type="button"
         class="tab"
         class:active={mode === 'now'}
         role="tab"
+        id={tabId('now')}
+        data-inspector-tab="now"
         aria-selected={mode === 'now'}
-        onclick={() => commandCenterStore.showNow()}
+        aria-controls={panelId('now')}
+        tabindex={mode === 'now' ? 0 : -1}
+        onclick={() => selectInspectorMode('now')}
+        onkeydown={(event) => handleTabKeydown(event, 'now')}
       >
         <Zap size={13} strokeWidth={1.9} aria-hidden="true" />
         <span>Now</span>
@@ -462,8 +531,13 @@
         class:active={mode === 'inbox'}
         class:tab-attention={inboxCount > 0 && mode !== 'inbox'}
         role="tab"
+        id={tabId('inbox')}
+        data-inspector-tab="inbox"
         aria-selected={mode === 'inbox'}
-        onclick={() => commandCenterStore.showInbox()}
+        aria-controls={panelId('inbox')}
+        tabindex={mode === 'inbox' ? 0 : -1}
+        onclick={() => selectInspectorMode('inbox')}
+        onkeydown={(event) => handleTabKeydown(event, 'inbox')}
       >
         <Inbox size={13} strokeWidth={1.9} aria-hidden="true" />
         <span>Inbox</span>
@@ -476,8 +550,13 @@
         class="tab"
         class:active={mode === 'history'}
         role="tab"
+        id={tabId('history')}
+        data-inspector-tab="history"
         aria-selected={mode === 'history'}
-        onclick={() => commandCenterStore.showHistory()}
+        aria-controls={panelId('history')}
+        tabindex={mode === 'history' ? 0 : -1}
+        onclick={() => selectInspectorMode('history')}
+        onkeydown={(event) => handleTabKeydown(event, 'history')}
       >
         <History size={13} strokeWidth={1.9} aria-hidden="true" />
         <span>History</span>
@@ -490,10 +569,16 @@
       type="button"
       class="tab-trailing"
       class:active={mode === 'templates'}
+      role="tab"
+      id={tabId('templates')}
+      data-inspector-tab="templates"
       title="Action templates"
       aria-label="Action templates"
-      aria-pressed={mode === 'templates'}
-      onclick={() => commandCenterStore.showTemplates()}
+      aria-selected={mode === 'templates'}
+      aria-controls={panelId('templates')}
+      tabindex={mode === 'templates' ? 0 : -1}
+      onclick={() => selectInspectorMode('templates')}
+      onkeydown={(event) => handleTabKeydown(event, 'templates')}
     >
       {#if mode === 'templates'}
         <X size={13} strokeWidth={1.9} aria-hidden="true" />
@@ -501,9 +586,24 @@
         <Sparkles size={13} strokeWidth={1.9} aria-hidden="true" />
       {/if}
     </button>
+    <InfoPopover
+      title="Inspector views"
+      body="The inspector gathers active work, reviewable results, and previous runs for the current command thread."
+      items={[
+        'Now is live progress and current context.',
+        'Inbox holds changes waiting for you to apply or discard.',
+        'History keeps completed agent runs for reference.',
+      ]}
+    />
   </div>
 
-  <div class="inspector-body scrollbar-thin">
+  <div
+    class="inspector-body scrollbar-thin"
+    role="tabpanel"
+    id={panelId(mode)}
+    aria-labelledby={tabId(mode)}
+    tabindex="0"
+  >
     {#if mode === 'templates'}
       <CommandTemplatePanel />
     {:else if mode === 'inbox'}
@@ -629,7 +729,19 @@
       {#if activeRuns.length > 0}
         <section class="swarm-ops-board" aria-label="Swarm operations overview">
           <div class="swarm-ops-head">
-            <strong>Swarm operations</strong>
+            <span class="board-title">
+              <strong>Swarm operations</strong>
+              <InfoPopover
+                title="Swarm operations"
+                body="Swarm mode splits a larger request across workers and then gathers their outputs."
+                items={[
+                  'Workers are the live agents doing parts of the job.',
+                  'Outputs are notes, sources, media, or other artifacts produced so far.',
+                  'Queued writes wait until the current writer is done.',
+                ]}
+                align="start"
+              />
+            </span>
             <span>{activeSwarmMetrics.swarms}/{activeSwarmMetrics.runs} swarm mode</span>
           </div>
 
@@ -685,7 +797,18 @@
       {#if collaborationSurfaces.length > 0}
         <section class="collaboration-board" aria-label="Realtime collaboration map">
           <div class="collaboration-board-head">
-            <strong>Collaboration map</strong>
+            <span class="board-title">
+              <strong>Collaboration map</strong>
+              <InfoPopover
+                title="Collaboration map"
+                body="This map shows where agents are currently writing so changes do not collide."
+                items={[
+                  'A surface is a note, task file, tool, or system area.',
+                  'Waiting means another write is queued behind the current one.',
+                ]}
+                align="start"
+              />
+            </span>
             <span>{collaborationSurfaces.length} surface{collaborationSurfaces.length === 1 ? '' : 's'}</span>
           </div>
           <div class="collaboration-list" role="list">
@@ -721,7 +844,18 @@
       {#if collaborationHotspots.length > 0}
         <section class="hotspot-board" aria-label="Collaboration hotspots">
           <div class="hotspot-board-head">
-            <strong>Collaboration hotspots</strong>
+            <span class="board-title">
+              <strong>Collaboration hotspots</strong>
+              <InfoPopover
+                title="Collaboration hotspots"
+                body="Hotspots are places that recently had several writes trying to happen at once."
+                items={[
+                  'Live means the pressure is happening now.',
+                  'Recent means Void is keeping the area visible for context.',
+                ]}
+                align="start"
+              />
+            </span>
             <span>{liveHotspotCount} live / {collaborationHotspots.length} tracked</span>
           </div>
           <div class="hotspot-list" role="list">
@@ -751,7 +885,18 @@
       {#if activeRuns.length > 1}
         <section class="active-run-board" aria-label="Active agent runs">
           <div class="active-run-board-head">
-            <strong>Active fleet</strong>
+            <span class="board-title">
+              <strong>Active fleet</strong>
+              <InfoPopover
+                title="Active fleet"
+                body="The active fleet lists multiple agent runs that are live at the same time."
+                items={[
+                  'Select a row to inspect that run.',
+                  'Progress is averaged from the run tasks.',
+                ]}
+                align="start"
+              />
+            </span>
             <span>{activeRuns.length} live</span>
           </div>
           <div class="active-run-list" role="list">
@@ -781,7 +926,19 @@
       {#if lineageVisible}
         <section class="lineage-action-board" aria-label="Lineage actions">
           <div class="lineage-action-head">
-            <strong>{lineageLineLabel}</strong>
+            <span class="board-title">
+              <strong>{lineageLineLabel}</strong>
+              <InfoPopover
+                title="Lineage actions"
+                body="These shortcuts work on the line currently selected in the editor."
+                items={[
+                  'History and Trace open the full saved history workspace.',
+                  'Restore uses the latest previous version of this line.',
+                  'Repair is available only when Void has a likely match.',
+                ]}
+                align="start"
+              />
+            </span>
             <span>{lineageStore.notePath ?? 'No note selected'}</span>
           </div>
 
@@ -838,7 +995,18 @@
       {#if writeLanes.length > 0}
         <section class="write-lane-board" aria-label="Write lanes">
           <div class="write-lane-board-head">
-            <strong>Write lanes</strong>
+            <span class="board-title">
+              <strong>Write lanes</strong>
+              <InfoPopover
+                title="Write lanes"
+                body="Write lanes serialize edits so two pieces of work do not write the same note or task at once."
+                items={[
+                  'Writing means a lane is currently held.',
+                  'Waiting means other work is queued for that same resource.',
+                ]}
+                align="start"
+              />
+            </span>
             <span>{writeLanes.filter((lane) => lane.queued > 0).length} queued</span>
           </div>
           <div class="write-lane-list" role="list">
@@ -1190,6 +1358,13 @@
     align-items: center;
     justify-content: space-between;
     gap: 8px;
+    min-width: 0;
+  }
+
+  .board-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
     min-width: 0;
   }
 

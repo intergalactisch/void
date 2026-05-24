@@ -100,6 +100,16 @@ export class IndexServiceImpl implements IndexService {
       const existing = graph.notes[note.path];
       if (existing && existing.concepts.length > 0) continue;
 
+      if (note.protection?.level === 'protected') {
+        graph.notes[note.path] = {
+          concepts: [],
+          modified: new Date().toISOString(),
+          wordCount: 0,
+        };
+        indexed++;
+        continue;
+      }
+
       const contentResult = await this.documents.readContent(note.path);
       if (contentResult.ok) {
         const concepts = this.extractConceptsLocal(note.path, contentResult.value);
@@ -204,9 +214,12 @@ export class IndexServiceImpl implements IndexService {
 
     for (const related of relatedResult.value) {
       let excerpt = '';
+      const note = this.findNoteByPath(related.path);
 
-      const contentResult = await this.documents.readContent(related.path);
-      if (contentResult.ok) {
+      const contentResult = note?.protection?.level === 'protected'
+        ? null
+        : await this.documents.readContent(related.path);
+      if (contentResult?.ok) {
         // Take first ~400 chars, trimming at word boundary
         const raw = contentResult.value
           .replace(/^---\n[\s\S]*?\n---\n*/, '') // Strip frontmatter
@@ -399,16 +412,21 @@ export class IndexServiceImpl implements IndexService {
     }
   }
 
-  private flattenNotes(items: NotesListItem[]): Array<{ path: string; title: string }> {
-    const result: Array<{ path: string; title: string }> = [];
+  private flattenNotes(items: NotesListItem[]): NotesListItem[] {
+    const result: NotesListItem[] = [];
     for (const item of items) {
       if (!item.isFolder) {
-        result.push({ path: item.path, title: item.title });
+        result.push(item);
       }
       if (item.children) {
         result.push(...this.flattenNotes(item.children));
       }
     }
     return result;
+  }
+
+  private findNoteByPath(path: string): NotesListItem | null {
+    return this.flattenNotes(this.notes.getState().items)
+      .find((item) => !item.isFolder && item.path === path) ?? null;
   }
 }

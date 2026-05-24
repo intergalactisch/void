@@ -16,6 +16,8 @@ import type {
   OperationService,
   OperationRequest,
   OperationSessionOptions,
+  OperationSummary,
+  OperationSummaryQuery,
   QueueStatus,
   OperationStateChange,
 } from '$lib/ports/inbound/OperationService';
@@ -47,6 +49,13 @@ import type { OperationTemplate, ContextRequirement } from '$lib/domain/values/O
 import { renderPromptTemplate } from '$lib/domain/values/OperationTemplate';
 import type { OperationOutput } from '$lib/domain/values/OperationResult';
 import { OperationTemplateRegistry } from './OperationTemplateRegistry';
+import {
+  clampPageLimit,
+  coerceDate,
+  cursorToOffset,
+  nextOffsetCursor,
+  type PagedResult,
+} from '$lib/ports/outbound/PagedQuery';
 
 /** Maximum number of operations to retain on disk */
 const RETENTION_LIMIT = 100;
@@ -480,6 +489,49 @@ export class OperationServiceImpl implements OperationService {
     };
   }
 
+  async listOperationSummaries(query: OperationSummaryQuery = {}): Promise<Result<PagedResult<OperationSummary>, Error>> {
+    const limit = clampPageLimit(query.limit);
+    const offset = cursorToOffset(query.cursor);
+    const dateFrom = coerceDate(query.dateFrom);
+    const dateTo = coerceDate(query.dateTo);
+    const needle = query.query?.trim().toLocaleLowerCase() ?? '';
+    const sortBy = query.sortBy ?? 'updatedAt';
+    const sortOrder = query.sortOrder ?? 'desc';
+
+    const summaries = Array.from(this.#operations.values())
+      .map((operation) => this.#toOperationSummary(operation))
+      .filter((summary) => {
+        if (query.status && query.status !== 'all') {
+          if (query.status === 'active' && isTerminalStatus(summary.status)) return false;
+          if (query.status === 'terminal' && !isTerminalStatus(summary.status)) return false;
+          if (query.status !== 'active' && query.status !== 'terminal' && summary.status !== query.status) return false;
+        }
+        if (query.type && query.type !== 'all' && summary.type !== query.type) return false;
+        const updatedAt = summary.updatedAt;
+        if (dateFrom && updatedAt < dateFrom) return false;
+        if (dateTo && updatedAt > dateTo) return false;
+        if (!needle) return true;
+        return [
+          summary.id,
+          summary.label,
+          summary.prompt,
+          summary.status,
+          summary.type,
+        ].some((value) => value.toLocaleLowerCase().includes(needle));
+      })
+      .sort((a, b) => {
+        const aTime = (sortBy === 'createdAt' ? a.createdAt : a.updatedAt).getTime();
+        const bTime = (sortBy === 'createdAt' ? b.createdAt : b.updatedAt).getTime();
+        return sortOrder === 'asc' ? aTime - bTime : bTime - aTime;
+      });
+
+    return ok({
+      items: summaries.slice(offset, offset + limit),
+      nextCursor: nextOffsetCursor(offset, limit, summaries.length),
+      total: summaries.length,
+    });
+  }
+
   // =========================================================================
   // History
   // =========================================================================
@@ -545,6 +597,20 @@ export class OperationServiceImpl implements OperationService {
     } catch (e) {
       console.warn('[OperationService] Failed to persist operation:', e);
     }
+  }
+
+  #toOperationSummary(operation: Operation): OperationSummary {
+    return {
+      id: operation.id,
+      type: operation.type,
+      status: operation.status,
+      label: operation.label,
+      prompt: operation.prompt,
+      outputCount: operation.result?.outputs.length ?? 0,
+      createdAt: operation.createdAt,
+      updatedAt: operation.completedAt ?? operation.startedAt ?? operation.createdAt,
+      completedAt: operation.completedAt,
+    };
   }
 
   async #applyRetention(): Promise<void> {

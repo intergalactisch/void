@@ -1,10 +1,17 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import { AlertCircle, Bot, Check, Copy, MessageSquare, PanelRightClose, Plus, RefreshCw, Settings, Sparkles, X } from '@lucide/svelte';
-  import { aiStore, commandCenterStore, lineageStore, operationsStore, uiStore } from '$lib/stores';
+  import { AlertCircle, Bot, Check, Copy, Lock, MessageSquare, PanelRightClose, Plus, RefreshCw, Settings, ShieldCheck, Sparkles, X } from '@lucide/svelte';
+  import { aiStore, commandCenterStore, editorStore, lineageStore, operationsStore, protectionStore, toastStore, uiStore } from '$lib/stores';
   import { copyTextToClipboard } from '$lib/utils/clipboard';
-  import { buildRefId } from '$lib/domain/values';
+  import { createFocusTrap } from '$lib/utils/focusTrap';
+  import { buildRefId, hasSelection } from '$lib/domain/values';
   import { AI_UNAVAILABLE_MESSAGE } from '$lib/domain/values/AIAvailability';
+  import {
+    authorizationResourceMatches,
+    createAISelectionResource,
+    type AIContextAuthorization,
+    type AIContextAuthorizationScope,
+  } from '$lib/domain/values/Protection';
   import CommandComposer from './CommandComposer.svelte';
   import CommandHistoryPanel from './CommandHistoryPanel.svelte';
   import CommandInspector from './CommandInspector.svelte';
@@ -18,11 +25,19 @@
 
   let { visible = false, onClose }: Props = $props();
 
+  let commandCenterRef: HTMLElement | null = $state(null);
   let transcriptRef: HTMLDivElement | null = $state(null);
+  let focusTrapCleanup: (() => void) | null = null;
   let idCopyState = $state<'idle' | 'copied' | 'failed'>('idle');
   let retryingAsSwarm = $state(false);
+  let protectedScope = $state<AIContextAuthorizationScope>('note.read');
+  let protectedDuration = $state(30);
+  let approvingProtectedContext = $state(false);
+  let unlockingProtectedContext = $state(false);
+  let protectedAccessEditing = $state(false);
   let copyResetTimer: ReturnType<typeof setTimeout> | null = null;
   let previousConversationId: string | null = null;
+  let previousProtectedPath: string | null = null;
 
   let visibleMessageCount = $derived(
     (aiStore.currentConversation?.messages ?? []).filter((message) => message.visibility !== 'internal').length
@@ -67,6 +82,9 @@
   });
   let workBadge = $derived(commandCenterStore.activeWorkCount);
   let inspectorVisible = $derived(commandCenterStore.hasInspectorContent || lineageStore.visible);
+  let historyCollapsed = $derived(commandCenterStore.historyCollapsed);
+  let inspectorCollapsed = $derived(commandCenterStore.inspectorCollapsed);
+  let inspectorLayout = $derived(!inspectorVisible ? 'hidden' : inspectorCollapsed ? 'rail' : 'visible');
   let workerView = $derived(commandCenterStore.workerConversationVisible);
   let selectedWorkerDetail = $derived(commandCenterStore.selectedWorker);
   let retryableSwarmRun = $derived(commandCenterStore.retryableSwarmRun);
@@ -85,6 +103,93 @@
       ? 'Repair Research Notes'
       : 'Retry as Swarm'
   );
+  let activeProtectedMeta = $derived(editorStore.document?.meta.protection ?? null);
+  let activeProtectedPath = $derived(editorStore.activePath ?? null);
+  let activeProtectedPane = $derived.by(() =>
+    editorStore.activePaneId ? editorStore.panes[editorStore.activePaneId] ?? null : null
+  );
+  let activeProtectedSelection = $derived.by(() => {
+    if (!activeProtectedMeta || !activeProtectedPath) return null;
+    if (activeProtectedPane) {
+      if (activeProtectedPane.path !== activeProtectedPath) return null;
+      return hasSelection(activeProtectedPane.selection) ? activeProtectedPane.selection : null;
+    }
+    const selection = editorStore.document?.path === activeProtectedPath ? editorStore.selection : null;
+    return selection && hasSelection(selection) ? selection : null;
+  });
+  let activeProtectedSelectionResource = $derived.by(() => {
+    if (!activeProtectedPath || !activeProtectedSelection) return null;
+    return createAISelectionResource({
+      notePath: activeProtectedPath,
+      from: activeProtectedSelection.from,
+      to: activeProtectedSelection.to,
+      selectedText: activeProtectedSelection.text,
+    });
+  });
+  let protectedScopeOptions = $derived.by((): { scope: AIContextAuthorizationScope; label: string }[] => {
+    const options: { scope: AIContextAuthorizationScope; label: string }[] = [];
+    if (activeProtectedSelection) {
+      options.push({
+        scope: 'selection.read',
+        label: `Selected text · ${activeProtectedSelection.text.length} chars`,
+      });
+    }
+    options.push(
+      { scope: 'note.read', label: 'This note' },
+      { scope: 'related.read', label: 'Related notes' },
+    );
+    return options;
+  });
+  let activeProtectedTitle = $derived.by(() => {
+    const title = editorStore.document?.meta.title?.trim();
+    if (title) return title;
+    return activeProtectedPath?.split('/').pop()?.replace(/\.md$/i, '') ?? 'Protected note';
+  });
+  let activeProtectedLocked = $derived(activeProtectedMeta?.lockState === 'locked');
+  let showProtectedContextSheet = $derived(Boolean(activeProtectedMeta && activeProtectedPath));
+  let activeProtectedAuthorization = $derived.by(() => {
+    if (!activeProtectedMeta || !activeProtectedPath) return null;
+    const now = Date.now();
+    return protectionStore.authorizations
+      .filter((authorization) =>
+        authorization.noteIds.includes(activeProtectedMeta.noteId) &&
+        new Date(authorization.expiresAt).getTime() > now &&
+        (
+          authorization.resources.length === 0 ||
+          authorization.resources.some((resource) =>
+            authorizationResourceMatches(resource, activeProtectedPath) ||
+            (activeProtectedSelectionResource
+              ? authorizationResourceMatches(resource, activeProtectedSelectionResource)
+              : false)
+          )
+        )
+      )
+      .sort((a, b) => new Date(b.expiresAt).getTime() - new Date(a.expiresAt).getTime())[0] ?? null;
+  });
+  let protectedContextTitle = $derived.by(() => {
+    if (activeProtectedLocked) return 'Protected note locked';
+    return activeProtectedAuthorization ? 'AI access granted' : 'AI access blocked';
+  });
+  let protectedContextDetail = $derived.by(() => {
+    if (activeProtectedLocked) return `${activeProtectedTitle} · Unlock before granting AI access`;
+    if (activeProtectedAuthorization) {
+      return `${formatProtectedScopes(activeProtectedAuthorization.scopes)} · ${formatAuthorizationTimeLeft(activeProtectedAuthorization)} · ${activeProtectedTitle}`;
+    }
+    return `${activeProtectedTitle} · Protected note`;
+  });
+  let showProtectedGrantControls = $derived(!activeProtectedAuthorization || protectedAccessEditing);
+
+  $effect(() => {
+    if (activeProtectedPath === previousProtectedPath) return;
+    previousProtectedPath = activeProtectedPath;
+    protectedAccessEditing = false;
+  });
+
+  $effect(() => {
+    if (protectedScope === 'selection.read' && !activeProtectedSelection) {
+      protectedScope = 'note.read';
+    }
+  });
 
   function scrollTranscriptToBottom() {
     if (!transcriptRef) return;
@@ -143,6 +248,92 @@
     }
   }
 
+  async function handleUnlockProtectedContext() {
+    if (!activeProtectedPath || unlockingProtectedContext) return;
+    unlockingProtectedContext = true;
+    try {
+      const ok = await protectionStore.unlockWithRecoveryPrompt();
+      if (!ok) {
+        toastStore.error(protectionStore.error?.message ?? 'Could not unlock protected notes');
+        return;
+      }
+      const result = await editorStore.reloadDocument(activeProtectedPath, { flushDirty: true });
+      if (!result.ok) {
+        toastStore.error(result.error.message);
+        return;
+      }
+      toastStore.success('Protected note unlocked');
+    } finally {
+      unlockingProtectedContext = false;
+    }
+  }
+
+  async function handleApproveProtectedContext() {
+    if (!activeProtectedMeta || !activeProtectedPath || approvingProtectedContext) return;
+    if (activeProtectedMeta.lockState === 'locked') {
+      toastStore.error('Unlock the protected note first');
+      return;
+    }
+
+    approvingProtectedContext = true;
+    try {
+      const approvalScope = protectedScope === 'selection.read' && !activeProtectedSelectionResource
+        ? 'note.read'
+        : protectedScope;
+      const resource = approvalScope === 'selection.read'
+        ? activeProtectedSelectionResource ?? activeProtectedPath
+        : activeProtectedPath;
+      const authorization = await protectionStore.authorizeContext(activeProtectedMeta, activeProtectedPath, {
+        scopes: [approvalScope],
+        durationMinutes: protectedDuration,
+        providerTarget: 'local-agent',
+        resources: [resource],
+        reason: `Approved from Command Center for ${formatProtectedScopes([approvalScope])}`,
+      });
+      if (!authorization) {
+        toastStore.error(protectionStore.error?.message ?? 'Could not grant AI access');
+        return;
+      }
+      protectedAccessEditing = false;
+      toastStore.success('AI access granted for this protected note');
+    } finally {
+      approvingProtectedContext = false;
+    }
+  }
+
+  function handleRevokeProtectedContext() {
+    if (!activeProtectedAuthorization) return;
+    protectionStore.revokeContext(activeProtectedAuthorization.id);
+    protectedAccessEditing = false;
+    toastStore.info('AI access revoked for this protected note');
+  }
+
+  function formatProtectedScopes(scopes: AIContextAuthorizationScope[]): string {
+    const labels: string[] = [];
+    if (scopes.includes('selection.read')) labels.push('Selected text');
+    if (scopes.includes('note.read')) labels.push('This note');
+    if (scopes.includes('related.read')) labels.push('Related notes');
+    if (scopes.includes('history.read')) labels.push('History');
+    if (scopes.includes('note.write')) labels.push('Edit proposals');
+    if (labels.length === 0) return 'Custom access';
+    if (labels.length === 2 && labels[1] === 'Edit proposals') {
+      return `${labels[0]} + edit proposals`;
+    }
+    return labels.join(' + ');
+  }
+
+  function formatAuthorizationTimeLeft(authorization: AIContextAuthorization): string {
+    const remainingMs = new Date(authorization.expiresAt).getTime() - Date.now();
+    if (remainingMs <= 0) return 'Expired';
+    const minutes = Math.max(1, Math.ceil(remainingMs / 60_000));
+    if (minutes >= 60) {
+      const hours = Math.floor(minutes / 60);
+      const rest = minutes % 60;
+      return rest ? `${hours}h ${rest}m left` : `${hours}h left`;
+    }
+    return `${minutes}m left`;
+  }
+
   function handleConfirmTool(invocationId: string) {
     void aiStore.confirmTool(invocationId);
   }
@@ -162,6 +353,39 @@
     }
     event.preventDefault();
     handleClose();
+  }
+
+  function handleDialogEscape() {
+    if (commandCenterStore.workerConversationVisible) {
+      commandCenterStore.closeWorkerConversation();
+      return;
+    }
+    handleClose();
+  }
+
+  function handleCommandKeydown(event: KeyboardEvent) {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f') {
+      event.preventDefault();
+      commandCenterRef
+        ?.querySelector<HTMLInputElement>('input[name="command-center-search"]')
+        ?.focus({ preventScroll: true });
+      return;
+    }
+
+    if (!event.altKey || event.metaKey || event.ctrlKey || event.shiftKey) return;
+    if (event.key === '1') {
+      event.preventDefault();
+      commandCenterStore.showNow();
+    } else if (event.key === '2') {
+      event.preventDefault();
+      commandCenterStore.showInbox();
+    } else if (event.key === '3') {
+      event.preventDefault();
+      commandCenterStore.showHistory();
+    } else if (event.key === '4') {
+      event.preventDefault();
+      commandCenterStore.showTemplates();
+    }
   }
 
   function handleBackFromWorker() {
@@ -186,6 +410,23 @@
     void aiStore.loadConversationHistory();
 
     requestAnimationFrame(scrollTranscriptToBottom);
+  });
+
+  $effect(() => {
+    if (!visible || !commandCenterRef) {
+      if (focusTrapCleanup) {
+        focusTrapCleanup();
+        focusTrapCleanup = null;
+      }
+      return;
+    }
+
+    focusTrapCleanup?.();
+    focusTrapCleanup = createFocusTrap({
+      container: commandCenterRef,
+      initialFocus: commandCenterRef.querySelector<HTMLElement>('textarea[name="ai-command"]'),
+      onEscape: handleDialogEscape,
+    });
   });
 
   // Auto-route the inspector to the most relevant view as state changes.
@@ -228,13 +469,22 @@
 
   onDestroy(() => {
     window.removeEventListener('keydown', handleKeydown);
+    if (focusTrapCleanup) focusTrapCleanup();
     if (copyResetTimer) clearTimeout(copyResetTimer);
   });
 </script>
 
 {#if visible}
   <div class="command-backdrop" aria-hidden="true"></div>
-  <section class="command-center" aria-label="AI Command Center">
+  <div
+    bind:this={commandCenterRef}
+    class="command-center"
+    role="dialog"
+    aria-modal="true"
+    aria-label="AI Command Center"
+    tabindex="-1"
+    onkeydown={handleCommandKeydown}
+  >
     <header class="command-header">
       <div class="command-title">
         <span class="command-mark" aria-hidden="true">
@@ -299,7 +549,8 @@
 
     <div
       class="command-body"
-      data-inspector={!aiUnavailable && inspectorVisible ? 'visible' : 'hidden'}
+      data-history={historyCollapsed ? 'collapsed' : 'open'}
+      data-inspector={!aiUnavailable ? inspectorLayout : 'hidden'}
       data-mode={aiUnavailable ? 'locked' : workerView ? 'worker' : 'normal'}
     >
       {#if aiUnavailable}
@@ -329,8 +580,29 @@
           onBack={handleBackFromWorker}
         />
       {:else}
-      <aside class="history-pane" aria-label="Conversation history">
-        <CommandHistoryPanel />
+      <aside class="history-pane" class:collapsed={historyCollapsed} aria-label="Conversation history">
+        {#if historyCollapsed}
+          <button
+            type="button"
+            class="rail-toggle"
+            aria-label="Expand work index"
+            onclick={() => commandCenterStore.togglePanel('history')}
+          >
+            <MessageSquare size={15} strokeWidth={1.8} aria-hidden="true" />
+            <span>Index</span>
+          </button>
+        {:else}
+          <button
+            type="button"
+            class="pane-collapse left"
+            aria-label="Collapse work index"
+            title="Collapse work index"
+            onclick={() => commandCenterStore.togglePanel('history')}
+          >
+            <PanelRightClose size={13} strokeWidth={1.8} aria-hidden="true" />
+          </button>
+          <CommandHistoryPanel />
+        {/if}
       </aside>
 
       <section class="conversation-pane" aria-label="Command transcript">
@@ -376,6 +648,105 @@
             {#if aiStore.error}
               <div class="command-error" role="alert">{aiStore.error.message}</div>
             {/if}
+            {#if showProtectedContextSheet}
+              <section class="protected-context-sheet" aria-label="Protected note AI approval">
+                <div class="protected-context-heading">
+                  {#if activeProtectedAuthorization && !activeProtectedLocked}
+                    <ShieldCheck size={15} strokeWidth={1.8} aria-hidden="true" />
+                  {:else}
+                    <Lock size={15} strokeWidth={1.8} aria-hidden="true" />
+                  {/if}
+                  <div class="protected-context-copy">
+                    <strong>{protectedContextTitle}</strong>
+                    <span>{protectedContextDetail}</span>
+                  </div>
+                </div>
+
+                {#if activeProtectedLocked}
+                  <button
+                    type="button"
+                    class="protected-context-primary"
+                    onclick={handleUnlockProtectedContext}
+                    disabled={unlockingProtectedContext || protectionStore.loading}
+                  >
+                    <Lock size={13} strokeWidth={1.9} aria-hidden="true" />
+                    <span>{unlockingProtectedContext ? 'Unlocking' : 'Unlock'}</span>
+                  </button>
+                {:else}
+                  {#if activeProtectedAuthorization && !protectedAccessEditing}
+                    <div class="protected-context-controls">
+                      <span class="protected-context-granted">
+                        <Check size={13} strokeWidth={2} aria-hidden="true" />
+                        <span>{formatProtectedScopes(activeProtectedAuthorization.scopes)} · {formatAuthorizationTimeLeft(activeProtectedAuthorization)}</span>
+                      </span>
+                      <button
+                        type="button"
+                        class="protected-context-secondary"
+                        onclick={() => { protectedAccessEditing = true; }}
+                      >
+                        Change
+                      </button>
+                      <button
+                        type="button"
+                        class="protected-context-secondary"
+                        onclick={handleRevokeProtectedContext}
+                      >
+                        <X size={13} strokeWidth={2} aria-hidden="true" />
+                        <span>Revoke</span>
+                      </button>
+                    </div>
+                  {:else}
+                  <div class="protected-context-controls" class:editing={showProtectedGrantControls}>
+                    <div class="protected-context-scopes" role="group" aria-label="Protected AI access scope">
+                      {#each protectedScopeOptions as option}
+                        <button
+                          type="button"
+                          class="protected-scope-button"
+                          class:active={protectedScope === option.scope}
+                          onclick={() => { protectedScope = option.scope; }}
+                          aria-pressed={protectedScope === option.scope}
+                        >
+                          {option.label}
+                        </button>
+                      {/each}
+                    </div>
+                    <div class="protected-duration-group" role="group" aria-label="Protected AI access duration">
+                      <span>For</span>
+                      {#each ([15, 30, 60] as const) as duration}
+                        <button
+                          type="button"
+                          class="protected-duration-button"
+                          class:active={protectedDuration === duration}
+                          onclick={() => { protectedDuration = duration; }}
+                          aria-pressed={protectedDuration === duration}
+                        >
+                          {duration === 60 ? '1h' : `${duration}m`}
+                        </button>
+                      {/each}
+                    </div>
+                    {#if activeProtectedAuthorization}
+                      <button
+                        type="button"
+                        class="protected-context-secondary"
+                        onclick={() => { protectedAccessEditing = false; }}
+                      >
+                        Cancel
+                      </button>
+                    {/if}
+                    <button
+                      type="button"
+                      class="protected-context-primary"
+                      onclick={handleApproveProtectedContext}
+                      disabled={approvingProtectedContext}
+                    >
+                      <ShieldCheck size={13} strokeWidth={1.9} aria-hidden="true" />
+                      <span>{approvingProtectedContext ? 'Granting' : activeProtectedAuthorization ? 'Update access' : 'Grant access'}</span>
+                    </button>
+                  </div>
+                  {/if}
+                {/if}
+              </section>
+            {/if}
             <CommandComposer {visible} />
           </footer>
         {:else}
@@ -384,7 +755,7 @@
               <MessageSquare size={22} strokeWidth={1.5} />
             </span>
             <h3>No conversation open</h3>
-            <p>Pick a thread from history, or start a fresh command.</p>
+            <p>Type a command below to start a fresh thread, or pick existing work from the index.</p>
             <div class="conversation-empty-actions">
               <button type="button" class="empty-action-primary" onclick={handleNewConversation}>
                 <Plus size={13} strokeWidth={2} aria-hidden="true" />
@@ -392,15 +763,41 @@
               </button>
             </div>
           </div>
+          <footer class="command-footer empty-composer-footer">
+            {#if showProtectedContextSheet}
+              <section class="protected-context-sheet compact" aria-label="Protected note AI approval">
+                <div class="protected-context-heading">
+                  <Lock size={15} strokeWidth={1.8} aria-hidden="true" />
+                  <div class="protected-context-copy">
+                    <strong>{protectedContextTitle}</strong>
+                    <span>{protectedContextDetail}</span>
+                  </div>
+                </div>
+              </section>
+            {/if}
+            <CommandComposer {visible} />
+          </footer>
         {/if}
       </section>
 
-      {#if inspectorVisible}
+      {#if inspectorVisible && !inspectorCollapsed}
         <CommandInspector />
+      {:else if inspectorVisible && inspectorCollapsed}
+        <aside class="inspector-rail" aria-label="Collapsed agent inspector">
+          <button
+            type="button"
+            class="rail-toggle"
+            aria-label="Expand agent inspector"
+            onclick={() => commandCenterStore.togglePanel('inspector')}
+          >
+            <Sparkles size={15} strokeWidth={1.8} aria-hidden="true" />
+            <span>Status</span>
+          </button>
+        </aside>
       {/if}
       {/if}
     </div>
-  </section>
+  </div>
 {/if}
 
 <style>
@@ -618,6 +1015,22 @@
     grid-template-columns: minmax(230px, 270px) minmax(0, 1fr);
   }
 
+  .command-body[data-history='collapsed'] {
+    grid-template-columns: 44px minmax(360px, 1fr) minmax(318px, 372px);
+  }
+
+  .command-body[data-history='collapsed'][data-inspector='hidden'] {
+    grid-template-columns: 44px minmax(0, 1fr);
+  }
+
+  .command-body[data-inspector='rail'] {
+    grid-template-columns: minmax(230px, 270px) minmax(360px, 1fr) 44px;
+  }
+
+  .command-body[data-history='collapsed'][data-inspector='rail'] {
+    grid-template-columns: 44px minmax(360px, 1fr) 44px;
+  }
+
   .command-body[data-mode='worker'] {
     grid-template-columns: 1fr;
     grid-template-rows: minmax(0, 1fr);
@@ -715,11 +1128,77 @@
   }
 
   .history-pane {
+    position: relative;
     min-width: 0;
     min-height: 0;
     overflow: hidden;
     border-right: 1px solid var(--border-light);
     background: var(--bg-app);
+  }
+
+  .history-pane.collapsed,
+  .inspector-rail {
+    display: flex;
+    align-items: stretch;
+    justify-content: center;
+    min-width: 0;
+    min-height: 0;
+    border-right: 1px solid var(--border-light);
+    background: var(--bg-app);
+  }
+
+  .inspector-rail {
+    border-right: 0;
+    border-left: 1px solid var(--border-light);
+  }
+
+  .rail-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    min-width: 0;
+    border: 0;
+    background: transparent;
+    color: var(--text-muted);
+    font: inherit;
+    font-size: 11px;
+    font-weight: 650;
+    cursor: pointer;
+    writing-mode: vertical-rl;
+  }
+
+  .rail-toggle:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .rail-toggle :global(svg) {
+    flex-shrink: 0;
+  }
+
+  .pane-collapse {
+    position: absolute;
+    z-index: 2;
+    top: 9px;
+    right: 8px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    background: var(--bg-card);
+    color: var(--text-muted);
+    cursor: pointer;
+  }
+
+  .pane-collapse:hover {
+    border-color: var(--border-medium);
+    background: var(--bg-hover);
+    color: var(--text-primary);
   }
 
   .conversation-pane {
@@ -787,7 +1266,6 @@
 
   /* ── Empty conversation state (after "Close detail") ───────────────── */
   .conversation-empty {
-    grid-row: 1 / -1;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -964,6 +1442,10 @@
     background: var(--bg-app);
   }
 
+  .empty-composer-footer {
+    grid-row: auto;
+  }
+
   .command-error {
     padding: 7px 9px;
     border: 1px solid var(--color-error);
@@ -972,6 +1454,183 @@
     color: var(--color-error);
     font-size: 12px;
     line-height: 1.4;
+  }
+
+  .protected-context-sheet {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    min-width: 0;
+    padding: 8px 9px;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--bg-card) 82%, var(--accent-light));
+    box-shadow: var(--shadow-xs);
+  }
+
+  .protected-context-heading {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .protected-context-heading :global(svg) {
+    flex-shrink: 0;
+    margin-top: 1px;
+    color: var(--accent-primary);
+  }
+
+  .protected-context-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .protected-context-copy strong {
+    color: var(--text-primary);
+    font-size: 12px;
+    font-weight: 650;
+    line-height: 1.25;
+  }
+
+  .protected-context-copy span {
+    overflow: hidden;
+    max-width: 360px;
+    color: var(--text-tertiary);
+    font-size: 11px;
+    line-height: 1.3;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .protected-context-controls {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+
+  .protected-context-controls.editing {
+    flex-wrap: wrap;
+  }
+
+  .protected-context-granted {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 28px;
+    padding: 0 8px;
+    border: 1px solid color-mix(in srgb, var(--accent-primary) 28%, var(--border-light));
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--accent-primary) 8%, var(--bg-card));
+    color: var(--text-primary);
+    font-size: 11.5px;
+    font-weight: 650;
+    white-space: nowrap;
+  }
+
+  .protected-context-scopes {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    background: var(--bg-app);
+  }
+
+  .protected-scope-button {
+    height: 24px;
+    padding: 0 7px;
+    border: 0;
+    border-radius: calc(var(--radius-sm) - 1px);
+    background: transparent;
+    color: var(--text-tertiary);
+    font: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .protected-scope-button:hover,
+  .protected-scope-button.active {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .protected-duration-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    height: 28px;
+    padding: 2px 3px 2px 7px;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    background: var(--bg-app);
+    color: var(--text-tertiary);
+    font-size: 11px;
+  }
+
+  .protected-duration-button {
+    height: 22px;
+    min-width: 30px;
+    padding: 0 6px;
+    border: 0;
+    border-radius: calc(var(--radius-sm) - 1px);
+    background: transparent;
+    color: var(--text-tertiary);
+    font: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .protected-duration-button:hover,
+  .protected-duration-button.active {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .protected-context-primary,
+  .protected-context-secondary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    height: 28px;
+    padding: 0 9px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: var(--accent-primary);
+    color: var(--text-inverse);
+    font: inherit;
+    font-size: 11.5px;
+    font-weight: 650;
+    cursor: pointer;
+  }
+
+  .protected-context-secondary {
+    border: 1px solid var(--border-light);
+    background: var(--bg-card);
+    color: var(--text-secondary);
+  }
+
+  .protected-context-primary:disabled {
+    cursor: wait;
+    opacity: 0.6;
+  }
+
+  .protected-context-secondary:hover,
+  .protected-context-secondary:focus-visible {
+    border-color: var(--accent-primary);
+    background: var(--bg-hover);
+    color: var(--text-primary);
+    outline: none;
   }
 
   @media (max-width: 1080px) {
@@ -989,6 +1648,14 @@
 
     .command-body[data-inspector='hidden'] {
       grid-template-columns: minmax(210px, 238px) minmax(0, 1fr);
+    }
+
+    .command-body[data-history='collapsed'] {
+      grid-template-columns: 44px minmax(340px, 1fr) minmax(292px, 330px);
+    }
+
+    .command-body[data-inspector='rail'] {
+      grid-template-columns: minmax(210px, 238px) minmax(340px, 1fr) 44px;
     }
   }
 
@@ -1010,13 +1677,46 @@
       grid-template-rows: 132px minmax(0, 1fr);
     }
 
+    .command-body[data-history='collapsed'],
+    .command-body[data-inspector='rail'],
+    .command-body[data-history='collapsed'][data-inspector='rail'] {
+      grid-template-columns: 1fr;
+      grid-template-rows: 44px minmax(0, 1fr) 44px;
+    }
+
     .history-pane {
       border-right: 0;
       border-bottom: 1px solid var(--border-light);
     }
 
+    .history-pane.collapsed,
+    .inspector-rail {
+      border-right: 0;
+      border-left: 0;
+      border-bottom: 1px solid var(--border-light);
+    }
+
+    .inspector-rail {
+      border-top: 1px solid var(--border-light);
+      border-bottom: 0;
+    }
+
+    .rail-toggle {
+      writing-mode: horizontal-tb;
+    }
+
     .transcript-scroll {
       padding: 14px;
+    }
+
+    .protected-context-sheet {
+      align-items: stretch;
+      flex-direction: column;
+    }
+
+    .protected-context-controls {
+      justify-content: flex-start;
+      flex-wrap: wrap;
     }
   }
 

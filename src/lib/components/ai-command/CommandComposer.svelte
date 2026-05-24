@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { onDestroy, onMount } from 'svelte';
   import { Send, Square } from '@lucide/svelte';
   import { aiStore, commandCenterStore } from '$lib/stores';
+  import { events } from '$lib/events';
 
   interface Props {
     visible?: boolean;
@@ -77,7 +79,7 @@
   }
 
   function onKeydown(event: KeyboardEvent) {
-    if (event.key === 'Enter' && !event.shiftKey) {
+    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey || !event.shiftKey)) {
       event.preventDefault();
       void submit();
     }
@@ -88,6 +90,19 @@
     target.style.height = 'auto';
     target.style.height = Math.min(target.scrollHeight, 180) + 'px';
   }
+
+  function focusComposer() {
+    if (!visible) return;
+    requestAnimationFrame(() => inputRef?.focus());
+  }
+
+  onMount(() => {
+    events.on('ai-command:focus-composer', focusComposer);
+  });
+
+  onDestroy(() => {
+    events.off('ai-command:focus-composer', focusComposer);
+  });
 </script>
 
 <div class="composer" class:focused>
@@ -96,6 +111,7 @@
     bind:value={input}
     name="ai-command"
     aria-label="AI command"
+    aria-keyshortcuts="Enter Control+Enter Meta+Enter Shift+Enter"
     class="composer-input"
     rows="1"
     placeholder={isUnavailable ? (aiStore.availabilityMessage ?? 'Install a local AI to use this feature') : isCancelling ? 'Cancelling...' : isRouting ? 'Understanding request...' : isCancellable ? 'Type to interrupt the current work...' : 'Ask Void to create, research, edit, or organize...'}

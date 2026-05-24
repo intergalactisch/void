@@ -1,5 +1,6 @@
 import { defineTool } from '../define';
 import { normalizeNotePath } from './paths';
+import { assertProtectedAIReadAllowed, assertProtectedAIWriteAllowed } from '../protectionGuard';
 
 interface UpdateArgs {
   noteId: string;
@@ -42,6 +43,8 @@ export default defineTool<UpdateArgs, { success: boolean; noteId: string }>({
   async execute(args, { services, progress, invocation }) {
     progress(10, 'Updating note...');
     const noteId = await normalizeNotePath(args.noteId, services);
+    await assertProtectedAIReadAllowed(services, noteId, 'note.read');
+    await assertProtectedAIWriteAllowed(services, noteId);
 
     progress(45, services.collaboration.isActiveNote(noteId) ? 'Updating active editor...' : 'Updating content...');
     const result = await services.collaboration.updateNote({

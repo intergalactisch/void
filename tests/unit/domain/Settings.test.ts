@@ -2,7 +2,12 @@
  * Unit tests for Settings entity
  */
 import { describe, it, expect } from 'vitest';
-import { DEFAULT_SETTINGS, validateSettings, type Settings } from '$lib/domain/entities/Settings';
+import {
+  DEFAULT_SETTINGS,
+  DEFAULT_TODO_WORKSPACE_PREFERENCE,
+  validateSettings,
+  type Settings,
+} from '$lib/domain/entities/Settings';
 
 describe('Settings entity', () => {
   describe('DEFAULT_SETTINGS', () => {
@@ -16,6 +21,7 @@ describe('Settings entity', () => {
       expect(DEFAULT_SETTINGS).toHaveProperty('cliProvider');
       expect(DEFAULT_SETTINGS).toHaveProperty('aiReasoningEffort');
       expect(DEFAULT_SETTINGS).toHaveProperty('taskDefaultView');
+      expect(DEFAULT_SETTINGS).toHaveProperty('taskWorkspacePreferences');
     });
 
     it('has correct notesPath default', () => {
@@ -52,6 +58,10 @@ describe('Settings entity', () => {
 
     it('has correct taskDefaultView default', () => {
       expect(DEFAULT_SETTINGS.taskDefaultView).toBe('all');
+    });
+
+    it('has empty task workspace preferences by default', () => {
+      expect(DEFAULT_SETTINGS.taskWorkspacePreferences).toEqual({});
     });
   });
 
@@ -117,6 +127,71 @@ describe('Settings entity', () => {
       const settings = validateSettings(legacy);
 
       expect(settings.automaticUpdateChecks).toBe(true);
+    });
+
+    it('normalizes task workspace preferences and date range filters', () => {
+      const settings = validateSettings({
+        taskWorkspacePreferences: {
+          'workspace:default:view:logbook': {
+            sortMode: 'completedNewest',
+            groupMode: 'completedDate',
+            filters: {
+              dateField: 'completedAt',
+              datePreset: 'custom',
+              dateFrom: '2026-05-01',
+              dateTo: '2026-05-31',
+              search: 'review',
+              priority: ['high'],
+              tags: ['work'],
+              tagMode: 'all',
+              recurrence: 'without',
+              source: 'all',
+              list: 'all',
+              status: 'completed',
+            },
+          },
+        },
+      });
+
+      expect(settings.taskWorkspacePreferences['workspace:default:view:logbook']).toEqual({
+        sortMode: 'completedNewest',
+        groupMode: 'completedDate',
+        filters: {
+          status: 'completed',
+          source: 'all',
+          list: 'all',
+          priority: ['high'],
+          tags: ['work'],
+          tagMode: 'all',
+          recurrence: 'without',
+          search: 'review',
+          dateField: 'completedAt',
+          datePreset: 'custom',
+          dateFrom: '2026-05-01',
+          dateTo: '2026-05-31',
+        },
+      });
+    });
+
+    it('falls back for invalid task workspace preference values', () => {
+      const settings = validateSettings({
+        taskWorkspacePreferences: {
+          'workspace:default:view:all': {
+            sortMode: 'latest' as Settings['taskWorkspacePreferences'][string]['sortMode'],
+            groupMode: 'calendar' as Settings['taskWorkspacePreferences'][string]['groupMode'],
+            filters: {
+              dateField: 'modifiedAt' as Settings['taskWorkspacePreferences'][string]['filters']['dateField'],
+              datePreset: 'forever' as Settings['taskWorkspacePreferences'][string]['filters']['datePreset'],
+              dateFrom: 'not-a-date',
+              priority: ['urgent' as never],
+            },
+          },
+        },
+      });
+
+      expect(settings.taskWorkspacePreferences['workspace:default:view:all']).toEqual(
+        DEFAULT_TODO_WORKSPACE_PREFERENCE,
+      );
     });
   });
 

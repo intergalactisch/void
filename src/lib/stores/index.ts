@@ -6,8 +6,10 @@
  */
 
 export { settingsStore } from './settings.svelte';
+export { protectionStore } from './protection.svelte';
 export { workspaceStore } from './workspace.svelte';
 export { editorStore } from './editor.svelte';
+export { noteWorkspaceStore } from './noteWorkspace.svelte';
 export { inlineAIStore } from './inlineAI.svelte';
 export { noteAIActivityStore } from './noteAIActivity.svelte';
 export { commandsStore } from './commands.svelte';

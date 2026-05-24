@@ -14,6 +14,7 @@
   import { Sparkles, AlertTriangle, GitBranch, Clock, CheckSquare, X } from '@lucide/svelte';
   import type { Insight } from '$lib/domain/entities/Insight';
   import type { Component } from 'svelte';
+  import InfoPopover from './InfoPopover.svelte';
 
   let dialogRef: HTMLDivElement | null = $state(null);
   let cleanup: (() => void) | null = null;
@@ -88,6 +89,16 @@
         <span class="pulse-title">
           <Sparkles size={13} strokeWidth={1.7} aria-hidden="true" />
           Pulse
+          <InfoPopover
+            title="Pulse insights"
+            body="Pulse surfaces note signals that may deserve attention while you write."
+            items={[
+              'Contradictions point to possible conflicts between notes.',
+              'Stale and overdue items are reminders to review.',
+              'Dismiss hides the insight without changing the note.',
+            ]}
+            align="start"
+          />
         </span>
         <span class="pulse-count">{pulseStore.count} insight{pulseStore.count === 1 ? '' : 's'}</span>
         <button type="button" class="pulse-action" onclick={dismissAll} disabled={pulseStore.count === 0}>

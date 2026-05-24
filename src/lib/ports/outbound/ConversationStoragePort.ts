@@ -9,6 +9,7 @@
 
 import type { Result } from '$lib/core';
 import type { Conversation } from '$lib/domain/entities/Conversation';
+import type { PagedResult, SummaryQueryBase } from './PagedQuery';
 
 /**
  * Metadata about a stored conversation (for listing without full content).
@@ -44,6 +45,15 @@ export interface ListConversationsOptions {
   sortBy?: 'createdAt' | 'updatedAt';
   /** Sort direction */
   sortOrder?: 'asc' | 'desc';
+}
+
+export interface ConversationSummaryQuery extends SummaryQueryBase {
+  /** Filter by status */
+  status?: 'active' | 'completed' | 'archived' | 'all';
+  /** Filter by document-bound conversations */
+  documentPath?: string | null;
+  /** Filter by tag */
+  tag?: string | null;
 }
 
 /**
@@ -83,6 +93,11 @@ export interface ConversationStoragePort {
    * @returns Result with array of conversation summaries
    */
   list(options?: ListConversationsOptions): Promise<Result<ConversationSummary[], Error>>;
+
+  /**
+   * Query conversation summaries without hydrating full transcripts.
+   */
+  listSummaries(query?: ConversationSummaryQuery): Promise<Result<PagedResult<ConversationSummary>, Error>>;
 
   /**
    * Check if a conversation exists.

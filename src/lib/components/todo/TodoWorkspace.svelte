@@ -2,24 +2,38 @@
   import {
     Archive,
     ArrowLeft,
+    ArrowDownWideNarrow,
     CalendarDays,
+    CalendarRange,
     ChevronRight,
     Clock3,
     Edit3,
+    Filter,
     Inbox,
     Layers,
     ListChecks,
     Plus,
+    RotateCcw,
     Search,
+    SlidersHorizontal,
     StickyNote,
     Tag,
     Trash2,
     X,
   } from '@lucide/svelte';
-  import type { Todo } from '$lib/domain/entities/Todo';
   import type { CreateTodoOptions, TodoListFile } from '$lib/ports/inbound';
-  import { getTodoViewLabel, todoStore, type TodoView } from '$lib/stores/todo.svelte';
+  import {
+    getTodoViewLabel,
+    todoStore,
+    type TodoDateFilterField,
+    type TodoDateFilterPreset,
+    type TodoGroupMode,
+    type TodoSortMode,
+    type TodoView,
+  } from '$lib/stores/todo.svelte';
   import type { TodoList } from '$lib/domain/values/TodoView';
+  import type { TodoPriority } from '$lib/domain/values/TodoPriority';
+  import { InfoPopover, SelectShell } from '$lib/components/shared';
   import TodoInspector from './TodoInspector.svelte';
   import TodoTaskRow from './TodoTaskRow.svelte';
 
@@ -33,10 +47,12 @@
   let capture = $state('');
   let captureDueDate = $state('');
   let capturePriority = $state<'none' | 'low' | 'medium' | 'high'>('none');
-  let searchQuery = $state('');
   let captureInput = $state<HTMLInputElement | null>(null);
   let searchInput = $state<HTMLInputElement | null>(null);
-  let renderLimit = $state(100);
+  let openRenderLimit = $state(100);
+  let completedRenderLimit = $state(100);
+  let filtersExpanded = $state(false);
+  let completedFiltersExpanded = $state(false);
   let triageDueDate = $state('');
   let listDialogMode = $state<'create' | 'edit' | null>(null);
   let listDialogPath = $state<string | null>(null);
@@ -50,30 +66,44 @@
     { label: 'Library', views: ['all', 'notes', 'tags'] },
     { label: 'Archive', views: ['logbook'] },
   ];
+  const priorityOptions: TodoPriority[] = ['high', 'medium', 'low'];
 
-  const visibleTodos = $derived.by(() => {
-    const query = searchQuery.trim().toLowerCase();
-    const todos = todoStore.visibleTodos;
-    if (!query) return todos;
-    return todos.filter((todo) => {
-      const haystack = [
-        todo.content,
-        todo.sourceFile,
-        todo.priority ?? '',
-        ...todo.tags,
-      ].join(' ').toLowerCase();
-      return haystack.includes(query);
-    });
-  });
-
-  const renderedTodos = $derived(visibleTodos.slice(0, renderLimit));
-  const groupedTodos = $derived.by(() => groupTodos(todoStore.activeView, renderedTodos, todoStore.activeTodoList));
-  const hasMoreTodos = $derived(visibleTodos.length > renderLimit);
+  const openTodos = $derived(todoStore.visibleOpenTodos);
+  const completedTodos = $derived(todoStore.visibleCompletedTodos);
+  const renderedOpenTodos = $derived(openTodos.slice(0, openRenderLimit));
+  const renderedCompletedTodos = $derived(completedTodos.slice(0, completedRenderLimit));
+  const groupedOpenTodos = $derived.by(() => todoStore.getOpenGroupsForTodos(renderedOpenTodos));
+  const groupedCompletedTodos = $derived.by(() => todoStore.getCompletedGroupsForTodos(renderedCompletedTodos));
+  const hasMoreOpenTodos = $derived(openTodos.length > openRenderLimit);
+  const hasMoreCompletedTodos = $derived(completedTodos.length > completedRenderLimit);
+  const showOpenSurface = $derived(todoStore.activeView !== 'logbook');
+  const showCompletedSurface = $derived(todoStore.activeView === 'logbook' || todoStore.showCompleted);
+  const currentPreference = $derived(todoStore.currentWorkspacePreference);
+  const currentFilters = $derived(currentPreference.filters);
+  const completedPreference = $derived(todoStore.currentCompletedWorkspacePreference);
+  const completedFilters = $derived(completedPreference.filters);
+  const priorityFilters = $derived(currentFilters.priority ?? []);
+  const completedPriorityFilters = $derived(completedFilters.priority ?? []);
+  const tagFilterInput = $derived((currentFilters.tags ?? []).join(', '));
+  const completedTagFilterInput = $derived((completedFilters.tags ?? []).join(', '));
 
   export function focusCapture() {
     requestAnimationFrame(() => {
       captureInput?.focus();
       captureInput?.select();
+    });
+  }
+
+  export function focusSearch() {
+    requestAnimationFrame(() => {
+      searchInput?.focus();
+      searchInput?.select();
+    });
+  }
+
+  export function focusSelectedTitle() {
+    requestAnimationFrame(() => {
+      document.querySelector<HTMLTextAreaElement>('.inspector textarea[name="task-title"]')?.focus();
     });
   }
 
@@ -105,14 +135,12 @@
 
   function setView(view: TodoView) {
     todoStore.setView(view);
-    searchQuery = '';
-    renderLimit = 100;
+    resetRenderLimits();
   }
 
   function setActiveList(path: string) {
     todoStore.setActiveList(path);
-    searchQuery = '';
-    renderLimit = 100;
+    resetRenderLimits();
   }
 
   function navigateToFile(filePath: string) {
@@ -182,54 +210,6 @@
       case 'all':
         return 'Add task: Review PR tomorrow p1 #work';
     }
-  }
-
-  function groupTodos(view: TodoView, todos: Todo[], activeList: TodoListFile | null): Array<{ label: string; todos: Todo[] }> {
-    if (todos.length === 0) return [];
-
-    if (activeList) {
-      return groupAllTodos(todos);
-    }
-
-    if (view === 'all') {
-      return groupAllTodos(todos);
-    }
-
-    if (view === 'today') {
-      return groupTodayTodos(todos);
-    }
-
-    if (view === 'upcoming') {
-      return groupUpcomingTodos(todos);
-    }
-
-    if (view === 'anytime') {
-      return groupAnytimeTodos(todos);
-    }
-
-    if (view === 'notes') {
-      const groups = new Map<string, Todo[]>();
-      for (const todo of todos) {
-        const label = getFileName(todo.sourceFile);
-        groups.set(label, [...(groups.get(label) ?? []), todo]);
-      }
-      return Array.from(groups.entries()).map(([label, group]) => ({ label, todos: group }));
-    }
-
-    if (view === 'tags') {
-      const groups = new Map<string, Todo[]>();
-      for (const todo of todos) {
-        const firstTag = todo.tags[0] ?? 'Tagged';
-        groups.set(firstTag, [...(groups.get(firstTag) ?? []), todo]);
-      }
-      return Array.from(groups.entries()).map(([label, group]) => ({ label: `#${label}`, todos: group }));
-    }
-
-    if (view === 'logbook') {
-      return groupCompletedTodos(todos);
-    }
-
-    return [{ label: getTodoViewLabel(view), todos }];
   }
 
   function getFileName(path: string): string {
@@ -340,225 +320,222 @@
     triageDueDate = '';
   }
 
-  function selectByOffset(offset: number) {
-    if (visibleTodos.length === 0) return;
-    const currentIndex = visibleTodos.findIndex((todo) => todo.id === todoStore.selectedTodoId);
-    if (currentIndex === -1) {
-      todoStore.selectTodo(visibleTodos[offset < 0 ? visibleTodos.length - 1 : 0]!.id);
-      return;
-    }
-    const nextIndex = Math.min(visibleTodos.length - 1, Math.max(0, currentIndex + offset));
-    todoStore.selectTodo(visibleTodos[nextIndex]!.id);
-  }
-
   function setCompletedVisibility(event: Event) {
     todoStore.setShowCompleted((event.currentTarget as HTMLInputElement).checked);
+    completedRenderLimit = 100;
   }
 
-  async function handleWorkspaceKeydown(event: KeyboardEvent) {
-    const isMod = event.metaKey || event.ctrlKey;
-    const target = event.target as HTMLElement | null;
-    const typing = !!target?.closest('input, textarea, select, [contenteditable="true"]');
+  async function setSearchFilter(event: Event) {
+    const value = (event.currentTarget as HTMLInputElement).value;
+    openRenderLimit = 100;
+    await todoStore.setAdvancedFilter('search', value);
+  }
 
-    if (isMod && /^[1-9]$/.test(event.key)) {
-      const view = todoStore.views[Number(event.key) - 1]?.id;
-      if (view) {
-        event.preventDefault();
-        setView(view);
-      }
-      return;
-    }
+  async function setStatusFilter(event: Event) {
+    openRenderLimit = 100;
+    await todoStore.setAdvancedFilter(
+      'status',
+      (event.currentTarget as HTMLSelectElement).value as 'all' | 'open' | 'completed',
+    );
+  }
 
-    if (isMod && event.key.toLowerCase() === 'f') {
-      event.preventDefault();
-      searchInput?.focus();
-      searchInput?.select();
-      return;
-    }
+  async function setSourceFilter(event: Event) {
+    openRenderLimit = 100;
+    await todoStore.setAdvancedFilter(
+      'source',
+      (event.currentTarget as HTMLSelectElement).value as 'all' | 'dedicated' | 'inline',
+    );
+  }
 
-    if (isMod && event.key.toLowerCase() === 'k' && todoStore.selectedTodo) {
-      event.preventDefault();
-      await todoStore.toggle(todoStore.selectedTodo.id);
-      return;
-    }
+  async function setListFilter(event: Event) {
+    openRenderLimit = 100;
+    await todoStore.setAdvancedFilter(
+      'list',
+      (event.currentTarget as HTMLSelectElement).value as 'all' | TodoList,
+    );
+  }
 
-    if (typing) return;
+  async function setRecurrenceFilter(event: Event) {
+    openRenderLimit = 100;
+    await todoStore.setAdvancedFilter(
+      'recurrence',
+      (event.currentTarget as HTMLSelectElement).value as 'all' | 'with' | 'without',
+    );
+  }
 
-    if (event.key === 'ArrowDown') {
-      event.preventDefault();
-      selectByOffset(1);
-      return;
-    }
+  async function setSortMode(event: Event) {
+    openRenderLimit = 100;
+    await todoStore.setSortMode((event.currentTarget as HTMLSelectElement).value as TodoSortMode);
+  }
 
-    if (event.key === 'ArrowUp') {
-      event.preventDefault();
-      selectByOffset(-1);
-      return;
-    }
+  async function setGroupMode(event: Event) {
+    openRenderLimit = 100;
+    await todoStore.setGroupMode((event.currentTarget as HTMLSelectElement).value as TodoGroupMode);
+  }
 
-    if (event.key === 'Enter') {
-      event.preventDefault();
-      document.querySelector<HTMLTextAreaElement>('.inspector textarea[name="task-title"]')?.focus();
-      return;
-    }
+  async function setDateField(event: Event) {
+    openRenderLimit = 100;
+    await todoStore.setAdvancedFilter(
+      'dateField',
+      (event.currentTarget as HTMLSelectElement).value as TodoDateFilterField,
+    );
+  }
 
-    if ((event.key === 'Delete' || event.key === 'Backspace') && todoStore.selectedTodo) {
-      event.preventDefault();
-      await todoStore.delete(todoStore.selectedTodo.id);
-      todoStore.selectTodo(visibleTodos[0]?.id ?? null);
-    }
+  async function setDatePreset(event: Event) {
+    openRenderLimit = 100;
+    await todoStore.updateAdvancedFilters({
+      datePreset: (event.currentTarget as HTMLSelectElement).value as TodoDateFilterPreset,
+      dateFrom: '',
+      dateTo: '',
+    });
+  }
+
+  async function setDateBound(key: 'dateFrom' | 'dateTo', event: Event) {
+    openRenderLimit = 100;
+    await todoStore.updateAdvancedFilters({
+      [key]: (event.currentTarget as HTMLInputElement).value,
+      datePreset: 'custom',
+    });
+  }
+
+  async function togglePriority(priority: TodoPriority, event: Event) {
+    openRenderLimit = 100;
+    const checked = (event.currentTarget as HTMLInputElement).checked;
+    const current = currentFilters.priority ?? [];
+    const next = checked
+      ? Array.from(new Set([...current, priority]))
+      : current.filter((item) => item !== priority);
+    await todoStore.setAdvancedFilter('priority', next);
+  }
+
+  async function setTagsFilter(event: Event) {
+    openRenderLimit = 100;
+    const tags = (event.currentTarget as HTMLInputElement).value
+      .split(',')
+      .map((tag) => tag.trim().replace(/^#/, ''))
+      .filter(Boolean);
+    await todoStore.setAdvancedFilter('tags', Array.from(new Set(tags)));
+  }
+
+  async function setTagMode(event: Event) {
+    openRenderLimit = 100;
+    await todoStore.setAdvancedFilter(
+      'tagMode',
+      (event.currentTarget as HTMLSelectElement).value as 'any' | 'all',
+    );
+  }
+
+  async function resetTaskPreferences() {
+    openRenderLimit = 100;
+    await todoStore.resetCurrentWorkspacePreference();
+  }
+
+  async function setCompletedSearchFilter(event: Event) {
+    completedRenderLimit = 100;
+    await todoStore.setCompletedAdvancedFilter('search', (event.currentTarget as HTMLInputElement).value);
+  }
+
+  async function setCompletedSourceFilter(event: Event) {
+    completedRenderLimit = 100;
+    await todoStore.setCompletedAdvancedFilter(
+      'source',
+      (event.currentTarget as HTMLSelectElement).value as 'all' | 'dedicated' | 'inline',
+    );
+  }
+
+  async function setCompletedListFilter(event: Event) {
+    completedRenderLimit = 100;
+    await todoStore.setCompletedAdvancedFilter(
+      'list',
+      (event.currentTarget as HTMLSelectElement).value as 'all' | TodoList,
+    );
+  }
+
+  async function setCompletedRecurrenceFilter(event: Event) {
+    completedRenderLimit = 100;
+    await todoStore.setCompletedAdvancedFilter(
+      'recurrence',
+      (event.currentTarget as HTMLSelectElement).value as 'all' | 'with' | 'without',
+    );
+  }
+
+  async function setCompletedSortMode(event: Event) {
+    completedRenderLimit = 100;
+    await todoStore.setCompletedSortMode((event.currentTarget as HTMLSelectElement).value as TodoSortMode);
+  }
+
+  async function setCompletedGroupMode(event: Event) {
+    completedRenderLimit = 100;
+    await todoStore.setCompletedGroupMode((event.currentTarget as HTMLSelectElement).value as TodoGroupMode);
+  }
+
+  async function setCompletedDateField(event: Event) {
+    completedRenderLimit = 100;
+    await todoStore.setCompletedAdvancedFilter(
+      'dateField',
+      (event.currentTarget as HTMLSelectElement).value as TodoDateFilterField,
+    );
+  }
+
+  async function setCompletedDatePreset(event: Event) {
+    completedRenderLimit = 100;
+    await todoStore.updateCompletedAdvancedFilters({
+      datePreset: (event.currentTarget as HTMLSelectElement).value as TodoDateFilterPreset,
+      dateFrom: '',
+      dateTo: '',
+    });
+  }
+
+  async function setCompletedDateBound(key: 'dateFrom' | 'dateTo', event: Event) {
+    completedRenderLimit = 100;
+    await todoStore.updateCompletedAdvancedFilters({
+      [key]: (event.currentTarget as HTMLInputElement).value,
+      datePreset: 'custom',
+    });
+  }
+
+  async function toggleCompletedPriority(priority: TodoPriority, event: Event) {
+    completedRenderLimit = 100;
+    const checked = (event.currentTarget as HTMLInputElement).checked;
+    const current = completedFilters.priority ?? [];
+    const next = checked
+      ? Array.from(new Set([...current, priority]))
+      : current.filter((item) => item !== priority);
+    await todoStore.setCompletedAdvancedFilter('priority', next);
+  }
+
+  async function setCompletedTagsFilter(event: Event) {
+    completedRenderLimit = 100;
+    const tags = (event.currentTarget as HTMLInputElement).value
+      .split(',')
+      .map((tag) => tag.trim().replace(/^#/, ''))
+      .filter(Boolean);
+    await todoStore.setCompletedAdvancedFilter('tags', Array.from(new Set(tags)));
+  }
+
+  async function setCompletedTagMode(event: Event) {
+    completedRenderLimit = 100;
+    await todoStore.setCompletedAdvancedFilter(
+      'tagMode',
+      (event.currentTarget as HTMLSelectElement).value as 'any' | 'all',
+    );
+  }
+
+  async function resetCompletedTaskPreferences() {
+    completedRenderLimit = 100;
+    await todoStore.resetCurrentCompletedWorkspacePreference();
+  }
+
+  function resetRenderLimits() {
+    openRenderLimit = 100;
+    completedRenderLimit = 100;
   }
 
   function startOfToday(): Date {
     const now = new Date();
     return new Date(now.getFullYear(), now.getMonth(), now.getDate());
   }
-
-  function groupAllTodos(todos: Todo[]): Array<{ label: string; todos: Todo[] }> {
-    const order = ['Overdue', 'Today', 'Upcoming', 'Inbox', 'Anytime', 'Someday', 'Notes', 'Completed'];
-    const groups = new Map<string, Todo[]>();
-
-    for (const todo of todos) {
-      const label = getAllGroupLabel(todo);
-      groups.set(label, [...(groups.get(label) ?? []), todo]);
-    }
-
-    return order
-      .filter((label) => groups.has(label))
-      .map((label) => ({ label, todos: groups.get(label)! }));
-  }
-
-  function groupTodayTodos(todos: Todo[]): Array<{ label: string; todos: Todo[] }> {
-    const groups = new Map<string, Todo[]>();
-
-    for (const todo of todos) {
-      const label = isBeforeToday(todo.dates.dueDate) || isBeforeToday(todo.dates.scheduledDate)
-        ? 'Overdue'
-        : 'Today';
-      groups.set(label, [...(groups.get(label) ?? []), todo]);
-    }
-
-    return ['Overdue', 'Today']
-      .filter((label) => groups.has(label))
-      .map((label) => ({ label, todos: groups.get(label)! }));
-  }
-
-  function groupUpcomingTodos(todos: Todo[]): Array<{ label: string; todos: Todo[] }> {
-    const groups = new Map<string, { order: number; todos: Todo[] }>();
-
-    for (const todo of todos) {
-      const date = getPlanningDate(todo);
-      const label = date ? getUpcomingGroupLabel(date) : 'Later';
-      const order = date ? stripTime(date).getTime() : Number.MAX_SAFE_INTEGER;
-      const group = groups.get(label) ?? { order, todos: [] };
-      group.order = Math.min(group.order, order);
-      group.todos = [...group.todos, todo];
-      groups.set(label, group);
-    }
-
-    return Array.from(groups.entries())
-      .sort(([, a], [, b]) => a.order - b.order)
-      .map(([label, group]) => ({ label, todos: group.todos }));
-  }
-
-  function groupAnytimeTodos(todos: Todo[]): Array<{ label: string; todos: Todo[] }> {
-    const groups = new Map<string, Todo[]>();
-
-    for (const todo of todos) {
-      const label = isToday(todo.dates.dueDate) || isToday(todo.dates.scheduledDate)
-        ? 'Today'
-        : todo.dates.dueDate
-          ? 'Deadlines'
-          : 'Anytime';
-      groups.set(label, [...(groups.get(label) ?? []), todo]);
-    }
-
-    return ['Today', 'Deadlines', 'Anytime']
-      .filter((label) => groups.has(label))
-      .map((label) => ({ label, todos: groups.get(label)! }));
-  }
-
-  function groupCompletedTodos(todos: Todo[]): Array<{ label: string; todos: Todo[] }> {
-    const groups = new Map<string, Todo[]>();
-
-    for (const todo of todos) {
-      const label = todo.dates.completedAt ? getCompletedGroupLabel(todo.dates.completedAt) : 'No completion date';
-      groups.set(label, [...(groups.get(label) ?? []), todo]);
-    }
-
-    return Array.from(groups.entries()).map(([label, group]) => ({ label, todos: group }));
-  }
-
-  function getAllGroupLabel(todo: Todo): string {
-    if (todo.isCompleted) return 'Completed';
-    if (isBeforeToday(todo.dates.dueDate) || isBeforeToday(todo.dates.scheduledDate)) return 'Overdue';
-    if (isToday(todo.dates.dueDate) || isToday(todo.dates.scheduledDate)) return 'Today';
-    if (isAfterToday(todo.dates.dueDate) || isAfterToday(todo.dates.scheduledDate)) return 'Upcoming';
-    if (todo.source === 'inline') return 'Notes';
-    switch (todo.list ?? 'inbox') {
-      case 'anytime':
-        return 'Anytime';
-      case 'someday':
-        return 'Someday';
-      case 'inbox':
-        return 'Inbox';
-    }
-  }
-
-  function getPlanningDate(todo: Todo): Date | undefined {
-    const scheduled = todo.dates.scheduledDate;
-    const due = todo.dates.dueDate;
-    if (scheduled && due) return scheduled < due ? scheduled : due;
-    return scheduled ?? due;
-  }
-
-  function getUpcomingGroupLabel(date: Date): string {
-    const today = startOfToday();
-    const target = stripTime(date);
-    const diffDays = Math.round((target.getTime() - today.getTime()) / 86400000);
-
-    if (diffDays === 1) return 'Tomorrow';
-    if (diffDays > 1 && diffDays <= 7) {
-      return target.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
-    }
-    return target.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
-  }
-
-  function getCompletedGroupLabel(date: Date): string {
-    const today = startOfToday();
-    const target = stripTime(date);
-    const diffDays = Math.round((target.getTime() - today.getTime()) / 86400000);
-
-    if (diffDays === 0) return 'Completed today';
-    if (diffDays === -1) return 'Completed yesterday';
-    return target.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
-  }
-
-  function isBeforeToday(date: Date | undefined): boolean {
-    if (!date) return false;
-    const target = stripTime(date);
-    return target < startOfToday();
-  }
-
-  function isToday(date: Date | undefined): boolean {
-    if (!date) return false;
-    const target = stripTime(date);
-    return target.getTime() === startOfToday().getTime();
-  }
-
-  function isAfterToday(date: Date | undefined): boolean {
-    if (!date) return false;
-    const target = stripTime(date);
-    return target > startOfToday();
-  }
-
-  function stripTime(date: Date): Date {
-    const target = new Date(date);
-    return new Date(target.getFullYear(), target.getMonth(), target.getDate());
-  }
 </script>
-
-<svelte:window onkeydown={handleWorkspaceKeydown} />
 
 <section class="tasks-workspace" aria-label="Tasks workspace">
   <nav class="task-nav" aria-label="Task views">
@@ -566,6 +543,16 @@
       <div>
         <ListChecks size={16} strokeWidth={2} />
         <span>Tasks</span>
+        <InfoPopover
+          title="Task views"
+          body="Task views are lenses over the same markdown-backed tasks; moving between views does not duplicate the task."
+          items={[
+            'Inbox is for unprocessed tasks.',
+            'Today and Upcoming are date-based.',
+            'Notes and Tags show tasks by their source.',
+          ]}
+          align="start"
+        />
       </div>
       <button type="button" class="notes-return" onclick={() => onClose?.()} title="Back to notes" aria-label="Back to notes">
         <ArrowLeft size={15} strokeWidth={2} />
@@ -660,48 +647,278 @@
           <span class:error={todoStore.stats.overdue > 0}><strong>{todoStore.stats.overdue}</strong> Overdue</span>
         </div>
       </div>
-
-      <div class="header-tools">
-        <label class="completed-toggle">
-          <input
-            type="checkbox"
-            name="task-show-completed"
-            checked={todoStore.showCompleted}
-            onchange={setCompletedVisibility}
-          />
-          <span>Show completed</span>
-        </label>
-
-        <div class="search-box">
-          <Search size={15} strokeWidth={2} />
-          <input bind:this={searchInput} type="search" name="task-search" placeholder="Search tasks" bind:value={searchQuery} aria-label="Search tasks" />
-        </div>
-      </div>
     </header>
 
-    <form class="capture-bar" onsubmit={createTask}>
-      <Plus size={16} strokeWidth={2.2} />
-      <input
-        bind:this={captureInput}
-        type="text"
-        name="task-capture"
-        placeholder={getCapturePlaceholder(todoStore.activeView)}
-        bind:value={capture}
-        aria-label="Add a task"
-      />
-      <input type="date" name="task-capture-due" bind:value={captureDueDate} aria-label="Due date" />
-      <select name="task-capture-priority" bind:value={capturePriority} aria-label="Priority">
-        <option value="none">Priority</option>
-        <option value="high">High</option>
-        <option value="medium">Medium</option>
-        <option value="low">Low</option>
-      </select>
-      <button type="submit" disabled={!capture.trim()}>Add</button>
-    </form>
+    <div class="task-command-center">
+      <form class="capture-bar" onsubmit={createTask}>
+        <Plus size={16} strokeWidth={2.2} />
+        <input
+          bind:this={captureInput}
+          type="text"
+          name="task-capture"
+          placeholder={getCapturePlaceholder(todoStore.activeView)}
+          bind:value={capture}
+          aria-label="Add a task"
+        />
+        <input type="date" name="task-capture-due" bind:value={captureDueDate} aria-label="Due date" />
+        <SelectShell class="task-capture-select-shell">
+          <select name="task-capture-priority" bind:value={capturePriority} aria-label="Priority">
+            <option value="none">Priority</option>
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+            <option value="low">Low</option>
+          </select>
+        </SelectShell>
+        <button type="submit" disabled={!capture.trim()}>Add</button>
+      </form>
+
+      {#if showOpenSurface}
+        <section class="surface-toolbar" aria-label="Open task controls">
+          <div class="surface-title">
+            <span>Open</span>
+            <strong>{openTodos.length}</strong>
+          </div>
+
+          <div class="search-box">
+            <Search size={15} strokeWidth={2} />
+            <input
+              bind:this={searchInput}
+              type="search"
+              name="task-search"
+              placeholder="Search open tasks"
+              value={currentFilters.search ?? ''}
+              oninput={setSearchFilter}
+              aria-label="Search open tasks"
+            />
+          </div>
+
+          <label class="control-select compact-control">
+            <span><ArrowDownWideNarrow size={14} strokeWidth={2} /> Sort</span>
+            <SelectShell class="task-select-shell">
+              <select name="task-sort-mode" value={currentPreference.sortMode} onchange={setSortMode} aria-label="Sort open tasks">
+                <option value="viewDefault">Default</option>
+                <option value="completedNewest">Completed newest</option>
+                <option value="createdNewest">Created newest</option>
+                <option value="planningDateAsc">Planning date</option>
+                <option value="priority">Priority</option>
+                <option value="sourceOrder">Source order</option>
+              </select>
+            </SelectShell>
+          </label>
+
+          <label class="control-select compact-control">
+            <span><Layers size={14} strokeWidth={2} /> Group</span>
+            <SelectShell class="task-select-shell">
+              <select name="task-group-mode" value={currentPreference.groupMode} onchange={setGroupMode} aria-label="Group open tasks">
+                <option value="viewDefault">Default</option>
+                <option value="smartDate">Smart date</option>
+                <option value="completedDate">Completed date</option>
+                <option value="createdDate">Created date</option>
+                <option value="planningDate">Planning date</option>
+                <option value="sourceFile">Source file</option>
+                <option value="priority">Priority</option>
+                <option value="tag">Tag</option>
+                <option value="none">None</option>
+              </select>
+            </SelectShell>
+          </label>
+
+          <div class="toolbar-actions">
+            {#if todoStore.activeView !== 'logbook'}
+              <label class="completed-toggle">
+                <input
+                  type="checkbox"
+                  name="task-show-completed"
+                  checked={todoStore.showCompleted}
+                  onchange={setCompletedVisibility}
+                />
+                <span>Show completed</span>
+              </label>
+            {/if}
+
+            <button
+              type="button"
+              class="filter-toggle"
+              class:active={filtersExpanded}
+              onclick={() => { filtersExpanded = !filtersExpanded; }}
+              aria-expanded={filtersExpanded}
+              aria-controls="task-advanced-filters"
+            >
+              <SlidersHorizontal size={15} strokeWidth={2} />
+              <span>Filters</span>
+              {#if todoStore.activeAdvancedFilterCount > 0}
+                <strong>{todoStore.activeAdvancedFilterCount}</strong>
+              {/if}
+            </button>
+
+            <button
+              type="button"
+              class="reset-filters"
+              onclick={resetTaskPreferences}
+              disabled={!todoStore.hasCurrentWorkspacePreference}
+              title="Reset open filters"
+              aria-label="Reset open filters"
+            >
+              <RotateCcw size={14} strokeWidth={2} />
+            </button>
+          </div>
+        </section>
+      {/if}
+
+      {#if showOpenSurface && filtersExpanded}
+        <section id="task-advanced-filters" class="advanced-filters" aria-label="Open task filters">
+          <div class="filter-block">
+            <div class="filter-block-title"><Filter size={14} strokeWidth={2} /> Scope</div>
+            <label class="filter-field">
+              <span>Status</span>
+              <SelectShell class="task-select-shell">
+                <select name="task-filter-status" value={currentFilters.status ?? 'all'} onchange={setStatusFilter} aria-label="Open task status">
+                  <option value="all">All visible</option>
+                  <option value="open">Open</option>
+                  <option value="completed">Completed</option>
+                </select>
+              </SelectShell>
+            </label>
+            <label class="filter-field">
+              <span>Source</span>
+              <SelectShell class="task-select-shell">
+                <select name="task-filter-source" value={currentFilters.source ?? 'all'} onchange={setSourceFilter} aria-label="Open task source">
+                  <option value="all">All sources</option>
+                  <option value="dedicated">TODO.md</option>
+                  <option value="inline">Inline notes</option>
+                </select>
+              </SelectShell>
+            </label>
+            <label class="filter-field">
+              <span>List</span>
+              <SelectShell class="task-select-shell">
+                <select name="task-filter-list" value={currentFilters.list ?? 'all'} onchange={setListFilter} aria-label="Open task list">
+                  <option value="all">All lists</option>
+                  <option value="inbox">Inbox</option>
+                  <option value="anytime">Anytime</option>
+                  <option value="someday">Someday</option>
+                </select>
+              </SelectShell>
+            </label>
+          </div>
+
+          <div class="filter-block">
+            <div class="filter-block-title"><Tag size={14} strokeWidth={2} /> Attributes</div>
+            <label class="filter-field">
+              <span>Repeats</span>
+              <SelectShell class="task-select-shell">
+                <select name="task-filter-recurrence" value={currentFilters.recurrence ?? 'all'} onchange={setRecurrenceFilter} aria-label="Open task recurrence">
+                  <option value="all">All tasks</option>
+                  <option value="with">Repeating</option>
+                  <option value="without">Non-repeating</option>
+                </select>
+              </SelectShell>
+            </label>
+            <fieldset class="priority-filter">
+              <legend>Priority</legend>
+              {#each priorityOptions as priority}
+                <label>
+                  <input
+                    type="checkbox"
+                    name={`task-filter-priority-${priority}`}
+                    checked={priorityFilters.includes(priority)}
+                    onchange={(event) => togglePriority(priority, event)}
+                  />
+                  <span>{priority[0]!.toUpperCase() + priority.slice(1)}</span>
+                </label>
+              {/each}
+            </fieldset>
+            <label class="filter-field">
+              <span>Tags</span>
+              <input
+                type="text"
+                name="task-filter-tags"
+                value={tagFilterInput}
+                oninput={setTagsFilter}
+                placeholder="work, writing"
+                aria-label="Open task tags"
+              />
+            </label>
+            <label class="filter-field">
+              <span>Tag match</span>
+              <SelectShell class="task-select-shell">
+                <select name="task-filter-tag-mode" value={currentFilters.tagMode ?? 'any'} onchange={setTagMode} aria-label="Open task tag match">
+                  <option value="any">Any tag</option>
+                  <option value="all">All tags</option>
+                </select>
+              </SelectShell>
+            </label>
+          </div>
+
+          <div class="filter-block">
+            <div class="filter-block-title"><CalendarRange size={14} strokeWidth={2} /> Date</div>
+            <label class="filter-field">
+              <span>Field</span>
+              <SelectShell class="task-select-shell">
+                <select name="task-filter-date-field" value={currentFilters.dateField ?? 'smart'} onchange={setDateField} aria-label="Open task date field">
+                  <option value="smart">Smart date</option>
+                  <option value="createdAt">Created</option>
+                  <option value="dueDate">Due</option>
+                  <option value="scheduledDate">Scheduled</option>
+                  <option value="completedAt">Completed</option>
+                </select>
+              </SelectShell>
+            </label>
+            <label class="filter-field">
+              <span>Range</span>
+              <SelectShell class="task-select-shell">
+                <select name="task-filter-date-preset" value={currentFilters.datePreset ?? 'any'} onchange={setDatePreset} aria-label="Open task date range">
+                  <option value="any">Any date</option>
+                  <option value="today">Today</option>
+                  <option value="yesterday">Yesterday</option>
+                  <option value="last7Days">Last 7 days</option>
+                  <option value="last30Days">Last 30 days</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </SelectShell>
+            </label>
+            <div class="date-range-pair">
+              <label class="filter-field">
+                <span>From</span>
+                <input
+                  type="date"
+                  name="task-filter-date-from"
+                  value={currentFilters.dateFrom ?? ''}
+                  onchange={(event) => setDateBound('dateFrom', event)}
+                  aria-label="Open task date from"
+                />
+              </label>
+              <label class="filter-field">
+                <span>To</span>
+                <input
+                  type="date"
+                  name="task-filter-date-to"
+                  value={currentFilters.dateTo ?? ''}
+                  onchange={(event) => setDateBound('dateTo', event)}
+                  aria-label="Open task date to"
+                />
+              </label>
+            </div>
+          </div>
+        </section>
+      {/if}
+    </div>
 
     {#if !todoStore.activeListPath && (todoStore.activeView === 'inbox' || todoStore.activeView === 'all') && hasSelectedOpenTodo()}
       <div class="triage-bar" aria-label="Inbox triage actions">
-        <span>Triage selected</span>
+        <span>
+          Triage selected
+          <InfoPopover
+            title="Triage selected"
+            body="Triage quickly moves the selected task out of the Inbox and into a clearer place."
+            items={[
+              'Today schedules it for today.',
+              'Anytime keeps it active without a date.',
+              'Someday keeps it out of the active plan.',
+            ]}
+            align="start"
+          />
+        </span>
         <button type="button" onclick={moveSelectedToToday}>Today</button>
         <button type="button" onclick={() => moveSelectedToList('anytime')}>Anytime</button>
         <button type="button" onclick={() => moveSelectedToList('someday')}>Someday</button>
@@ -709,7 +926,7 @@
       </div>
     {/if}
 
-    <div class="task-list" aria-live="polite">
+    <div class="task-scroll" aria-live="polite">
       {#if todoStore.loading}
         <div class="state-line">Loading tasks...</div>
       {:else if todoStore.error}
@@ -717,32 +934,283 @@
           <span>{todoStore.error.message}</span>
           <button type="button" onclick={() => todoStore.refresh()}>Retry</button>
         </div>
-      {:else if visibleTodos.length === 0}
-        <div class="empty-state">
-          <h2>No tasks here</h2>
-          <p>{searchQuery ? 'No task matches your search.' : 'This view is clear.'}</p>
-        </div>
       {:else}
-        {#each groupedTodos as group (group.label)}
-          <section class="task-group" aria-label={group.label}>
-            <div class="group-header">
-              <span>{group.label}</span>
-              <strong>{group.todos.length}</strong>
-            </div>
-            {#each group.todos as todo (todo.id)}
-              <TodoTaskRow
-                {todo}
-                selected={todoStore.selectedTodoId === todo.id}
-                onSelect={(selectedTodo) => todoStore.selectTodo(selectedTodo.id)}
-                onNavigateToFile={navigateToFile}
-              />
-            {/each}
+        {#if showOpenSurface}
+          <section class="task-surface open-surface" aria-label="Open tasks">
+            {#if openTodos.length === 0}
+              <div class="empty-state">
+                <h2>No open tasks</h2>
+                <p>{todoStore.activeAdvancedFilterCount > 0 ? 'No open task matches your filters.' : 'This view is clear.'}</p>
+              </div>
+            {:else}
+              {#each groupedOpenTodos as group (group.label)}
+                <section class="task-group" aria-label={group.label}>
+                  <div class="group-header">
+                    <span>{group.label}</span>
+                    <strong>{group.todos.length}</strong>
+                  </div>
+                  {#each group.todos as todo (todo.id)}
+                    <TodoTaskRow
+                      {todo}
+                      selected={todoStore.selectedTodoId === todo.id}
+                      onSelect={(selectedTodo) => todoStore.selectTodo(selectedTodo.id)}
+                      onNavigateToFile={navigateToFile}
+                    />
+                  {/each}
+                </section>
+              {/each}
+              {#if hasMoreOpenTodos}
+                <button type="button" class="load-more" onclick={() => { openRenderLimit += 100; }}>
+                  Show next {Math.min(100, openTodos.length - openRenderLimit)} open tasks
+                </button>
+              {/if}
+            {/if}
           </section>
-        {/each}
-        {#if hasMoreTodos}
-          <button type="button" class="load-more" onclick={() => { renderLimit += 100; }}>
-            Show next {Math.min(100, visibleTodos.length - renderLimit)} tasks
-          </button>
+        {/if}
+
+        {#if showCompletedSurface}
+          <section class="completed-workbench" aria-label="Completed tasks">
+            <div class="completed-heading">
+              <div>
+                <p class="section-kicker">Archive</p>
+                <h2>Completed</h2>
+              </div>
+              <strong>{completedTodos.length}</strong>
+            </div>
+
+            <div class="surface-toolbar completed-toolbar" aria-label="Completed task controls">
+              <div class="search-box">
+                <Search size={15} strokeWidth={2} />
+                <input
+                  type="search"
+                  name="completed-task-search"
+                  placeholder="Search completed"
+                  value={completedFilters.search ?? ''}
+                  oninput={setCompletedSearchFilter}
+                  aria-label="Search completed tasks"
+                />
+              </div>
+
+              <label class="control-select compact-control">
+                <span><ArrowDownWideNarrow size={14} strokeWidth={2} /> Sort</span>
+                <SelectShell class="task-select-shell">
+                  <select name="completed-task-sort-mode" value={completedPreference.sortMode} onchange={setCompletedSortMode} aria-label="Sort completed tasks">
+                    <option value="completedNewest">Completed newest</option>
+                    <option value="createdNewest">Created newest</option>
+                    <option value="planningDateAsc">Planning date</option>
+                    <option value="priority">Priority</option>
+                    <option value="sourceOrder">Source order</option>
+                    <option value="viewDefault">Default</option>
+                  </select>
+                </SelectShell>
+              </label>
+
+              <label class="control-select compact-control">
+                <span><Layers size={14} strokeWidth={2} /> Group</span>
+                <SelectShell class="task-select-shell">
+                  <select name="completed-task-group-mode" value={completedPreference.groupMode} onchange={setCompletedGroupMode} aria-label="Group completed tasks">
+                    <option value="completedDate">Completed date</option>
+                    <option value="smartDate">Smart date</option>
+                    <option value="createdDate">Created date</option>
+                    <option value="planningDate">Planning date</option>
+                    <option value="sourceFile">Source file</option>
+                    <option value="priority">Priority</option>
+                    <option value="tag">Tag</option>
+                    <option value="none">None</option>
+                    <option value="viewDefault">Default</option>
+                  </select>
+                </SelectShell>
+              </label>
+
+              <label class="control-select compact-control">
+                <span><CalendarRange size={14} strokeWidth={2} /> Range</span>
+                <SelectShell class="task-select-shell">
+                  <select name="completed-task-date-preset" value={completedFilters.datePreset ?? 'any'} onchange={setCompletedDatePreset} aria-label="Completed task date range">
+                    <option value="any">Any date</option>
+                    <option value="today">Today</option>
+                    <option value="yesterday">Yesterday</option>
+                    <option value="last7Days">Last 7 days</option>
+                    <option value="last30Days">Last 30 days</option>
+                    <option value="custom">Custom</option>
+                  </select>
+                </SelectShell>
+              </label>
+
+              <div class="toolbar-actions">
+                <button
+                  type="button"
+                  class="filter-toggle"
+                  class:active={completedFiltersExpanded}
+                  onclick={() => { completedFiltersExpanded = !completedFiltersExpanded; }}
+                  aria-expanded={completedFiltersExpanded}
+                  aria-controls="completed-task-advanced-filters"
+                >
+                  <SlidersHorizontal size={15} strokeWidth={2} />
+                  <span>Filters</span>
+                  {#if todoStore.activeCompletedFilterCount > 0}
+                    <strong>{todoStore.activeCompletedFilterCount}</strong>
+                  {/if}
+                </button>
+
+                <button
+                  type="button"
+                  class="reset-filters"
+                  onclick={resetCompletedTaskPreferences}
+                  disabled={!todoStore.hasCurrentCompletedWorkspacePreference}
+                  title="Reset completed filters"
+                  aria-label="Reset completed filters"
+                >
+                  <RotateCcw size={14} strokeWidth={2} />
+                </button>
+              </div>
+            </div>
+
+            {#if completedFiltersExpanded}
+              <section id="completed-task-advanced-filters" class="advanced-filters completed-filters" aria-label="Completed task filters">
+                <div class="filter-block">
+                  <div class="filter-block-title"><Filter size={14} strokeWidth={2} /> Scope</div>
+                  <label class="filter-field">
+                    <span>Source</span>
+                    <SelectShell class="task-select-shell">
+                      <select name="completed-task-filter-source" value={completedFilters.source ?? 'all'} onchange={setCompletedSourceFilter} aria-label="Completed task source">
+                        <option value="all">All sources</option>
+                        <option value="dedicated">TODO.md</option>
+                        <option value="inline">Inline notes</option>
+                      </select>
+                    </SelectShell>
+                  </label>
+                  <label class="filter-field">
+                    <span>List</span>
+                    <SelectShell class="task-select-shell">
+                      <select name="completed-task-filter-list" value={completedFilters.list ?? 'all'} onchange={setCompletedListFilter} aria-label="Completed task list">
+                        <option value="all">All lists</option>
+                        <option value="inbox">Inbox</option>
+                        <option value="anytime">Anytime</option>
+                        <option value="someday">Someday</option>
+                      </select>
+                    </SelectShell>
+                  </label>
+                  <label class="filter-field">
+                    <span>Repeats</span>
+                    <SelectShell class="task-select-shell">
+                      <select name="completed-task-filter-recurrence" value={completedFilters.recurrence ?? 'all'} onchange={setCompletedRecurrenceFilter} aria-label="Completed task recurrence">
+                        <option value="all">All tasks</option>
+                        <option value="with">Repeating</option>
+                        <option value="without">Non-repeating</option>
+                      </select>
+                    </SelectShell>
+                  </label>
+                </div>
+
+                <div class="filter-block">
+                  <div class="filter-block-title"><Tag size={14} strokeWidth={2} /> Attributes</div>
+                  <fieldset class="priority-filter">
+                    <legend>Priority</legend>
+                    {#each priorityOptions as priority}
+                      <label>
+                        <input
+                          type="checkbox"
+                          name={`completed-task-filter-priority-${priority}`}
+                          checked={completedPriorityFilters.includes(priority)}
+                          onchange={(event) => toggleCompletedPriority(priority, event)}
+                        />
+                        <span>{priority[0]!.toUpperCase() + priority.slice(1)}</span>
+                      </label>
+                    {/each}
+                  </fieldset>
+                  <label class="filter-field">
+                    <span>Tags</span>
+                    <input
+                      type="text"
+                      name="completed-task-filter-tags"
+                      value={completedTagFilterInput}
+                      oninput={setCompletedTagsFilter}
+                      placeholder="work, writing"
+                      aria-label="Completed task tags"
+                    />
+                  </label>
+                  <label class="filter-field">
+                    <span>Tag match</span>
+                    <SelectShell class="task-select-shell">
+                      <select name="completed-task-filter-tag-mode" value={completedFilters.tagMode ?? 'any'} onchange={setCompletedTagMode} aria-label="Completed task tag match">
+                        <option value="any">Any tag</option>
+                        <option value="all">All tags</option>
+                      </select>
+                    </SelectShell>
+                  </label>
+                </div>
+
+                <div class="filter-block">
+                  <div class="filter-block-title"><CalendarRange size={14} strokeWidth={2} /> Date</div>
+                  <label class="filter-field">
+                    <span>Field</span>
+                    <SelectShell class="task-select-shell">
+                      <select name="completed-task-filter-date-field" value={completedFilters.dateField ?? 'completedAt'} onchange={setCompletedDateField} aria-label="Completed task date field">
+                        <option value="completedAt">Completed</option>
+                        <option value="smart">Smart date</option>
+                        <option value="createdAt">Created</option>
+                        <option value="dueDate">Due</option>
+                        <option value="scheduledDate">Scheduled</option>
+                      </select>
+                    </SelectShell>
+                  </label>
+                  <div class="date-range-pair">
+                    <label class="filter-field">
+                      <span>From</span>
+                      <input
+                        type="date"
+                        name="completed-task-filter-date-from"
+                        value={completedFilters.dateFrom ?? ''}
+                        onchange={(event) => setCompletedDateBound('dateFrom', event)}
+                        aria-label="Completed task date from"
+                      />
+                    </label>
+                    <label class="filter-field">
+                      <span>To</span>
+                      <input
+                        type="date"
+                        name="completed-task-filter-date-to"
+                        value={completedFilters.dateTo ?? ''}
+                        onchange={(event) => setCompletedDateBound('dateTo', event)}
+                        aria-label="Completed task date to"
+                      />
+                    </label>
+                  </div>
+                </div>
+              </section>
+            {/if}
+
+            <div class="task-list completed-list">
+              {#if completedTodos.length === 0}
+                <div class="empty-state compact-empty">
+                  <h2>No completed tasks</h2>
+                  <p>{todoStore.activeCompletedFilterCount > 0 ? 'No completed task matches your filters.' : 'Nothing completed in this view yet.'}</p>
+                </div>
+              {:else}
+                {#each groupedCompletedTodos as group (group.label)}
+                  <section class="task-group completed-group" aria-label={group.label}>
+                    <div class="group-header">
+                      <span>{group.label}</span>
+                      <strong>{group.todos.length}</strong>
+                    </div>
+                    {#each group.todos as todo (todo.id)}
+                      <TodoTaskRow
+                        {todo}
+                        selected={todoStore.selectedTodoId === todo.id}
+                        onSelect={(selectedTodo) => todoStore.selectTodo(selectedTodo.id)}
+                        onNavigateToFile={navigateToFile}
+                      />
+                    {/each}
+                  </section>
+                {/each}
+                {#if hasMoreCompletedTodos}
+                  <button type="button" class="load-more" onclick={() => { completedRenderLimit += 100; }}>
+                    Show next {Math.min(100, completedTodos.length - completedRenderLimit)} completed tasks
+                  </button>
+                {/if}
+              {/if}
+            </div>
+          </section>
         {/if}
       {/if}
     </div>
@@ -1093,12 +1561,11 @@
     border-color: color-mix(in srgb, var(--color-error) 22%, transparent);
   }
 
-  .header-tools {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    min-width: min(460px, 45vw);
-    justify-content: flex-end;
+  .task-command-center {
+    display: grid;
+    gap: 10px;
+    padding: 16px 34px 14px;
+    border-bottom: 1px solid var(--border-faint);
   }
 
   .completed-toggle {
@@ -1118,11 +1585,58 @@
     accent-color: var(--accent-primary);
   }
 
+  .filter-toggle,
+  .reset-filters {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    min-height: 32px;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-md);
+    background: var(--bg-app);
+    color: var(--text-secondary);
+    padding: 0 10px;
+    font: inherit;
+    font-size: var(--text-small);
+    cursor: pointer;
+  }
+
+  .filter-toggle:hover,
+  .filter-toggle.active,
+  .reset-filters:hover:not(:disabled) {
+    border-color: var(--border-medium);
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .filter-toggle strong {
+    min-width: 18px;
+    border-radius: var(--radius-full);
+    background: var(--accent-light);
+    color: var(--accent-primary);
+    padding: 1px 5px;
+    text-align: center;
+    font-size: var(--text-caption);
+    font-weight: 600;
+  }
+
+  .reset-filters {
+    width: 34px;
+    padding: 0;
+  }
+
+  .reset-filters:disabled {
+    cursor: default;
+    opacity: 0.45;
+  }
+
   .search-box {
     display: flex;
     align-items: center;
     gap: 8px;
-    width: min(280px, 35vw);
+    width: 100%;
+    min-width: 0;
     border: 1px solid var(--border-light);
     border-radius: var(--radius-md);
     background: var(--bg-app);
@@ -1140,12 +1654,185 @@
     font: inherit;
   }
 
+  .surface-toolbar {
+    display: grid;
+    grid-template-columns: auto minmax(180px, 1fr) minmax(132px, 160px) minmax(132px, 160px) auto;
+    gap: 8px;
+    align-items: end;
+  }
+
+  .completed-toolbar {
+    grid-template-columns: minmax(180px, 1fr) minmax(132px, 160px) minmax(132px, 160px) minmax(132px, 160px) auto;
+  }
+
+  .surface-title {
+    display: inline-flex;
+    align-items: center;
+    align-self: end;
+    gap: 7px;
+    min-height: 34px;
+    color: var(--text-secondary);
+    font-size: var(--text-small);
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .surface-title strong,
+  .completed-heading > strong {
+    min-width: 24px;
+    border-radius: var(--radius-full);
+    background: var(--bg-subtle);
+    color: var(--text-tertiary);
+    padding: 2px 7px;
+    text-align: center;
+    font-size: var(--text-caption);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .toolbar-actions {
+    display: inline-flex;
+    align-items: end;
+    justify-content: flex-end;
+    gap: 7px;
+    min-width: max-content;
+  }
+
+  .control-select,
+  .filter-field {
+    min-width: 0;
+    display: grid;
+    gap: 5px;
+    color: var(--text-tertiary);
+    font-size: var(--text-caption);
+    font-weight: 600;
+  }
+
+  .control-select > span,
+  .filter-field > span,
+  .priority-filter legend {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--text-tertiary);
+    font-size: var(--text-caption);
+    font-weight: 600;
+  }
+
+  :global(.task-select-shell) {
+    --select-bg: var(--bg-app);
+    --select-hover-bg: var(--bg-card);
+    --select-min-height: 34px;
+    --select-padding-x: 9px;
+    --select-padding-y: 7px;
+    width: 100%;
+  }
+
+  .compact-control {
+    gap: 4px;
+  }
+
+  .control-select select,
+  .filter-field select,
+  .filter-field input,
+  .priority-filter {
+    min-width: 0;
+    min-height: 34px;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-md);
+    background-color: var(--bg-app);
+    color: var(--text-primary);
+    padding: 7px 9px;
+    font: inherit;
+    font-size: var(--text-small);
+  }
+
+  .control-select select,
+  .filter-field select {
+    padding-right: 34px;
+  }
+
+  .control-select select:focus,
+  .filter-field select:focus {
+    outline: none;
+  }
+
+  .filter-field input:focus {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 0;
+  }
+
+  .advanced-filters {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-md);
+    background: var(--bg-subtle);
+    padding: 0;
+    overflow: hidden;
+  }
+
+  .filter-block {
+    display: grid;
+    align-content: start;
+    gap: 9px;
+    min-width: 0;
+    padding: 12px;
+  }
+
+  .filter-block + .filter-block {
+    border-left: 1px solid var(--border-faint);
+  }
+
+  .filter-block-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-secondary);
+    font-size: var(--text-small);
+    font-weight: 600;
+  }
+
+  .date-range-pair {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .priority-filter {
+    display: flex;
+    align-items: end;
+    gap: 9px;
+    margin: 0;
+  }
+
+  .priority-filter legend {
+    padding: 0;
+  }
+
+  .priority-filter label {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    min-height: 22px;
+    color: var(--text-secondary);
+    font-size: var(--text-caption);
+    font-weight: 500;
+    white-space: nowrap;
+  }
+
+  .priority-filter input {
+    width: 14px;
+    height: 14px;
+    accent-color: var(--accent-primary);
+  }
+
   .capture-bar {
     display: grid;
     grid-template-columns: 18px minmax(180px, 1fr) 142px 112px auto;
     gap: 8px;
     align-items: center;
-    margin: 16px 34px;
     border: 1px solid var(--border-light);
     border-radius: var(--radius-md);
     background: var(--bg-app);
@@ -1154,15 +1841,40 @@
   }
 
   .capture-bar input,
-  .capture-bar select {
+  .capture-bar :global(.task-capture-select-shell) {
     min-width: 0;
     border: 0;
     border-left: 1px solid var(--border-faint);
-    background: transparent;
+    background-color: transparent;
     color: var(--text-primary);
     font: inherit;
     outline: none;
+  }
+
+  .capture-bar input {
     padding: 6px 8px;
+  }
+
+  .capture-bar :global(.task-capture-select-shell) {
+    --select-bg: transparent;
+    --select-border: transparent;
+    --select-hover-bg: transparent;
+    --select-hover-border: transparent;
+    --select-min-height: 30px;
+    --select-padding-x: 8px;
+    --select-padding-y: 6px;
+    --select-radius: var(--radius-sm);
+    --select-shadow: none;
+    width: 100%;
+  }
+
+  .capture-bar select {
+    border: 0;
+    background-color: transparent;
+    color: var(--text-primary);
+    font: inherit;
+    outline: none;
+    padding: 6px 30px 6px 8px;
   }
 
   .capture-bar input:focus,
@@ -1194,7 +1906,7 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    margin: -2px 34px 16px;
+    margin: 12px 34px 0;
     border: 1px solid var(--border-light);
     border-radius: var(--radius-md);
     background: var(--bg-subtle);
@@ -1227,12 +1939,54 @@
     color: var(--text-primary);
   }
 
-  .task-list {
+  .task-scroll {
     flex: 1;
     min-height: 0;
     overflow: auto;
     overscroll-behavior: contain;
-    padding: 0 34px 34px;
+    padding: 18px 34px 34px;
+  }
+
+  .task-surface {
+    min-width: 0;
+  }
+
+  .completed-workbench {
+    display: grid;
+    gap: 12px;
+    margin-top: 22px;
+    border-top: 1px solid var(--border-light);
+    padding-top: 18px;
+  }
+
+  .open-surface + .completed-workbench {
+    margin-top: 28px;
+  }
+
+  .completed-heading {
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .completed-heading h2 {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: var(--text-h3);
+    font-weight: 600;
+  }
+
+  .section-kicker {
+    margin: 0 0 3px;
+    color: var(--text-tertiary);
+    font-size: var(--text-label);
+    font-weight: var(--text-label-weight);
+    letter-spacing: var(--text-label-tracking);
+  }
+
+  .task-list {
+    min-width: 0;
   }
 
   .load-more {
@@ -1304,6 +2058,10 @@
   .empty-state p {
     margin: 0;
     font-size: var(--text-body);
+  }
+
+  .compact-empty {
+    min-height: 180px;
   }
 
   .modal-backdrop {
@@ -1438,12 +2196,26 @@
   }
 
   @media (max-width: 1180px) {
+    .surface-toolbar,
+    .completed-toolbar {
+      grid-template-columns: minmax(0, 1fr) minmax(132px, 160px) minmax(132px, 160px) auto;
+    }
+
+    .surface-title {
+      grid-column: 1 / -1;
+      min-height: 24px;
+    }
+
+    .advanced-filters {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
     .capture-bar {
       grid-template-columns: 18px minmax(0, 1fr) auto;
     }
 
     .capture-bar input[name='task-capture-due'],
-    .capture-bar select {
+    .capture-bar :global(.task-capture-select-shell) {
       grid-column: 2;
       border-left: 0;
     }
@@ -1498,36 +2270,61 @@
       width: 100%;
     }
 
-    .header-tools {
-      width: 100%;
-      min-width: 0;
-      justify-content: stretch;
-      flex-wrap: wrap;
-    }
-
     .completed-toggle {
       min-height: 28px;
     }
 
+    .task-command-center {
+      padding: 12px 18px;
+    }
+
     .capture-bar {
       grid-template-columns: 18px minmax(0, 1fr);
-      margin: 12px 18px;
+    }
+
+    .surface-toolbar,
+    .completed-toolbar {
+      grid-template-columns: 1fr;
+      align-items: stretch;
+    }
+
+    .surface-title {
+      grid-column: auto;
+    }
+
+    .toolbar-actions {
+      justify-content: flex-start;
+      flex-wrap: wrap;
+      min-width: 0;
+    }
+
+    .advanced-filters {
+      grid-template-columns: 1fr;
+    }
+
+    .filter-block + .filter-block {
+      border-left: 0;
+      border-top: 1px solid var(--border-faint);
+    }
+
+    .date-range-pair {
+      grid-template-columns: 1fr;
     }
 
     .triage-bar {
       flex-wrap: wrap;
-      margin: 0 18px 12px;
+      margin: 12px 18px 0;
     }
 
     .capture-bar input,
-    .capture-bar select,
+    .capture-bar :global(.task-capture-select-shell),
     .capture-bar button {
       grid-column: 2;
       border-left: 0;
     }
 
-    .task-list {
-      padding: 0 18px 24px;
+    .task-scroll {
+      padding: 16px 18px 24px;
     }
   }
 </style>

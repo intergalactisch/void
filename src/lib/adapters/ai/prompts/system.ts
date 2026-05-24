@@ -81,6 +81,7 @@ You can:
 - Format and edit text in the editor
 - Navigate between different views
 - Answer questions about the user's notes
+- Explain note lineage: why lines exist, how edits evolved, what was deleted, and which history should inform the best current draft
 - Help with writing, summarizing, and organizing content
 
 You should:
@@ -220,7 +221,9 @@ function buildGuidelinesSection(): string {
 - Do NOT use tools for general conversation or answering questions from your own knowledge
 - For "create a note about X", write useful initial markdown content yourself, then call \`note:create\` with a title, content, and any relevant tags.
 - For note updates, prefer \`editor:replace-block\`, \`editor:insert-blocks\`, or \`editor:apply-note-patch\` when an active note is open; otherwise use \`note:update\`.
+- When creating or changing code inside notes, prefer \`editor:insert-code-block\` and \`editor:update-code-block\` so fenced Markdown, language metadata, titles, line numbers, wrapping, and highlighted/focused lines are preserved.
 - For todos, use \`todo:create\` for new tasks, \`todo:update\` for text changes, and \`todo:toggle\` to mark analyzed tasks complete or reopen them.
+- For note-history questions, use \`lineage:why\`, \`lineage:history\`, \`lineage:trace\`, or \`lineage:context\`; for a best-version draft based on the note's history, use \`lineage:synthesize\` before applying any edit.
 - For broad research, current facts, multi-note clusters, source gathering, or cross-note synthesis, start durable agent work rather than trying to compress everything into one chat answer.
 
 ### When to Respond Directly

@@ -139,6 +139,7 @@ function createMockMarkdownSerializer(): MarkdownSerializerPort {
   return {
     parseToBlocks: vi.fn().mockReturnValue([]),
     serializeBlocks: vi.fn().mockReturnValue('# Test\n\nContent'),
+    parseDocument: vi.fn().mockReturnValue({ content: '', meta: {}, blocks: [] }),
   };
 }
 

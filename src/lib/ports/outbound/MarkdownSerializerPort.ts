@@ -8,6 +8,16 @@
  */
 
 import type { Block } from '$lib/domain/entities/Block';
+import type { DocumentMeta } from '$lib/domain/values/DocumentMeta';
+
+export interface ParsedMarkdownDocument {
+  /** Markdown body with YAML frontmatter removed. */
+  content: string;
+  /** Metadata parsed from YAML frontmatter. */
+  meta: Partial<DocumentMeta>;
+  /** Domain block list parsed from content. */
+  blocks: Block[];
+}
 
 export interface MarkdownSerializerPort {
   /**
@@ -18,4 +28,10 @@ export interface MarkdownSerializerPort {
 
   /** Serialize a domain block list to a markdown string. */
   serializeBlocks(blocks: Block[]): string;
+
+  /**
+   * Parse a complete markdown document, stripping frontmatter before block
+   * parsing and returning the extracted metadata separately.
+   */
+  parseDocument(markdown: string): ParsedMarkdownDocument;
 }

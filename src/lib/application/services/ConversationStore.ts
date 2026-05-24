@@ -16,7 +16,12 @@
  */
 
 import type { ContextProviderPort } from '$lib/ports/outbound/ContextProviderPort';
-import type { ConversationStoragePort } from '$lib/ports/outbound/ConversationStoragePort';
+import type {
+  ConversationStoragePort,
+  ConversationSummary,
+  ConversationSummaryQuery,
+} from '$lib/ports/outbound/ConversationStoragePort';
+import type { PagedResult } from '$lib/ports/outbound/PagedQuery';
 import type { VoidStoragePort } from '$lib/ports/outbound/VoidStoragePort';
 import type {
   Conversation,
@@ -35,6 +40,7 @@ import {
   deserializeActivityEntries,
 } from '$lib/domain/entities/Message';
 import { noteNameFromPath } from '$lib/domain/values/VoidPath';
+import { redactSensitiveValue } from '$lib/core/privacyRedaction';
 import { getLogger } from '$lib/logging';
 
 const log = getLogger('ConversationStore');
@@ -51,6 +57,7 @@ export interface ConversationStoreDeps {
   conversationStorage?: ConversationStoragePort | null;
   voidStorage?: VoidStoragePort | null;
   notesPath?: string;
+  isProtectedDocumentPath?: (path: string) => boolean;
   /**
    * Called whenever the conversation map changes in a way that affects
    * UI state (current conversation switched, current conversation
@@ -69,6 +76,7 @@ export class ConversationStore {
   private readonly conversationStorage: ConversationStoragePort | null;
   private readonly voidStorage: VoidStoragePort | null;
   private readonly notesPath: string;
+  private readonly isProtectedDocumentPath: (path: string) => boolean;
   private readonly notifyChanged: () => void;
 
   constructor(deps: ConversationStoreDeps) {
@@ -76,6 +84,7 @@ export class ConversationStore {
     this.conversationStorage = deps.conversationStorage ?? null;
     this.voidStorage = deps.voidStorage ?? null;
     this.notesPath = deps.notesPath ?? '';
+    this.isProtectedDocumentPath = deps.isProtectedDocumentPath ?? (() => false);
     this.notifyChanged = deps.onCurrentConversationChanged ?? (() => {});
   }
 
@@ -166,6 +175,57 @@ export class ConversationStore {
     );
   }
 
+  async listSummaries(query?: ConversationSummaryQuery): Promise<PagedResult<ConversationSummary>> {
+    if (this.conversationStorage) {
+      const summaries = await this.conversationStorage.listSummaries(query);
+      if (summaries.ok) return summaries.value;
+      log.warn('Failed to query conversation summaries from storage', { error: String(summaries.error) });
+    }
+
+    const conversations = await this.list();
+    const needle = query?.query?.trim().toLocaleLowerCase() ?? '';
+    const dateFrom = query?.dateFrom ? new Date(query.dateFrom) : null;
+    const dateTo = query?.dateTo ? new Date(query.dateTo) : null;
+    const offset = query?.cursor ? Number.parseInt(query.cursor, 10) || 0 : 0;
+    const limit = Math.max(1, Math.min(query?.limit ?? 80, 250));
+    const sortBy = query?.sortBy ?? 'updatedAt';
+    const sortOrder = query?.sortOrder ?? 'desc';
+
+    const summaries = conversations
+      .filter((conv) => query?.status && query.status !== 'all' ? conv.status === query.status : true)
+      .filter((conv) => query?.documentPath ? conv.documentPath === query.documentPath : true)
+      .filter((conv) => query?.tag ? conv.tags.includes(query.tag) : true)
+      .filter((conv) => {
+        if (dateFrom && conv.updatedAt < dateFrom) return false;
+        if (dateTo && conv.updatedAt > dateTo) return false;
+        return true;
+      })
+      .map((conv) => ({
+        id: conv.id,
+        title: conv.title,
+        messageCount: conv.messages.filter((message) => message.visibility !== 'internal').length,
+        status: conv.status,
+        createdAt: conv.createdAt,
+        updatedAt: conv.updatedAt,
+        preview: conv.messages.find((message) => message.role === 'user' && message.visibility !== 'internal')?.text.slice(0, 100) ?? '',
+      }))
+      .filter((summary) => {
+        if (!needle) return true;
+        return [summary.id, summary.title, summary.preview].some((value) => value.toLocaleLowerCase().includes(needle));
+      })
+      .sort((a, b) => {
+        const aTime = (sortBy === 'createdAt' ? a.createdAt : a.updatedAt).getTime();
+        const bTime = (sortBy === 'createdAt' ? b.createdAt : b.updatedAt).getTime();
+        return sortOrder === 'asc' ? aTime - bTime : bTime - aTime;
+      });
+
+    return {
+      items: summaries.slice(offset, offset + limit),
+      nextCursor: offset + limit < summaries.length ? String(offset + limit) : null,
+      total: summaries.length,
+    };
+  }
+
   // ─────────────────────────────────────────────────────────────────────
   // Mutations
   // ─────────────────────────────────────────────────────────────────────
@@ -191,6 +251,13 @@ export class ConversationStore {
   }
 
   async setCurrent(id: string): Promise<void> {
+    if (!this.conversations.has(id) && this.conversationStorage) {
+      const loaded = await this.conversationStorage.load(id);
+      if (loaded.ok && loaded.value) {
+        this.conversations.set(id, loaded.value);
+      }
+    }
+
     if (this.conversations.has(id)) {
       this.currentConversationId = id;
       this.notifyChanged();
@@ -294,8 +361,9 @@ export class ConversationStore {
    *     kept for backward compatibility with the artifact viewer).
    */
   private async persist(conversation: Conversation): Promise<void> {
+    const persistentConversation = this.redactForPersistence(conversation);
     if (this.conversationStorage) {
-      const result = await this.conversationStorage.save(conversation);
+      const result = await this.conversationStorage.save(persistentConversation);
       if (!result.ok) {
         log.error('Failed to persist conversation to storage', {
           conversationId: conversation.id,
@@ -304,12 +372,12 @@ export class ConversationStore {
       }
     }
 
-    if (this.voidStorage && conversation.documentPath) {
-      const noteName = noteNameFromPath(conversation.documentPath);
-      const path = `conversations/${noteName}/${conversation.id}.json`;
+    if (this.voidStorage && persistentConversation.documentPath) {
+      const noteName = noteNameFromPath(persistentConversation.documentPath);
+      const path = `conversations/${noteName}/${persistentConversation.id}.json`;
       const data = {
-        ...serializeConversation(conversation),
-        messages: conversation.messages.map((msg) => ({
+        ...serializeConversation(persistentConversation),
+        messages: persistentConversation.messages.map((msg) => ({
           id: msg.id,
           role: msg.role,
           text: msg.text,
@@ -385,6 +453,36 @@ export class ConversationStore {
     if (removed > 0) {
       log.info('Evicted conversations', { removed, remaining: this.conversations.size });
     }
+  }
+
+  private redactForPersistence(conversation: Conversation): Conversation {
+    if (!this.shouldRedactConversation(conversation)) return conversation;
+    return {
+      ...conversation,
+      title: conversation.title,
+      initialContext: null,
+      tags: [...new Set([...(conversation.tags ?? []), 'protected'])],
+      messages: conversation.messages.map((message) => {
+        const redacted: Message = {
+          ...message,
+          text: '[protected content redacted]',
+          content: [{ type: 'text', text: '[protected content redacted]' }],
+          toolInvocations: [],
+        };
+        if (message.activity) {
+          redacted.activity = redactSensitiveValue(message.activity, { aggressive: true }) as NonNullable<Message['activity']>;
+        }
+        return redacted;
+      }),
+    };
+  }
+
+  private shouldRedactConversation(conversation: Conversation): boolean {
+    if (conversation.documentPath && this.isProtectedDocumentPath(conversation.documentPath)) {
+      return true;
+    }
+    const context = conversation.initialContext as { currentNote?: { meta?: { protection?: { level?: string } } } } | null;
+    return context?.currentNote?.meta?.protection?.level === 'protected';
   }
 
   /**

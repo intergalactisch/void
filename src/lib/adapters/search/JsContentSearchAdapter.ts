@@ -36,7 +36,7 @@ export class JsContentSearchAdapter implements ContentSearchPort {
     if (!matcher) return;
 
     const candidates = options.scopePaths && options.scopePaths.length > 0
-      ? options.scopePaths
+      ? options.scopePaths.filter((path) => this.isSearchableNotePath(path))
       : this.allNotePaths();
 
     let totalHits = 0;
@@ -75,7 +75,7 @@ export class JsContentSearchAdapter implements ContentSearchPort {
     const out: string[] = [];
     const walk = (items: NotesListItem[]) => {
       for (const item of items) {
-        if (!item.isFolder) {
+        if (!item.isFolder && !item.protection) {
           out.push(item.path);
         }
         if (item.children && item.children.length > 0) {
@@ -85,6 +85,26 @@ export class JsContentSearchAdapter implements ContentSearchPort {
     };
     walk(this.notes.getState().items);
     return out;
+  }
+
+  private isSearchableNotePath(path: string): boolean {
+    const note = this.findNote(path);
+    return !!note && !note.protection;
+  }
+
+  private findNote(path: string): NotesListItem | null {
+    const normalized = path.replace(/\\/g, '/').replace(/^\/+/, '');
+    const walk = (items: NotesListItem[]): NotesListItem | null => {
+      for (const item of items) {
+        if (!item.isFolder && item.path === normalized) return item;
+        if (item.children && item.children.length > 0) {
+          const found = walk(item.children);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+    return walk(this.notes.getState().items);
   }
 }
 

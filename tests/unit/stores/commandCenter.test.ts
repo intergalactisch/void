@@ -812,6 +812,74 @@ describe('commandCenterStore pending user turns', () => {
     expect(commandCenterStore.activeRun).toBeNull();
     expect(commandCenterStore.selectedRun).toBeNull();
   });
+
+  it('keeps work index filter defaults dense and paged', () => {
+    expect(commandCenterStore.workIndexFilters).toEqual({
+      kind: 'threads',
+      query: '',
+      status: 'all',
+      datePreset: 'all',
+      dateFrom: '',
+      dateTo: '',
+      cursor: null,
+      pageSize: 80,
+    });
+  });
+
+  it('resets paging when search, status, kind, or date filters change', () => {
+    commandCenterStore.setWorkIndexCursor('160');
+
+    commandCenterStore.setWorkIndexQuery('research');
+    expect(commandCenterStore.workIndexFilters.query).toBe('research');
+    expect(commandCenterStore.workIndexFilters.cursor).toBeNull();
+
+    commandCenterStore.setWorkIndexCursor('80');
+    commandCenterStore.setWorkIndexStatus('active');
+    expect(commandCenterStore.workIndexFilters.status).toBe('active');
+    expect(commandCenterStore.workIndexFilters.cursor).toBeNull();
+
+    commandCenterStore.setWorkIndexCursor('80');
+    commandCenterStore.setWorkIndexKind('runs');
+    expect(commandCenterStore.workIndexFilters.kind).toBe('runs');
+    expect(commandCenterStore.workIndexFilters.cursor).toBeNull();
+
+    commandCenterStore.setWorkIndexCursor('80');
+    commandCenterStore.setWorkIndexDatePreset('week');
+    expect(commandCenterStore.workIndexFilters.datePreset).toBe('week');
+    expect(commandCenterStore.workIndexFilters.cursor).toBeNull();
+  });
+
+  it('supports custom work index date ranges and reset behavior', () => {
+    commandCenterStore.setWorkIndexDateRange('2026-05-01', '2026-05-23');
+
+    expect(commandCenterStore.workIndexFilters.datePreset).toBe('custom');
+    expect(commandCenterStore.workIndexFilters.dateFrom).toBe('2026-05-01');
+    expect(commandCenterStore.workIndexFilters.dateTo).toBe('2026-05-23');
+
+    commandCenterStore.resetWorkIndexFilters();
+
+    expect(commandCenterStore.workIndexFilters).toMatchObject({
+      query: '',
+      status: 'all',
+      datePreset: 'all',
+      dateFrom: '',
+      dateTo: '',
+      cursor: null,
+    });
+  });
+
+  it('collapses and restores command center side panels', () => {
+    commandCenterStore.togglePanel('history');
+    commandCenterStore.togglePanel('inspector');
+
+    expect(commandCenterStore.historyCollapsed).toBe(true);
+    expect(commandCenterStore.inspectorCollapsed).toBe(true);
+
+    commandCenterStore.reset();
+
+    expect(commandCenterStore.historyCollapsed).toBe(false);
+    expect(commandCenterStore.inspectorCollapsed).toBe(false);
+  });
 });
 
 function createCompletedOperation(label: string) {

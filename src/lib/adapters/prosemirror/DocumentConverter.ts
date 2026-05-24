@@ -85,7 +85,8 @@ export function blockToPmNode(block: Block): PmNode {
   if (block.type.startsWith('heading')) {
     attrs.level = parseInt(block.type.replace('heading', ''), 10);
   } else if (block.type === 'codeBlock' && block.attrs.type === 'codeBlock') {
-    attrs.language = (block.attrs as { language?: string }).language;
+    attrs.language = (block.attrs as { language?: string | null }).language ?? null;
+    attrs.meta = (block.attrs as { meta?: string | null }).meta ?? null;
   } else if (block.type === 'todoItem' && block.attrs.type === 'todoItem') {
     attrs.checked = (block.attrs as { checked?: boolean }).checked;
   } else if (block.type === 'callout' && block.attrs.type === 'callout') {
@@ -107,7 +108,9 @@ export function blockToPmNode(block: Block): PmNode {
 
   let content: PmNode | PmNode[] | null = null;
 
-  if (nodeType.spec.content?.includes('inline')) {
+  if (block.type === 'codeBlock') {
+    content = block.content ? [voidSchema.text(block.content)] : null;
+  } else if (nodeType.spec.content?.includes('inline')) {
     const inlineContent = blockToInlinePmContent(block);
     content = inlineContent.length > 0 ? inlineContent : null;
   } else if (block.children.length > 0) {
@@ -396,6 +399,7 @@ export function buildBlockAttrs(node: PmNode, blockType: BlockType): BlockAttrs 
       return {
         type: 'codeBlock',
         language: node.attrs.language as string | null,
+        meta: node.attrs.meta as string | null,
       };
     case 'todoItem':
       return {

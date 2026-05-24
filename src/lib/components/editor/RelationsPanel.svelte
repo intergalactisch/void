@@ -6,6 +6,7 @@
   import { relationsStore, notesStore, uiStore } from '$lib/stores';
   import { events } from '$lib/events';
   import { ArrowDownLeft, FileText, Link2, Paperclip, X } from '@lucide/svelte';
+  import { InfoPopover } from '$lib/components/shared';
 
   $effect(() => {
     void relationsStore.fetchFor(notesStore.selectedPath);
@@ -31,6 +32,16 @@
         <span class="relations-title">
           <Link2 size={14} strokeWidth={1.8} aria-hidden="true" />
           References
+          <InfoPopover
+            title="References"
+            body="References are markdown links between notes that Void can scan in both directions."
+            items={[
+              'Attached notes are links this note points to.',
+              'Referenced by shows backlinks from other notes.',
+              'Opening a row navigates to that note.',
+            ]}
+            align="start"
+          />
         </span>
         <button type="button" class="relations-close" onclick={close} aria-label="Close references panel">
           <X size={14} strokeWidth={1.8} />

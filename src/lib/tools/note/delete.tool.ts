@@ -1,5 +1,6 @@
 import { defineTool } from '../define';
 import { normalizeNotePath } from './paths';
+import { assertProtectedAIWriteAllowed } from '../protectionGuard';
 
 interface DeleteArgs {
   noteId: string;
@@ -35,6 +36,7 @@ export default defineTool<DeleteArgs, { success: boolean }>({
 
     progress(10, 'Deleting note...');
     const noteId = await normalizeNotePath(args.noteId, services);
+    await assertProtectedAIWriteAllowed(services, noteId);
 
     const result = await services.notes.deleteNote(noteId);
     if (!result.ok) {

@@ -11,6 +11,10 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
 import type { FileEntry } from '$lib/core';
 import type { Settings } from '$lib/domain';
+import type {
+  EncryptedStringEnvelope,
+  WrappedKeyMaterial,
+} from '$lib/ports/outbound/CryptoPort';
 import type { UpdateInfo, UpdateInstallEvent } from '$lib/ports/inbound';
 import type {
   GitBranchInfo,
@@ -202,6 +206,52 @@ export const credentialCommands = {
    */
   hasCredential: (service: string): Promise<boolean> =>
     invoke<boolean>('has_credential', { key: service }),
+};
+
+/**
+ * Note-protection crypto commands. Rust owns CSPRNG, AEAD, and passphrase KDFs;
+ * the renderer receives only envelopes and active plaintext while editing.
+ */
+export const protectionCommands = {
+  generateKey: (): Promise<string> => invoke<string>('protection_generate_key'),
+  randomId: (prefix: string): Promise<string> =>
+    invoke<string>('protection_random_id', { prefix }),
+  encryptString: (
+    plaintext: string,
+    key: string,
+    associatedData: string,
+  ): Promise<EncryptedStringEnvelope> =>
+    invoke<EncryptedStringEnvelope>('protection_encrypt_string', {
+      plaintext,
+      key,
+      associatedData,
+    }),
+  decryptString: (
+    envelope: EncryptedStringEnvelope,
+    key: string,
+    associatedData: string,
+  ): Promise<string> =>
+    invoke<string>('protection_decrypt_string', { envelope, key, associatedData }),
+  wrapKeyWithPassphrase: (
+    keyToWrap: string,
+    passphrase: string,
+    associatedData: string,
+  ): Promise<WrappedKeyMaterial> =>
+    invoke<WrappedKeyMaterial>('protection_wrap_key_with_passphrase', {
+      keyToWrap,
+      passphrase,
+      associatedData,
+    }),
+  unwrapKeyWithPassphrase: (
+    wrapped: WrappedKeyMaterial,
+    passphrase: string,
+    associatedData: string,
+  ): Promise<string> =>
+    invoke<string>('protection_unwrap_key_with_passphrase', {
+      wrapped,
+      passphrase,
+      associatedData,
+    }),
 };
 
 /**
@@ -411,6 +461,7 @@ export const commands = {
   settings: settingsCommands,
   updater: updaterCommands,
   credentials: credentialCommands,
+  protection: protectionCommands,
   git: gitCommands,
   github: githubCommands,
 };

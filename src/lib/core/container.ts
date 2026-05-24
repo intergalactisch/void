@@ -171,6 +171,9 @@ export const TOKENS = {
   FileSystem: Symbol.for('void:FileSystem'),
   SettingsStorage: Symbol.for('void:SettingsStorage'),
   CredentialStorage: Symbol.for('void:CredentialStorage'),
+  Crypto: Symbol.for('void:Crypto'),
+  KeyCustody: Symbol.for('void:KeyCustody'),
+  ProtectionCodec: Symbol.for('void:ProtectionCodec'),
   DocumentStorage: Symbol.for('void:DocumentStorage'),
   EditorPortFactory: Symbol.for('void:EditorPortFactory'),
   ExternalNavigation: Symbol.for('void:ExternalNavigation'),
@@ -205,6 +208,7 @@ export const TOKENS = {
   WorkspaceService: Symbol.for('void:WorkspaceService'),
   FileService: Symbol.for('void:FileService'),
   CredentialService: Symbol.for('void:CredentialService'),
+  ProtectionService: Symbol.for('void:ProtectionService'),
   EditorService: Symbol.for('void:EditorService'),
   CommandService: Symbol.for('void:CommandService'),
   AIRewriteService: Symbol.for('void:AIRewriteService'),
@@ -221,6 +225,7 @@ export const TOKENS = {
 
   // Document inbound service (headless content API for AI tools)
   DocumentService: Symbol.for('void:DocumentService'),
+  MarkdownImportService: Symbol.for('void:MarkdownImportService'),
 
   // Active editor / AI collaboration service
   NoteCollaborationService: Symbol.for('void:NoteCollaborationService'),

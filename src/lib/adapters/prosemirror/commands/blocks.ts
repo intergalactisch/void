@@ -16,6 +16,7 @@ import { setBlockType as pmSetBlockType, liftEmptyBlock, wrapIn } from 'prosemir
 import { generateBlockId } from '$lib/domain/entities/Block';
 import type { BlockType } from '$lib/domain/values/BlockType';
 import { toggleList } from './lists';
+import { getVisibleBlockOrder } from './blockUtils';
 
 /**
  * Insert a new block after the current block.
@@ -287,6 +288,41 @@ export function setBlockTypeFromDomain(
  * Useful for exiting nested structures.
  */
 export const liftBlock: Command = liftEmptyBlock;
+
+/**
+ * Pressing ArrowDown at the end of the final code block should create a
+ * paragraph below it, giving users an escape route when nothing exists after
+ * the block yet.
+ */
+export function exitFinalCodeBlockOnArrowDown(): Command {
+  return (state: EditorState, dispatch?: (tr: Transaction) => void): boolean => {
+    const selection = state.selection;
+    if (!(selection instanceof TextSelection) || !selection.empty) return false;
+
+    const { $from } = selection;
+    const codeBlock = $from.parent;
+    if (codeBlock.type.name !== 'codeBlock') return false;
+    if ($from.parentOffset !== codeBlock.content.size) return false;
+
+    const codeBlockPos = $from.before($from.depth);
+    const visibleBlocks = getVisibleBlockOrder(state.doc);
+    const visibleIndex = visibleBlocks.findIndex((block) => block.pos === codeBlockPos);
+    if (visibleIndex === -1 || visibleIndex !== visibleBlocks.length - 1) return false;
+
+    const paragraphType = state.schema.nodes.paragraph;
+    if (!paragraphType) return false;
+
+    if (dispatch) {
+      const insertPos = $from.after($from.depth);
+      const paragraph = paragraphType.create({ id: generateBlockId() });
+      const tr = state.tr.insert(insertPos, paragraph);
+      tr.setSelection(TextSelection.create(tr.doc, insertPos + 1));
+      dispatch(tr.scrollIntoView());
+    }
+
+    return true;
+  };
+}
 
 /**
  * Insert a horizontal rule at the current position.

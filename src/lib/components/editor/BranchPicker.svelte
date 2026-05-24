@@ -12,6 +12,7 @@
   import { createFocusTrap } from '$lib/utils/focusTrap';
   import { GitBranch, X, Check, Trash2, RotateCcw } from '@lucide/svelte';
   import { formatRelativeDate } from '$lib/utils/relativeDate';
+  import { InfoPopover } from '$lib/components/shared';
 
   let dialogRef: HTMLDivElement | null = $state(null);
   let cleanup: (() => void) | null = null;
@@ -77,6 +78,16 @@
         <span class="branch-title">
           <GitBranch size={13} strokeWidth={1.7} aria-hidden="true" />
           Branches
+          <InfoPopover
+            title="Alternative drafts"
+            body="Branches are alternative versions of the current note that live beside your markdown until you accept, reject, or restore them."
+            items={[
+              'Accept replaces the note with that draft.',
+              'Reject archives the draft from the pending list.',
+              'Restore brings back a previously handled draft.',
+            ]}
+            align="start"
+          />
         </span>
         <span class="branch-count">{branchesStore.branches.length} alternative{branchesStore.branches.length === 1 ? '' : 's'}</span>
         <button type="button" class="branch-close" onclick={close} aria-label="Close branch picker">

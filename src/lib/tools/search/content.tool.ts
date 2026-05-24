@@ -93,6 +93,19 @@ export default defineTool<SearchContentArgs, { results: ContentSearchResult[]; t
       const batchResults = await Promise.all(batch.map(async (note): Promise<ScannedNote | null> => {
         if (isCancelled()) throw new Error('Search cancelled');
 
+        const meta = await services.documents.readMeta(note.path);
+        if (meta.ok && meta.value.protection?.level === 'protected') {
+          const protection = meta.value.protection;
+          const policy = services.protection.currentPolicy();
+          if (
+            protection.lockState === 'locked' ||
+            (policy.requireAIApprovalForProtectedReads &&
+              !services.protection.hasAIContextAuthorization(protection.noteId, 'note.read'))
+          ) {
+            return null;
+          }
+        }
+
         const content = await services.documents.readContent(note.path);
         if (!content.ok) return null;
 

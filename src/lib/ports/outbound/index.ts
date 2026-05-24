@@ -20,6 +20,7 @@ export type {
   EditorCommands,
   BlockInfo,
   EditorMenuStatePayload,
+  EditorMenuPosition,
   EditorBlockMenuRequest,
   EditorPageLinkNote,
   EditorInlineGenerateCallbacks,
@@ -51,6 +52,16 @@ export type {
 } from './CommandRegistryPort';
 export type { KeymapStoragePort, KeymapOverrides } from './KeymapStoragePort';
 export type { ContentSearchPort, ContentSearchOptions, RawHit } from './ContentSearchPort';
+export type {
+  CryptoPort,
+  EncryptedStringEnvelope,
+  WrappedKeyMaterial,
+} from './CryptoPort';
+export type { KeyCustodyPort } from './KeyCustodyPort';
+export type {
+  ProtectionCodecPort,
+  ProtectedDocumentEnvelope,
+} from './ProtectionCodecPort';
 export type {
   GitRepositoryPort,
   GitCommitResult,
@@ -87,8 +98,10 @@ export type {
 export type {
   ConversationStoragePort,
   ConversationSummary,
+  ConversationSummaryQuery,
   ListConversationsOptions,
 } from './ConversationStoragePort';
+export type { PagedResult, SummaryQueryBase } from './PagedQuery';
 
 // TODO system ports
 export type { TodoRepositoryPort } from './TodoRepositoryPort';
@@ -123,7 +136,11 @@ export type { LoggerPort } from './LoggerPort';
 // Void storage
 export type { VoidStoragePort } from './VoidStoragePort';
 export type { LineageStoragePort } from './LineageStoragePort';
-export type { AgentRunStoragePort } from './AgentRunStoragePort';
+export type {
+  AgentRunStoragePort,
+  AgentRunSummary,
+  AgentRunSummaryQuery,
+} from './AgentRunStoragePort';
 export type { SessionStoragePort } from './SessionStoragePort';
 export type {
   AgentEventStreamPort,
@@ -150,4 +167,4 @@ export type {
 } from './ApplicationNavigationPort';
 
 // Markdown ↔ block serialization (used by DocumentService)
-export type { MarkdownSerializerPort } from './MarkdownSerializerPort';
+export type { MarkdownSerializerPort, ParsedMarkdownDocument } from './MarkdownSerializerPort';

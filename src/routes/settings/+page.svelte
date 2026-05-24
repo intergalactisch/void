@@ -2,6 +2,7 @@
   import { settingsStore, workspaceStore } from '$lib/stores';
   import UpdateSettingsSection from '$lib/components/shared/UpdateSettingsSection.svelte';
   import CLIProviderDetails from '$lib/components/shared/CLIProviderDetails.svelte';
+  import { InfoPopover } from '$lib/components/shared';
   import {
     AI_REASONING_EFFORT_OPTIONS,
     CLI_PROVIDER_OPTIONS,
@@ -337,8 +338,18 @@
 
         <!-- Local AI CLI -->
         <fieldset class="form-group">
-          <legend class="form-label">
+          <legend class="form-label form-label-help">
             Local AI CLI
+            <InfoPopover
+              title="Local AI CLI"
+              body="Void uses a local command-line AI tool to power assistant work."
+              items={[
+                'Pick the provider you have installed.',
+                'Detected tools show what Void can find on your PATH.',
+                'Refresh after installing or updating a CLI.',
+              ]}
+              align="start"
+            />
           </legend>
           <div class="button-group button-group-wrap" role="group" aria-label="Local AI CLI selection">
             {#each CLI_PROVIDER_OPTIONS as provider}
@@ -357,8 +368,18 @@
 
         <!-- Reasoning Effort -->
         <fieldset class="form-group">
-          <legend class="form-label">
+          <legend class="form-label form-label-help">
             Reasoning
+            <InfoPopover
+              title="Reasoning strength"
+              body="Reasoning changes how much thinking the local AI is asked to spend before responding."
+              items={[
+                'Higher settings can improve hard tasks.',
+                'Lower settings usually feel faster.',
+                'This does not change your notes by itself.',
+              ]}
+              align="start"
+            />
           </legend>
           <div class="button-group button-group-wrap" role="group" aria-label="Reasoning strength selection">
             {#each AI_REASONING_EFFORT_OPTIONS as effort}
@@ -616,6 +637,12 @@
     font-size: 0.875rem;
     font-weight: 500;
     color: var(--text-secondary);
+  }
+
+  .form-label-help {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
   }
 
   .input-row {

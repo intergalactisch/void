@@ -3,6 +3,7 @@
   import type { AgentRun, AgentWorker } from '$lib/domain/entities/AgentRun';
   import { copyTextToClipboard } from '$lib/utils/clipboard';
   import { buildRefId } from '$lib/domain/values';
+  import { InfoPopover } from '$lib/components/shared';
 
   interface Props {
     run: AgentRun;
@@ -100,7 +101,19 @@
   {/if}
 
   <section class="rail-section">
-    <header class="rail-section-head">Run linkage</header>
+    <header class="rail-section-head">
+      Run linkage
+      <InfoPopover
+        title="Run refs"
+        body="Refs are stable IDs you can paste into a prompt when you want to refer to this run or worker later."
+        items={[
+          'Worker Ref points to this worker inside the run.',
+          'Run Ref points to the whole agent run.',
+          'Log path is for local debugging and does not open anything by itself.',
+        ]}
+        align="start"
+      />
+    </header>
     <button
       type="button"
       class="rail-copy-row"
@@ -168,14 +181,25 @@
   {/if}
 
   <section class="rail-section">
-    <label class="rail-toggle">
-      <input
-        type="checkbox"
-        checked={showPromptTraces}
-        onchange={(e) => onTogglePromptTraces((e.currentTarget as HTMLInputElement).checked)}
+    <div class="rail-toggle">
+      <label class="rail-toggle-label">
+        <input
+          type="checkbox"
+          checked={showPromptTraces}
+          onchange={(e) => onTogglePromptTraces((e.currentTarget as HTMLInputElement).checked)}
+        />
+        <span>Show prompt traces</span>
+      </label>
+      <InfoPopover
+        title="Prompt traces"
+        body="Prompt traces show the request and context a worker used while doing its part of the run."
+        items={[
+          'They are useful for checking why a worker reached a result.',
+          'Leave them hidden when you just want the answer.',
+        ]}
+        align="start"
       />
-      <span>Show prompt traces</span>
-    </label>
+    </div>
   </section>
 </aside>
 
@@ -199,6 +223,9 @@
   }
 
   .rail-section-head {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
     color: var(--text-muted);
     font-size: 10.5px;
     font-weight: 650;
@@ -379,6 +406,12 @@
     gap: 6px;
     color: var(--text-secondary);
     font-size: 11.5px;
+  }
+
+  .rail-toggle-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     cursor: pointer;
   }
 

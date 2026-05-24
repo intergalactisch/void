@@ -200,6 +200,7 @@ export const nodes: Record<string, NodeSpec> = {
     attrs: {
       ...blockIdAttr,
       language: { default: null as string | null },
+      meta: { default: null as string | null },
     },
     code: true,
     defining: true,
@@ -209,6 +210,7 @@ export const nodes: Record<string, NodeSpec> = {
         preserveWhitespace: 'full' as const,
         getAttrs: (dom: HTMLElement) => ({
           language: dom.getAttribute('data-language'),
+          meta: dom.getAttribute('data-meta'),
         }),
       },
     ],
@@ -219,6 +221,7 @@ export const nodes: Record<string, NodeSpec> = {
           'data-block-id': node.attrs.id,
           'data-block-type': 'codeBlock',
           'data-language': node.attrs.language,
+          'data-meta': node.attrs.meta,
           class: 'void-code-block',
         },
         ['code', 0],

@@ -41,6 +41,8 @@
     type GitHubRepoSummary,
   } from '$lib/domain/values';
   import { openUrl as tauriOpenUrl } from '@tauri-apps/plugin-opener';
+  import InfoPopover from './InfoPopover.svelte';
+  import SelectShell from './SelectShell.svelte';
 
   interface Props {
     /**
@@ -459,6 +461,16 @@
   <header class="gh-section-head">
     {@render ghIcon(14)}
     <span class="gh-section-title">GitHub sync</span>
+    <InfoPopover
+      title="GitHub sync"
+      body="Void syncs the active notes folder with a private GitHub repository."
+      items={[
+        'Your local copy is the folder on this device.',
+        'Your GitHub copy is the private repository.',
+        'Sync may pull, merge, or push depending on what changed.',
+      ]}
+      align="start"
+    />
     {#if isAttached}
       <span class="gh-status-pill {effectiveStatusKind}">
         <span class="gh-status-dot {effectiveStatusKind}"></span>
@@ -828,18 +840,21 @@
                   <div class="gh-field">
                     <label class="gh-label" for="gh-attachbranch">Branch</label>
                     {#if syncStore.remoteBranches.length > 0}
-                      <select
-                        id="gh-attachbranch"
-                        class="gh-input"
-                        bind:value={attachBranch}
-                        disabled={busy}
-                      >
-                        {#each syncStore.remoteBranches as branch (branch.name)}
-                          <option value={branch.name}>
-                            {branch.name}{branch.isDefault ? ' (default)' : ''}{branch.protected ? ' · protected' : ''}
-                          </option>
-                        {/each}
-                      </select>
+                      <SelectShell class="gh-select-shell">
+                        <select
+                          id="gh-attachbranch"
+                          name="github-attach-branch"
+                          class="gh-input"
+                          bind:value={attachBranch}
+                          disabled={busy}
+                        >
+                          {#each syncStore.remoteBranches as branch (branch.name)}
+                            <option value={branch.name}>
+                              {branch.name}{branch.isDefault ? ' (default)' : ''}{branch.protected ? ' · protected' : ''}
+                            </option>
+                          {/each}
+                        </select>
+                      </SelectShell>
                     {:else if busy}
                       <div class="gh-loading"><Loader2 size={12} class="gh-spin" /> Loading branches…</div>
                     {:else}
@@ -923,12 +938,36 @@
           <div class="gh-connected-meta">
             <span>Last sync {formatRelative(status.lastSyncAt)}</span>
             <span class="gh-divider">·</span>
-            <span>{status.changedFiles + openEditorChangeCount} changed · {status.ahead} ↑ · {status.behind} ↓</span>
+            <span class="gh-sync-counts">
+              {status.changedFiles + openEditorChangeCount} changed · {status.ahead} ↑ · {status.behind} ↓
+              <InfoPopover
+                title="Sync counters"
+                body="These counters compare your local copy with the GitHub copy."
+                items={[
+                  'Changed means local files differ or are still open in the editor.',
+                  'Up means local commits are waiting to push.',
+                  'Down means GitHub has commits waiting to pull.',
+                ]}
+                align="start"
+              />
+            </span>
           </div>
         </div>
 
         <div class="gh-branch-row">
-          <label class="gh-label gh-label-inline" for="gh-branch-trigger">Branch</label>
+          <div class="gh-label gh-label-inline" id="gh-branch-label">
+            Branch
+            <InfoPopover
+              title="Branches"
+              body="A branch is a separate line of GitHub history for this notes folder."
+              items={[
+                'Switching changes which local branch this workspace syncs.',
+                'Remote branches are created locally before Void switches to them.',
+                'Create starts a new branch from the current one.',
+              ]}
+              align="start"
+            />
+          </div>
           <div class="gh-branch-picker">
             <button
               id="gh-branch-trigger"
@@ -936,6 +975,7 @@
               class="gh-branch-trigger"
               aria-haspopup="listbox"
               aria-expanded={branchPickerOpen}
+              aria-labelledby="gh-branch-label gh-branch-trigger"
               onclick={() => (branchPickerOpen = !branchPickerOpen)}
               disabled={busy}
             >
@@ -1055,7 +1095,18 @@
             <span class="gh-knob" class:gh-knob-on={boundSync?.autoSync ?? true}></span>
           </button>
           <div class="gh-toggle-text">
-            <span class="gh-toggle-title">Gentle auto-sync</span>
+            <span class="gh-toggle-title">
+              Gentle auto-sync
+              <InfoPopover
+                title="Gentle auto-sync"
+                body="Gentle auto-sync waits for a quiet moment before syncing in the background."
+                items={[
+                  'It avoids syncing while you are actively editing or another operation is busy.',
+                  'Manual Sync now stays available when auto-sync is off.',
+                ]}
+                align="start"
+              />
+            </span>
             <span class="gh-toggle-sub">Push and pull in the background when there's nothing else going on.</span>
           </div>
         </div>
@@ -1069,6 +1120,15 @@
             <div class="gh-conflicts-head">
               <AlertTriangle size={13} />
               <span>{status.conflicts.length} conflict{status.conflicts.length === 1 ? '' : 's'} need review</span>
+              <InfoPopover
+                title="Sync conflicts"
+                body="A conflict means your local copy and GitHub copy changed the same area differently."
+                items={[
+                  'Open workspace gives you a side-by-side review.',
+                  'Resolve manually is for conflicts Void cannot safely preview.',
+                ]}
+                align="start"
+              />
               <button type="button" class="gh-btn gh-btn-ghost gh-btn-sm" onclick={openConflictWorkspace}>
                 Open workspace
               </button>
@@ -1135,6 +1195,13 @@
     letter-spacing: var(--text-label-tracking);
   }
   .gh-section-title { flex-shrink: 0; }
+  .gh-sync-counts,
+  .gh-label-inline,
+  .gh-toggle-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
   .gh-status-pill {
     margin-left: auto;
     display: inline-flex;
@@ -1264,6 +1331,13 @@
     gap: 10px;
   }
   .gh-field { display: flex; flex-direction: column; gap: 4px; }
+  :global(.gh-select-shell) {
+    --select-radius: var(--radius-sm);
+    --select-min-height: 32px;
+    --select-padding-x: 9px;
+    --select-padding-y: 6px;
+    width: 100%;
+  }
   .gh-input {
     width: 100%;
     box-sizing: border-box;
@@ -1271,11 +1345,12 @@
     font-family: inherit;
     font-size: 13px;
     color: var(--text-primary);
-    background: var(--bg-card);
+    background-color: var(--bg-card);
     border: 1px solid var(--border-light);
     border-radius: var(--radius-sm);
     transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
   }
+  select.gh-input { padding-right: 34px; cursor: pointer; }
   .gh-input:focus {
     outline: none;
     border-color: var(--accent-primary);

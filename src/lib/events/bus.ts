@@ -57,5 +57,7 @@ export const events = bus;
 
 // Structured event logging - always active, silent no-op before bootstrap
 events.on('*', (type, e) => {
-  getLoggerPort()?.log(createLogEntry('debug', 'Event', String(type), { payload: e }));
+  queueMicrotask(() => {
+    getLoggerPort()?.log(createLogEntry('debug', 'Event', String(type), { payload: e }));
+  });
 });

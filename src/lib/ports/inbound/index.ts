@@ -17,10 +17,15 @@ export type {
   CreateWorkspaceParams,
 } from './WorkspaceService';
 export type { FileService } from './FileService';
+export type {
+  AIContextAuthorizationRequest,
+  ProtectionService,
+  ProtectionStatus,
+} from './ProtectionService';
 export { CREDENTIAL_KEYS, PROVIDER_CREDENTIAL_MAP, getCredentialKeyForProvider, type CredentialKey, type CredentialService } from './CredentialService';
 
 // Editor services
-export type { EditorService, EditorState, EditorMountOptions } from './EditorService';
+export type { EditorService, EditorState, EditorPaneState, EditorMountOptions } from './EditorService';
 export type {
   InlineAISelectionPromptInput,
   InlineAIThreadService,
@@ -93,6 +98,13 @@ export type {
 
 // Document service (headless content API for AI tools)
 export type { DocumentService } from './DocumentService';
+export type {
+  MarkdownImportItem,
+  MarkdownImportOptions,
+  MarkdownImportService,
+  MarkdownImportSkippedItem,
+  MarkdownImportSummary,
+} from './MarkdownImportService';
 
 // Capture service (global quick-capture window backend)
 export type {

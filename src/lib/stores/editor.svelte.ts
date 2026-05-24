@@ -9,14 +9,14 @@
  * Part of Hexagonal Architecture primary adapters layer.
  */
 
-import type { EditorService, EditorState } from '$lib/ports/inbound';
+import type { EditorPaneState, EditorService, EditorState } from '$lib/ports/inbound';
 import type { Document, Block } from '$lib/domain';
 import type { InlineAIThread } from '$lib/domain/entities/InlineAIThread';
 import type { DocumentMeta, Selection } from '$lib/domain/values';
 import { EMPTY_SELECTION } from '$lib/domain/values';
 import { events } from '$lib/events';
 import type { BlockType } from '$lib/domain/values/BlockType';
-import type { EditorInlineAIComposerView, EditorPageLinkNote, RegisteredCommand } from '$lib/ports/outbound';
+import type { EditorInlineAIComposerView, EditorMenuPosition, EditorPageLinkNote, RegisteredCommand } from '$lib/ports/outbound';
 
 /**
  * Operation result for tracking the last completed operation.
@@ -35,6 +35,8 @@ const INITIAL_STATE: EditorState = {
   document: null,
   tabs: [],
   activePath: null,
+  activePaneId: null,
+  panes: {},
   selection: EMPTY_SELECTION,
   isReady: false,
   isDirty: false,
@@ -60,6 +62,8 @@ class EditorStore {
   document = $state<Document | null>(null);
   tabs = $state<EditorState['tabs']>([]);
   activePath = $state<string | null>(null);
+  activePaneId = $state<string | null>(null);
+  panes = $state<Record<string, EditorPaneState>>({});
   selection = $state<Selection>(EMPTY_SELECTION);
   isReady = $state(false);
   isDirty = $state(false);
@@ -93,7 +97,7 @@ class EditorStore {
   blockMenuRequest = $state<{
     blockId: string;
     lineIndex: number;
-    position: { top: number; left: number };
+    position: EditorMenuPosition;
     currentType: BlockType;
     mode: 'actions' | 'convert';
   } | null>(null);
@@ -124,6 +128,8 @@ class EditorStore {
       this.document = state.document;
       this.tabs = state.tabs;
       this.activePath = state.activePath;
+      this.activePaneId = state.activePaneId;
+      this.panes = state.panes;
       this.selection = state.selection;
       this.isReady = state.isReady;
       this.isDirty = state.isDirty;
@@ -139,6 +145,8 @@ class EditorStore {
     this.document = initialState.document;
     this.tabs = initialState.tabs;
     this.activePath = initialState.activePath;
+    this.activePaneId = initialState.activePaneId;
+    this.panes = initialState.panes;
     this.selection = initialState.selection;
     this.isReady = initialState.isReady;
     this.isDirty = initialState.isDirty;
@@ -231,7 +239,7 @@ class EditorStore {
     const handleBlockMenuRequest = (request: {
       blockId: string;
       lineIndex: number;
-      position: { top: number; left: number };
+      position: EditorMenuPosition;
       currentType: BlockType;
       mode: 'actions' | 'convert';
     }) => {
@@ -279,6 +287,78 @@ class EditorStore {
   }
 
   /**
+   * Mount a live editor into a workspace pane.
+   */
+  async mountPane(
+    paneId: string,
+    element: HTMLElement,
+    path: string,
+    document?: Document,
+    autoSaveDelayMs?: number,
+  ) {
+    if (!this.#service) throw new Error('EditorStore not initialized');
+    return this.#service.mountPane(
+      paneId,
+      element,
+      path,
+      document,
+      autoSaveDelayMs === undefined ? {} : { autoSaveDelayMs },
+    );
+  }
+
+  /**
+   * Unmount a workspace pane without discarding its note session.
+   */
+  unmountPane(paneId: string, element?: HTMLElement | null) {
+    if (!this.#service) throw new Error('EditorStore not initialized');
+    this.#service.unmountPane(paneId, element);
+  }
+
+  /**
+   * Make a workspace pane the active command target.
+   */
+  focusPane(paneId: string) {
+    if (!this.#service) throw new Error('EditorStore not initialized');
+    this.#service.focusPane(paneId);
+  }
+
+  /**
+   * Save a specific workspace pane.
+   */
+  async savePane(paneId: string) {
+    if (!this.#service) throw new Error('EditorStore not initialized');
+    this.error = null;
+    this.operationInProgress = 'saving';
+
+    const result = await this.#service.savePane(paneId);
+
+    if (!result.ok) {
+      this.error = result.error;
+      this.operationInProgress = null;
+      this.lastOperation = {
+        type: 'save',
+        success: false,
+        error: result.error,
+        timestamp: new Date(),
+      };
+    }
+
+    return result;
+  }
+
+  getPaneState(paneId: string): EditorPaneState | null {
+    return this.#service?.getPaneState(paneId) ?? this.panes[paneId] ?? null;
+  }
+
+  getPaneDocument(paneId: string): Document | null {
+    return this.getPaneState(paneId)?.document ?? null;
+  }
+
+  isPaneActive(paneId: string): boolean {
+    return this.activePaneId === paneId;
+  }
+
+  /**
    * Clear the pending block menu request after UI closes it.
    */
   clearBlockMenuRequest() {
@@ -309,6 +389,42 @@ class EditorStore {
       };
     }
 
+    return result;
+  }
+
+  async reloadDocument(path: string, options?: { flushDirty?: boolean }) {
+    if (!this.#service) throw new Error('EditorStore not initialized');
+
+    this.error = null;
+    this.operationInProgress = 'opening';
+
+    const result = await this.#service.reloadDocument(path, options);
+
+    if (!result.ok) {
+      this.error = result.error;
+      this.operationInProgress = null;
+      this.lastOperation = {
+        type: 'open',
+        success: false,
+        error: result.error,
+        timestamp: new Date(),
+      };
+    }
+
+    return result;
+  }
+
+  async prepareProtectedDocumentsForLock() {
+    if (!this.#service) throw new Error('EditorStore not initialized');
+    const result = await this.#service.prepareProtectedDocumentsForLock();
+    if (!result.ok) this.error = result.error;
+    return result;
+  }
+
+  async reloadProtectedDocuments(options?: { flushDirty?: boolean }) {
+    if (!this.#service) throw new Error('EditorStore not initialized');
+    const result = await this.#service.reloadProtectedDocuments(options);
+    if (!result.ok) this.error = result.error;
     return result;
   }
 
@@ -557,9 +673,9 @@ class EditorStore {
     this.#service.focus();
   }
 
-  getTextContent(): string {
+  getTextContent(paneId?: string): string {
     if (!this.#service) return '';
-    return this.#service.getTextContent();
+    return this.#service.getTextContent(paneId);
   }
 
   getMarkdown() {

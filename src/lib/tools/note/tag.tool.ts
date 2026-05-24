@@ -1,6 +1,7 @@
 import { defineTool } from '../define';
 import { normalizeNoteTags } from '$lib/domain/values';
 import { normalizeNotePath } from './paths';
+import { assertProtectedAIReadAllowed, assertProtectedAIWriteAllowed } from '../protectionGuard';
 
 interface TagArgs {
   noteId: string;
@@ -36,6 +37,8 @@ export default defineTool<TagArgs, { success: boolean; added: string[]; removed:
   async execute(args, { services, progress, invocation }) {
     progress(10, 'Reading tags...');
     const noteId = await normalizeNotePath(args.noteId, services);
+    await assertProtectedAIReadAllowed(services, noteId, 'note.read');
+    await assertProtectedAIWriteAllowed(services, noteId);
 
     // Read current metadata
     const metaResult = await services.documents.readMeta(noteId);

@@ -1,6 +1,7 @@
 import { defineTool } from '../define';
 import { aiPrompt } from '../context';
 import type { NotesListItem } from '$lib/ports/inbound/NotesService';
+import { assertProtectedAIReadAllowed } from '../protectionGuard';
 
 export default defineTool({
   id: 'action:synthesize',
@@ -48,6 +49,7 @@ export default defineTool({
     const noteContents: string[] = [];
     const sourcePaths: string[] = [];
     for (const path of notePaths.slice(0, 5)) {
+      await assertProtectedAIReadAllowed(services, path, 'related.read');
       const content = await services.documents.readContent(path);
       if (content.ok && content.value.trim()) {
         noteContents.push(`## Source: ${path}\n${content.value}`);

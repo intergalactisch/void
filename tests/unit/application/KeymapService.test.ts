@@ -56,6 +56,27 @@ describe('KeymapServiceImpl', () => {
         service.resolve(parseChord('arrowdown'), { ...EMPTY_SCOPE, paletteOpen: true })
       ).toBe('palette.next');
     });
+
+    it('resolves the same chord to the active context command', () => {
+      service.register('note.new', parseChord('mod+n'), { scope: ['context:notes'] });
+      service.register('tasks.new', parseChord('mod+n'), { scope: ['context:tasks'] });
+      service.register('ai.newThread', parseChord('mod+n'), { scope: ['context:ai-command-center'] });
+
+      expect(service.resolve(parseChord('mod+n'), { ...EMPTY_SCOPE, activeContext: 'notes' })).toBe('note.new');
+      expect(service.resolve(parseChord('mod+n'), { ...EMPTY_SCOPE, activeContext: 'tasks' })).toBe('tasks.new');
+      expect(
+        service.resolve(parseChord('mod+n'), { ...EMPTY_SCOPE, activeContext: 'ai-command-center' })
+      ).toBe('ai.newThread');
+    });
+
+    it('context scope outranks broader matching scopes', () => {
+      service.register('editor.find', parseChord('mod+f'), { scope: ['editor-or-empty'] });
+      service.register('tasks.search', parseChord('mod+f'), { scope: ['context:tasks'] });
+
+      expect(
+        service.resolve(parseChord('mod+f'), { ...EMPTY_SCOPE, activeContext: 'tasks' })
+      ).toBe('tasks.search');
+    });
   });
 
   describe('overrides', () => {
@@ -103,6 +124,14 @@ describe('KeymapServiceImpl', () => {
     it('does not flag disjoint scopes as conflicts', () => {
       service.register('a', parseChord('mod+k'), { scope: ['editor'] });
       service.register('b', parseChord('mod+k'), { scope: ['tasks-workspace'] });
+      const conflicts = service.findConflicts();
+      expect(conflicts.length).toBe(0);
+    });
+
+    it('does not flag the same chord across mutually exclusive contexts', () => {
+      service.register('note.new', parseChord('mod+n'), { scope: ['context:notes'] });
+      service.register('tasks.new', parseChord('mod+n'), { scope: ['context:tasks'] });
+      service.register('ai.newThread', parseChord('mod+n'), { scope: ['context:ai-command-center'] });
       const conflicts = service.findConflicts();
       expect(conflicts.length).toBe(0);
     });

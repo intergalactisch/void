@@ -1232,6 +1232,96 @@ describe('ProseMirrorAdapter', () => {
       ]);
     });
 
+    it('pressing ArrowDown at the end of the final code block creates a paragraph below it', async () => {
+      const code = 'const answer = 42;';
+      const doc = createTestDocument({
+        blocks: [
+          {
+            id: 'code-1',
+            type: 'codeBlock',
+            content: code,
+            marks: [],
+            children: [],
+            attrs: { type: 'codeBlock', language: 'ts', meta: null },
+          },
+        ],
+      });
+
+      await adapter.mount(container, doc);
+      const view = getMountedView(adapter);
+      setCursorAfterText(view, code);
+
+      const handled = pressEditorKey(view, 'ArrowDown');
+
+      const blocks = adapter.getDocument().blocks;
+      expect(handled).toBe(true);
+      expect(blocks.map((block) => block.type)).toEqual(['codeBlock', 'paragraph']);
+      expect(blocks.map((block) => block.content)).toEqual([code, '']);
+      expect(view.state.selection.$from.parent.type.name).toBe('paragraph');
+      expect(view.state.selection.$from.parent.textContent).toBe('');
+    });
+
+    it('pressing ArrowDown inside a final code block does not exit before the block end', async () => {
+      const code = 'const answer = 42;';
+      const doc = createTestDocument({
+        blocks: [
+          {
+            id: 'code-1',
+            type: 'codeBlock',
+            content: code,
+            marks: [],
+            children: [],
+            attrs: { type: 'codeBlock', language: 'ts', meta: null },
+          },
+        ],
+      });
+
+      await adapter.mount(container, doc);
+      const view = getMountedView(adapter);
+      view.dispatch(
+        view.state.tr.setSelection(TextSelection.create(view.state.doc, positionInText(view, 'answer')))
+      );
+
+      const handled = pressEditorKey(view, 'ArrowDown');
+
+      expect(handled).toBe(false);
+      expect(adapter.getDocument().blocks.map((block) => block.type)).toEqual(['codeBlock']);
+      expect(adapter.getDocument().blocks[0]?.content).toBe(code);
+    });
+
+    it('pressing ArrowDown at a code block end falls through when another block exists below', async () => {
+      const code = 'const answer = 42;';
+      const doc = createTestDocument({
+        blocks: [
+          {
+            id: 'code-1',
+            type: 'codeBlock',
+            content: code,
+            marks: [],
+            children: [],
+            attrs: { type: 'codeBlock', language: 'ts', meta: null },
+          },
+          {
+            id: 'p2',
+            type: 'paragraph',
+            content: 'After',
+            marks: [],
+            children: [],
+            attrs: { type: 'paragraph' },
+          },
+        ],
+      });
+
+      await adapter.mount(container, doc);
+      const view = getMountedView(adapter);
+      setCursorAfterText(view, code);
+
+      const handled = pressEditorKey(view, 'ArrowDown');
+
+      expect(handled).toBe(false);
+      expect(adapter.getDocument().blocks.map((block) => block.content)).toEqual([code, 'After']);
+    });
+
     it('pressing Enter in final inline AI processing creates a continuation without clearing AI state', async () => {
       const doc = createTestDocument({
         blocks: [

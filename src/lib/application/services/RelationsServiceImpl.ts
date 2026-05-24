@@ -142,6 +142,7 @@ export class RelationsServiceImpl implements RelationsService {
 
     for (const item of all) {
       if (item.isFolder) continue;
+      if (item.protection?.level === 'protected') continue;
       const result = await this.documents.readContent(item.path);
       if (!result.ok) continue;
       const links = this.parseLinks(result.value, item.path);
@@ -160,6 +161,11 @@ export class RelationsServiceImpl implements RelationsService {
 
   private async indexNote(notePath: string): Promise<void> {
     if (!this.initialized) return; // wait for first full refresh
+    const note = this.findNote(notePath);
+    if (note?.protection?.level === 'protected') {
+      this.removeNote(notePath);
+      return;
+    }
     const previous = this.cache.get(notePath);
     if (previous) {
       for (const link of previous.outgoing) {
@@ -192,6 +198,11 @@ export class RelationsServiceImpl implements RelationsService {
     this.cache.delete(notePath);
     this.backlinks.delete(notePath);
     this.notify();
+  }
+
+  private findNote(path: string): NotesListItem | null {
+    return this.flatten(this.notes.getState().items)
+      .find((item) => !item.isFolder && item.path === path) ?? null;
   }
 
   private parseLinks(content: string, sourcePath: string): RawLink[] {

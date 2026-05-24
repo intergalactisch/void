@@ -15,6 +15,9 @@ export default defineConfig({
         manualChunks(id) {
           if (!id.includes("node_modules")) return undefined;
           if (id.includes("/@lucide/")) return "vendor-icons";
+          if (id.includes("/@shikijs/langs/")) return undefined;
+          if (id.includes("/shiki") || id.includes("/@shikijs/core/") || id.includes("/@shikijs/engine-")) return "vendor-highlighting";
+          if (id.includes("/@shikijs/themes/")) return "vendor-highlighting-themes";
           if (id.includes("/prosemirror-")) return "vendor-editor";
           if (id.includes("/@tauri-apps/")) return "vendor-tauri";
           return "vendor";

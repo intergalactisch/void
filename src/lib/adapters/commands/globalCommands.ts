@@ -21,15 +21,18 @@ import {
   editorStore,
   lineageStore,
   aiStore,
+  commandCenterStore,
   logStore,
   toastStore,
   syncStore,
+  todoStore,
 } from '$lib/stores';
 import { TOKENS } from '$lib/core';
 import { getAppContext } from '$lib/bootstrap';
 import type { ActionHistoryService } from '$lib/ports/inbound/ActionHistoryService';
 import type { DocumentService } from '$lib/ports/inbound/DocumentService';
 import { formatDailyDate } from '$lib/domain';
+import { TODO_VIEWS, getTodoViewLabel } from '$lib/domain/values/TodoView';
 
 async function openDailyNoteFor(date: Date): Promise<void> {
   const ctx = getAppContext();
@@ -51,6 +54,37 @@ async function openDailyNoteFor(date: Date): Promise<void> {
 
 const EDITOR_FIND_SCOPE = ['editor-or-empty'];
 const FIND_BAR_SCOPE = ['find-bar'];
+const NOTES_CONTEXT_SCOPE = ['context:notes'];
+const TASKS_CONTEXT_SCOPE = ['context:tasks'];
+const TASKS_NO_INPUT_SCOPE = ['context:tasks', 'no-input-focus'];
+const AI_COMMAND_CONTEXT_SCOPE = ['context:ai-command-center'];
+
+function selectTaskByOffset(offset: number): void {
+  const visibleTodos = todoStore.visibleTodos;
+  if (visibleTodos.length === 0) return;
+  const currentIndex = visibleTodos.findIndex((todo) => todo.id === todoStore.selectedTodoId);
+  if (currentIndex === -1) {
+    todoStore.selectTodo(visibleTodos[offset < 0 ? visibleTodos.length - 1 : 0]!.id);
+    return;
+  }
+  const nextIndex = Math.min(visibleTodos.length - 1, Math.max(0, currentIndex + offset));
+  todoStore.selectTodo(visibleTodos[nextIndex]!.id);
+}
+
+async function deleteSelectedTask(): Promise<void> {
+  const selected = todoStore.selectedTodo;
+  if (!selected) return;
+  await todoStore.delete(selected.id);
+  todoStore.selectTodo(todoStore.visibleTodos[0]?.id ?? null);
+}
+
+async function createAICommandThread(): Promise<void> {
+  if (!aiStore.ensureAIAvailable()) return;
+  await aiStore.newConversation();
+  commandCenterStore.reset();
+  commandCenterStore.showConversationDetail();
+  events.emit('ai-command:focus-composer', {});
+}
 
 /**
  * Build the full set of global commands. Called from bootstrap; pass the
@@ -178,6 +212,17 @@ export function createGlobalCommands(): RegisteredCommand[] {
       },
     },
     {
+      id: 'ai.newThread',
+      label: 'New Command Thread',
+      keywords: ['ai', 'command', 'thread', 'conversation', 'new'],
+      category: 'ai',
+      icon: 'plus',
+      description: 'Start a fresh AI command thread',
+      defaultKeybinding: 'mod+n',
+      scope: AI_COMMAND_CONTEXT_SCOPE,
+      execute: createAICommandThread,
+    },
+    {
       id: 'view.toggleSidebar',
       label: 'Toggle Sidebar',
       keywords: ['sidebar', 'navigation', 'show', 'hide'],
@@ -221,6 +266,7 @@ export function createGlobalCommands(): RegisteredCommand[] {
         events.emit('app:navigate', { view: 'tasks' });
       },
     },
+    ...createTaskCommands(),
     {
       id: 'view.toggleLog',
       label: 'Toggle Log Panel',
@@ -375,16 +421,8 @@ export function createGlobalCommands(): RegisteredCommand[] {
       icon: 'plus',
       description: 'Create a new note',
       defaultKeybinding: 'mod+n',
-      scope: ['global'],
+      scope: NOTES_CONTEXT_SCOPE,
       execute: async () => {
-        // When the tasks workspace owns Cmd+N, the page-level handler will
-        // re-route it to focus the capture input. We let the workspace do
-        // that itself by emitting the navigate event so behaviour is
-        // consistent regardless of how the command was triggered.
-        if (uiStore.tasksWorkspaceOpen) {
-          events.emit('tasks:request-new', {});
-          return;
-        }
         const doc = await notesStore.createQuickNote();
         if (doc) {
           toastStore.success('Note created');
@@ -468,6 +506,19 @@ export function createGlobalCommands(): RegisteredCommand[] {
       runWhen: () => editorStore.tabs.length >= 2,
     },
     ...createTabSwitchCommands(),
+    {
+      id: 'note.openMarkdownFile',
+      label: 'Open Markdown File…',
+      keywords: ['open', 'markdown', 'import', 'file', 'external'],
+      category: 'note',
+      icon: 'folderOpen',
+      description: 'Import external .md files into this workspace',
+      defaultKeybinding: 'mod+o',
+      scope: ['global'],
+      execute: () => {
+        events.emit('app:request-open-markdown-file', {});
+      },
+    },
     {
       id: 'tab.close',
       label: 'Close Tab',
@@ -904,6 +955,125 @@ export function createGlobalCommands(): RegisteredCommand[] {
       },
     },
   ];
+}
+
+function createTaskCommands(): RegisteredCommand[] {
+  return [
+    {
+      id: 'tasks.new',
+      label: 'New Todo',
+      keywords: ['tasks', 'todo', 'new', 'add', 'capture'],
+      category: 'tasks',
+      icon: 'plus',
+      description: 'Focus the task capture input',
+      defaultKeybinding: 'mod+n',
+      scope: TASKS_CONTEXT_SCOPE,
+      execute: () => {
+        events.emit('tasks:request-new', {});
+      },
+    },
+    {
+      id: 'tasks.search',
+      label: 'Search Todos',
+      keywords: ['tasks', 'todo', 'search', 'filter'],
+      category: 'tasks',
+      icon: 'search',
+      description: 'Focus task search',
+      defaultKeybinding: 'mod+f',
+      scope: TASKS_CONTEXT_SCOPE,
+      execute: () => {
+        events.emit('tasks:request-search', {});
+      },
+    },
+    {
+      id: 'tasks.toggleSelected',
+      label: 'Toggle Selected Todo',
+      keywords: ['tasks', 'todo', 'complete', 'check', 'toggle'],
+      category: 'tasks',
+      icon: 'checkSquare',
+      description: 'Toggle completion for the selected todo',
+      defaultKeybinding: 'mod+k',
+      scope: TASKS_CONTEXT_SCOPE,
+      execute: async () => {
+        const selected = todoStore.selectedTodo;
+        if (selected) await todoStore.toggle(selected.id);
+      },
+    },
+    {
+      id: 'tasks.selectNext',
+      label: 'Select Next Todo',
+      keywords: ['tasks', 'todo', 'next', 'down'],
+      category: 'tasks',
+      icon: 'arrowDown',
+      description: 'Select the next visible todo',
+      defaultKeybinding: 'arrowdown',
+      scope: TASKS_NO_INPUT_SCOPE,
+      execute: () => selectTaskByOffset(1),
+    },
+    {
+      id: 'tasks.selectPrevious',
+      label: 'Select Previous Todo',
+      keywords: ['tasks', 'todo', 'previous', 'up'],
+      category: 'tasks',
+      icon: 'arrowUp',
+      description: 'Select the previous visible todo',
+      defaultKeybinding: 'arrowup',
+      scope: TASKS_NO_INPUT_SCOPE,
+      execute: () => selectTaskByOffset(-1),
+    },
+    {
+      id: 'tasks.editSelected',
+      label: 'Edit Selected Todo',
+      keywords: ['tasks', 'todo', 'edit', 'title'],
+      category: 'tasks',
+      icon: 'edit3',
+      description: 'Focus the selected todo title',
+      defaultKeybinding: 'enter',
+      scope: TASKS_NO_INPUT_SCOPE,
+      execute: () => {
+        events.emit('tasks:request-edit-selected', {});
+      },
+    },
+    {
+      id: 'tasks.deleteSelected',
+      label: 'Delete Selected Todo',
+      keywords: ['tasks', 'todo', 'delete', 'remove'],
+      category: 'tasks',
+      icon: 'trash',
+      description: 'Delete the selected todo',
+      defaultKeybinding: 'delete',
+      scope: TASKS_NO_INPUT_SCOPE,
+      execute: deleteSelectedTask,
+    },
+    {
+      id: 'tasks.deleteSelectedBackspace',
+      label: 'Delete Selected Todo (Backspace)',
+      keywords: ['tasks', 'todo', 'delete', 'remove', 'backspace'],
+      category: 'tasks',
+      icon: 'trash',
+      description: 'Delete the selected todo with Backspace',
+      defaultKeybinding: 'backspace',
+      scope: TASKS_NO_INPUT_SCOPE,
+      execute: deleteSelectedTask,
+    },
+    ...createTaskViewSwitchCommands(),
+  ];
+}
+
+function createTaskViewSwitchCommands(): RegisteredCommand[] {
+  return TODO_VIEWS.map((view, index) => ({
+    id: `tasks.view.${index + 1}`,
+    label: `Tasks: ${getTodoViewLabel(view)}`,
+    keywords: ['tasks', 'todo', 'view', getTodoViewLabel(view).toLowerCase()],
+    category: 'tasks',
+    icon: 'listChecks',
+    description: `Switch to the ${getTodoViewLabel(view)} task view`,
+    defaultKeybinding: `mod+${index + 1}`,
+    scope: TASKS_CONTEXT_SCOPE,
+    execute: () => {
+      todoStore.setView(view);
+    },
+  }));
 }
 
 /**

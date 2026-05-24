@@ -12,6 +12,7 @@
   import { ALL_TODO_SOURCES, getTodoSourceDisplayName } from '$lib/domain/values/TodoSource';
   import { ALL_TODO_PRIORITIES, getPriorityDisplayName } from '$lib/domain/values/TodoPriority';
   import { todoStore } from '$lib/stores';
+  import SelectShell from '$lib/components/shared/SelectShell.svelte';
 
   interface Props {
     /** Whether to show filters in expanded or collapsed state */
@@ -100,31 +101,37 @@
   <div class="filters-grid">
     <div class="filter-group">
       <label for="status-filter">Status</label>
-      <select id="status-filter" value={statusValue} onchange={handleStatusChange}>
-        <option value="all">All</option>
-        <option value="open">Open</option>
-        <option value="completed">Completed</option>
-      </select>
+      <SelectShell class="todo-filter-select-shell">
+        <select id="status-filter" name="todo-status-filter" value={statusValue} onchange={handleStatusChange}>
+          <option value="all">All</option>
+          <option value="open">Open</option>
+          <option value="completed">Completed</option>
+        </select>
+      </SelectShell>
     </div>
 
     <div class="filter-group">
       <label for="source-filter">Source</label>
-      <select id="source-filter" value={sourceValue} onchange={handleSourceChange}>
-        <option value="all">All Sources</option>
-        {#each ALL_TODO_SOURCES as source (source)}
-          <option value={source}>{getTodoSourceDisplayName(source)}</option>
-        {/each}
-      </select>
+      <SelectShell class="todo-filter-select-shell">
+        <select id="source-filter" name="todo-source-filter" value={sourceValue} onchange={handleSourceChange}>
+          <option value="all">All Sources</option>
+          {#each ALL_TODO_SOURCES as source (source)}
+            <option value={source}>{getTodoSourceDisplayName(source)}</option>
+          {/each}
+        </select>
+      </SelectShell>
     </div>
 
     <div class="filter-group">
       <label for="priority-filter">Priority</label>
-      <select id="priority-filter" value={priorityValue} onchange={handlePriorityChange}>
-        <option value="all">All Priorities</option>
-        {#each ALL_TODO_PRIORITIES as priority (priority)}
-          <option value={priority}>{getPriorityDisplayName(priority)}</option>
-        {/each}
-      </select>
+      <SelectShell class="todo-filter-select-shell">
+        <select id="priority-filter" name="todo-priority-filter" value={priorityValue} onchange={handlePriorityChange}>
+          <option value="all">All Priorities</option>
+          {#each ALL_TODO_PRIORITIES as priority (priority)}
+            <option value={priority}>{getPriorityDisplayName(priority)}</option>
+          {/each}
+        </select>
+      </SelectShell>
     </div>
   </div>
 
@@ -168,9 +175,9 @@
     flex-direction: column;
     gap: 0.75rem;
     padding: 0.75rem;
-    background-color: var(--bg-tertiary);
+    background-color: var(--bg-subtle);
     border-radius: 0.5rem;
-    border: 1px solid var(--border-primary);
+    border: 1px solid var(--border-light);
   }
 
   .todo-filters.collapsed {
@@ -197,20 +204,29 @@
     letter-spacing: 0.05em;
   }
 
+  :global(.todo-filter-select-shell) {
+    --select-bg: var(--bg-card);
+    --select-radius: var(--radius-sm);
+    --select-min-height: 32px;
+    --select-padding-x: 10px;
+    --select-padding-y: 6px;
+    width: 100%;
+  }
+
   .filter-group select {
-    padding: 0.375rem 0.5rem;
+    padding: 0.375rem 2rem 0.375rem 0.625rem;
     font-size: 0.8125rem;
-    border: 1px solid var(--border-primary);
+    border: 1px solid var(--border-light);
     border-radius: 0.375rem;
-    background-color: var(--bg-secondary);
+    background-color: var(--bg-card);
     color: var(--text-primary);
     cursor: pointer;
-    transition: border-color 0.15s ease;
   }
 
   .filter-group select:focus {
     outline: none;
     border-color: var(--accent-primary);
+    box-shadow: 0 0 0 3px var(--accent-soft);
   }
 
   .search-row {

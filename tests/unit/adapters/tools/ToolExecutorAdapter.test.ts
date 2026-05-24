@@ -9,6 +9,7 @@ import { createInvocation } from '$lib/domain/entities/ToolInvocation';
 import type { ToolId } from '$lib/domain/values/ToolId';
 import { createToolId } from '$lib/domain/values/ToolId';
 import type { ToolExecutionContext } from '$lib/ports/outbound/ToolExecutorPort';
+import type { ToolServices } from '$lib/ports/inbound/ToolServices';
 import { resourceLock } from '$lib/events/queue/ResourceLock';
 
 // Mock the events module
@@ -124,6 +125,106 @@ describe('ToolExecutorAdapter', () => {
   // =========================================================================
 
   describe('execute()', () => {
+    it('blocks protected note writes without explicit AI write approval', async () => {
+      const toolId = createToolId('note', 'update');
+      const handler = vi.fn().mockResolvedValue({ ok: true });
+      const services = {
+        editor: { getState: () => ({ document: null }) },
+        documents: {
+          readMeta: vi.fn().mockResolvedValue({
+            ok: true,
+            value: {
+              title: 'Secrets',
+              protection: {
+                level: 'protected',
+                noteId: 'pnote_1',
+                keyId: 'pkey_1',
+                algorithm: 'AES-256-GCM',
+                envelopeVersion: 2,
+                protectedAt: new Date().toISOString(),
+                titleVisible: true,
+                lockState: 'unlocked',
+              },
+            },
+          }),
+        },
+        protection: {
+          currentPolicy: () => ({
+            idleLockMinutes: 15,
+            lockOnAppClose: true,
+            lockOnSleep: false,
+            hideProtectedPreviews: true,
+            requireAIApprovalForProtectedReads: true,
+            requireAIApprovalForProtectedWrites: true,
+          }),
+          hasAIContextAuthorization: vi.fn().mockReturnValue(false),
+        },
+      } as unknown as ToolServices;
+      adapter = new ToolExecutorAdapter(undefined, () => services);
+      adapter.registerHandler(toolId, handler);
+
+      const result = await adapter.execute(createInvocation({
+        toolId,
+        args: { noteId: 'secret.md', content: 'new content' },
+        confirmed: true,
+      }));
+
+      expect(result.status).toBe('failure');
+      if (result.status === 'failure') {
+        expect(result.error.message).toContain('requires explicit AI access approval');
+      }
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it('blocks protected active-note editor block writes without AI approval', async () => {
+      const toolId = createToolId('editor', 'replace-block');
+      const handler = vi.fn().mockResolvedValue({ ok: true });
+      const services = {
+        editor: { getState: () => ({ document: { path: 'secret.md' } }) },
+        documents: {
+          readMeta: vi.fn().mockResolvedValue({
+            ok: true,
+            value: {
+              title: 'Secrets',
+              protection: {
+                level: 'protected',
+                noteId: 'pnote_1',
+                keyId: 'pkey_1',
+                algorithm: 'AES-256-GCM',
+                envelopeVersion: 2,
+                protectedAt: new Date().toISOString(),
+                titleVisible: true,
+                lockState: 'unlocked',
+              },
+            },
+          }),
+        },
+        protection: {
+          currentPolicy: () => ({
+            idleLockMinutes: 15,
+            lockOnAppClose: true,
+            lockOnSleep: false,
+            hideProtectedPreviews: true,
+            requireAIApprovalForProtectedReads: true,
+            requireAIApprovalForProtectedWrites: true,
+          }),
+          hasAIContextAuthorization: vi.fn().mockReturnValue(false),
+        },
+      } as unknown as ToolServices;
+      adapter = new ToolExecutorAdapter(undefined, () => services);
+      adapter.registerHandler(toolId, handler);
+
+      const result = await adapter.execute(createInvocation({
+        toolId,
+        args: { blockId: 'block-123', markdown: 'new content' },
+        confirmed: true,
+      }));
+
+      expect(result.status).toBe('failure');
+      expect(services.documents.readMeta).toHaveBeenCalledWith('secret.md');
+      expect(handler).not.toHaveBeenCalled();
+    });
+
     it('returns success result on successful execution', async () => {
       const toolId = createToolId('note', 'create');
       const handler = vi.fn().mockResolvedValue({ noteId: 'new-note' });

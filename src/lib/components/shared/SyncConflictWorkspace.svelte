@@ -11,6 +11,7 @@
   } from '@lucide/svelte';
   import { notesStore, syncStore, toastStore, uiStore } from '$lib/stores';
   import type { SyncConflict, SyncConflictResolution } from '$lib/domain/values';
+  import InfoPopover from './InfoPopover.svelte';
 
   let selectedId = $state<string | null>(null);
   let mergedDraft = $state('');
@@ -113,7 +114,19 @@
           <GitMerge size={14} />
           GitHub Sync
         </div>
-        <h2>Resolve Conflicts</h2>
+        <h2>
+          Resolve Conflicts
+          <InfoPopover
+            title="Conflict review"
+            body="Review each file before choosing which version should become the saved local copy."
+            items={[
+              'Local is your device.',
+              'Remote is GitHub.',
+              'Base is the last shared version when available.',
+            ]}
+            align="start"
+          />
+        </h2>
       </div>
       <button type="button" class="icon-btn" title="Close" aria-label="Close" onclick={() => uiStore.closeSyncConflictWorkspace()}>
         <X size={18} />
@@ -174,23 +187,58 @@
           {#if preview}
             <div class="sync-conflict-previews">
               <section>
-                <h4>Local</h4>
+                <h4>
+                  Local
+                  <InfoPopover
+                    title="Local copy"
+                    body="Local is the version currently in this workspace on your device."
+                    items={['Keep Local uses this version for the conflicted file.']}
+                    align="start"
+                  />
+                </h4>
                 <pre>{preview.localMarkdown ?? ''}</pre>
               </section>
               <section>
-                <h4>Remote</h4>
+                <h4>
+                  Remote
+                  <InfoPopover
+                    title="GitHub copy"
+                    body="Remote is the version that came from the GitHub repository."
+                    items={['Take Remote replaces the local conflicted file with this version.']}
+                    align="start"
+                  />
+                </h4>
                 <pre>{preview.remoteMarkdown ?? ''}</pre>
               </section>
               <section>
-                <h4>Base</h4>
+                <h4>
+                  Base
+                  <InfoPopover
+                    title="Base version"
+                    body="Base is the last version both sides had in common, which helps you see what each side changed."
+                    items={['It may be empty when Git cannot provide a shared version.']}
+                    align="start"
+                  />
+                </h4>
                 <pre>{preview.baseMarkdown ?? ''}</pre>
               </section>
             </div>
 
-            <label class="sync-conflict-merged">
-              <span>Merged</span>
-              <textarea bind:value={mergedDraft} spellcheck="true"></textarea>
-            </label>
+            <div class="sync-conflict-merged">
+              <span id="sync-conflict-merged-label">
+                Merged
+                <InfoPopover
+                  title="Merged version"
+                  body="Merged is the final text Void will write if you choose Use Merged."
+                  items={[
+                    'You can edit this text before applying it.',
+                    'Use Merged only becomes available for previewable file conflicts.',
+                  ]}
+                  align="start"
+                />
+              </span>
+              <textarea bind:value={mergedDraft} spellcheck="true" aria-labelledby="sync-conflict-merged-label"></textarea>
+            </div>
           {:else}
             <div class="sync-conflict-empty">
               {busy ? 'Loading conflict preview...' : 'Select a conflict to preview it.'}
@@ -208,6 +256,15 @@
         Abort Merge
       </button>
       <div class="sync-conflict-resolution-actions">
+        <InfoPopover
+          title="Resolution buttons"
+          body="Choose one resolution for the selected conflict, then resume sync when all conflicts are resolved."
+          items={[
+            'Duplicate Local keeps both versions by creating a second local copy.',
+            'Abort Merge stops this merge and preserves a recovery branch.',
+            'Resume Sync continues after every conflict is resolved.',
+          ]}
+        />
         <button type="button" disabled={busy || !selectedId} onclick={() => apply('keep-local')}>
           Keep Local
         </button>
@@ -285,6 +342,9 @@
   }
 
   h2 {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
     margin-top: 3px;
     font-size: 20px;
   }
@@ -401,7 +461,9 @@
 
   h4,
   .sync-conflict-merged span {
-    display: block;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
     margin-bottom: 6px;
     color: var(--text-muted);
     font-size: 12px;

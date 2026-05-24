@@ -14,6 +14,7 @@ import type { SessionId } from '$lib/domain/values/SessionId';
 import type { OperationType } from '$lib/domain/values/OperationType';
 import type { OperationTemplate, ContextRequirement } from '$lib/domain/values/OperationTemplate';
 import type { AIWebAccess } from '$lib/domain/values/AIWebAccess';
+import type { PagedResult, SummaryQueryBase } from '$lib/ports/outbound';
 
 /**
  * Request to queue a new operation.
@@ -47,6 +48,23 @@ export interface QueueStatus {
 export interface OperationStateChange {
   operations: Operation[];
   queueStatus: QueueStatus;
+}
+
+export interface OperationSummary {
+  id: OperationId;
+  type: OperationType;
+  status: Operation['status'];
+  label: string;
+  prompt: string;
+  outputCount: number;
+  createdAt: Date;
+  updatedAt: Date;
+  completedAt: Date | null;
+}
+
+export interface OperationSummaryQuery extends SummaryQueryBase {
+  status?: Operation['status'] | 'active' | 'terminal' | 'all';
+  type?: OperationType | 'all';
 }
 
 /**
@@ -89,6 +107,7 @@ export interface OperationService {
   getAllOperations(): Operation[];
   getSessions(): Operation[];
   getQueueStatus(): QueueStatus;
+  listOperationSummaries(query?: OperationSummaryQuery): Promise<Result<PagedResult<OperationSummary>, Error>>;
 
   // History
   clearHistory(): Promise<Result<void, Error>>;

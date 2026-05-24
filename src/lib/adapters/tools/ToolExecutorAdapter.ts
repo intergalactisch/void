@@ -28,6 +28,7 @@ import { getLogger } from '$lib/logging';
 import type { OperationRunner } from '$lib/pipeline/OperationRunner';
 import { AI_SOURCE } from '$lib/pipeline/types';
 import { getToolResourceMeta } from '$lib/tools/registry';
+import { assertProtectedAIReadAllowed, assertProtectedAIWriteAllowed } from '$lib/tools/protectionGuard';
 
 const log = getLogger('ToolExecutor');
 
@@ -149,6 +150,9 @@ export class ToolExecutorAdapter implements ToolExecutorPort {
       // Execute handler — wrap in OperationRunner if available, and serialize
       // writes to the same declared resource across concurrent agent runs.
       let data: unknown;
+      if (this.servicesProvider) {
+        await this.enforceProtectedAccess(invocation, services);
+      }
       const executeHandler = async () => {
         if (this.operationRunner) {
           const opResult = await this.operationRunner.run(
@@ -232,6 +236,41 @@ export class ToolExecutorAdapter implements ToolExecutorPort {
     if (!resource) return null;
 
     return `tool:${resource}`;
+  }
+
+  private async enforceProtectedAccess(invocation: ToolInvocation, services: ToolServices): Promise<void> {
+    const meta = getToolResourceMeta(invocation.toolId);
+    const id = String(invocation.toolId);
+    const explicitResource = meta?.resourceId(invocation.args) ?? null;
+    const activePath = services.editor.getState().document?.path ?? null;
+    const ambientResource = !explicitResource
+      || explicitResource.startsWith('@ambient:')
+      || explicitResource === 'active-note'
+      || explicitResource === 'all-commitments';
+    const editorResourceIsBlockScoped = id.startsWith('editor:')
+      && explicitResource !== null
+      && !ambientResource
+      && !looksLikeMarkdownNotePath(explicitResource);
+    const path = explicitResource && !ambientResource
+      && !editorResourceIsBlockScoped
+      ? explicitResource
+      : activePath;
+
+    if (!path) return;
+
+    const readScope = id.startsWith('lineage:') || id.startsWith('commitment:')
+      ? 'history.read'
+      : 'note.read';
+
+    if (meta?.accessMode === 'write' || id.startsWith('editor:')) {
+      await assertProtectedAIReadAllowed(services, path, readScope);
+      await assertProtectedAIWriteAllowed(services, path);
+      return;
+    }
+
+    if (meta?.accessMode === 'read' || id.startsWith('lineage:') || id.startsWith('commitment:')) {
+      await assertProtectedAIReadAllowed(services, path, readScope);
+    }
   }
 
   async executeSequence(
@@ -321,4 +360,9 @@ export class ToolExecutorAdapter implements ToolExecutorPort {
   clearHandlers(): void {
     this.handlers.clear();
   }
+}
+
+function looksLikeMarkdownNotePath(resource: string): boolean {
+  const normalized = resource.replace(/\\/g, '/').toLowerCase();
+  return normalized.endsWith('.md') || normalized.includes('/');
 }

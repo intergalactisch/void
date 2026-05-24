@@ -14,11 +14,14 @@
    */
 
   import { notesStore, todoStore, uiStore, workspaceStore } from '$lib/stores';
+  import type { NotePaneDirection } from '$lib/domain';
+  import type { ProtectedNoteMeta } from '$lib/domain/values/Protection';
   import type { NotesListItem, TagGroup } from '$lib/ports/inbound';
   import { createSortableState, type SortableState } from '$lib/components/dnd/sortable';
   import FolderTree from './FolderTree.svelte';
   import { createFolderReorderDnd } from './folderReorderDnd';
-  import { ChevronRight, Clock, FileText, Folder, FolderPlus, Hash, Home, Layers, MoreHorizontal, Plus, RefreshCw, Star, X } from '@lucide/svelte';
+  import SelectShell from '$lib/components/shared/SelectShell.svelte';
+  import { ChevronRight, Clock, FileText, Folder, FolderPlus, Hash, Home, Layers, Lock, MoreHorizontal, Plus, RefreshCw, Star, Unlock, X } from '@lucide/svelte';
 
   interface Props {
     /** Whether the sidebar is visible */
@@ -39,6 +42,8 @@
     onNoteContextMenu?: (path: string, title: string, position: { x: number; y: number }, isFolder?: boolean) => void;
     /** Callback to open the create-folder modal. null parentPath = root. */
     onRequestCreateFolder?: (parentPath: string | null) => void;
+    /** Callback for modifier-click split opening from note rows. */
+    onSplitNote?: (path: string, direction: NotePaneDirection) => void;
   }
 
   let {
@@ -50,6 +55,7 @@
     onOpenTasks,
     onNoteContextMenu,
     onRequestCreateFolder,
+    onSplitNote,
   }: Props = $props();
 
   /** Handle right-click on a note/folder (works for tree, Recent, and Favorites rows). */
@@ -67,6 +73,12 @@
    * - Plain click clears multi-selection and navigates to the note.
    */
   function handleSelectNote(path: string, event?: MouseEvent | KeyboardEvent) {
+    if (event && event.altKey && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      event.stopPropagation();
+      onSplitNote?.(path, event.shiftKey ? 'vertical' : 'horizontal');
+      return;
+    }
     if (event && (event.metaKey || event.ctrlKey)) {
       notesStore.toggleSelection(path);
       return;
@@ -285,6 +297,10 @@
     return Math.max(0, group.notes.length - TAG_NOTES_PREVIEW_LIMIT);
   }
 
+  function protectionForPath(path: string): ProtectedNoteMeta | null {
+    return notesStore.allNotes.find((note) => note.path === path)?.protection ?? null;
+  }
+
   function handleToggleLongTagGroup(id: string, event: MouseEvent) {
     event.preventDefault();
     event.stopPropagation();
@@ -411,17 +427,20 @@
           title="Manage workspaces"
           aria-label="Manage workspaces"
         >V</a>
-        <select
-          class="workspace-select"
-          aria-label="Switch workspace"
-          value={workspaceStore.activeWorkspace?.id ?? ''}
-          onchange={handleWorkspaceSelect}
-          disabled={workspaceStore.loading}
-        >
-          {#each workspaceStore.workspaces as workspace (workspace.id)}
-            <option value={workspace.id}>{workspace.name}</option>
-          {/each}
-        </select>
+        <SelectShell class="workspace-select-shell">
+          <select
+            class="workspace-select"
+            name="workspace"
+            aria-label="Switch workspace"
+            value={workspaceStore.activeWorkspace?.id ?? ''}
+            onchange={handleWorkspaceSelect}
+            disabled={workspaceStore.loading}
+          >
+            {#each workspaceStore.workspaces as workspace (workspace.id)}
+              <option value={workspace.id}>{workspace.name}</option>
+            {/each}
+          </select>
+        </SelectShell>
       {:else}
         <span class="workspace-icon" aria-hidden="true">V</span>
         <a
@@ -518,7 +537,15 @@
               tabindex="0"
               title={recent.title}
             >
-              <FileText class="item-icon-sm" size={14} strokeWidth={1.5} aria-hidden="true" />
+              {#if protectionForPath(recent.path)?.level === 'protected'}
+                {#if protectionForPath(recent.path)?.lockState === 'locked'}
+                  <Lock class="item-icon-sm protected-icon" size={14} strokeWidth={1.6} aria-hidden="true" />
+                {:else}
+                  <Unlock class="item-icon-sm protected-icon" size={14} strokeWidth={1.6} aria-hidden="true" />
+                {/if}
+              {:else}
+                <FileText class="item-icon-sm" size={14} strokeWidth={1.5} aria-hidden="true" />
+              {/if}
               <span class="item-text">{recent.title}</span>
               <button
                 type="button"
@@ -590,7 +617,15 @@
               {#if note.isFolder}
                 <Folder class="item-icon-sm" size={14} strokeWidth={1.5} aria-hidden="true" />
               {:else}
-                <FileText class="item-icon-sm" size={14} strokeWidth={1.5} aria-hidden="true" />
+                {#if note.protection?.level === 'protected'}
+                  {#if note.protection.lockState === 'locked'}
+                    <Lock class="item-icon-sm protected-icon" size={14} strokeWidth={1.6} aria-hidden="true" />
+                  {:else}
+                    <Unlock class="item-icon-sm protected-icon" size={14} strokeWidth={1.6} aria-hidden="true" />
+                  {/if}
+                {:else}
+                  <FileText class="item-icon-sm" size={14} strokeWidth={1.5} aria-hidden="true" />
+                {/if}
               {/if}
               <span class="item-text">{note.title}</span>
               <button
@@ -767,7 +802,15 @@
                   role="button"
                   tabindex="0"
                 >
-                  <FileText class="item-icon-sm" size={14} strokeWidth={1.5} aria-hidden="true" />
+                  {#if note.protection?.level === 'protected'}
+                    {#if note.protection.lockState === 'locked'}
+                      <Lock class="item-icon-sm protected-icon" size={14} strokeWidth={1.6} aria-hidden="true" />
+                    {:else}
+                      <Unlock class="item-icon-sm protected-icon" size={14} strokeWidth={1.6} aria-hidden="true" />
+                    {/if}
+                  {:else}
+                    <FileText class="item-icon-sm" size={14} strokeWidth={1.5} aria-hidden="true" />
+                  {/if}
                   <span class="item-text">{note.title}</span>
                   <button
                     type="button"
@@ -1038,12 +1081,26 @@
     outline-offset: 1px;
   }
 
+  :global(.workspace-select-shell) {
+    --select-bg: transparent;
+    --select-border: transparent;
+    --select-hover-bg: var(--bg-hover);
+    --select-hover-border: var(--border-light);
+    --select-radius: 6px;
+    --select-min-height: 26px;
+    --select-padding-x: 5px;
+    --select-padding-y: 3px;
+    --select-chevron-size: 18px;
+    --select-shadow: none;
+    max-width: 158px;
+  }
+
   .workspace-select {
     max-width: 142px;
     min-width: 0;
     border: 1px solid transparent;
     border-radius: 6px;
-    background: transparent;
+    background-color: transparent;
     color: var(--text-primary);
     font-size: 13px;
     font-weight: 600;
@@ -1054,8 +1111,8 @@
 
   .workspace-select:hover,
   .workspace-select:focus-visible {
-    border-color: var(--border-subtle);
-    background: var(--surface-hover);
+    border-color: var(--border-light);
+    background-color: var(--bg-hover);
   }
 
   .workspace-actions {
@@ -1506,6 +1563,10 @@
 
   .sidebar-item:hover .item-icon-sm {
     color: var(--text-secondary);
+  }
+
+  :global(.protected-icon) {
+    color: var(--color-warning, var(--text-muted));
   }
 
   /* Chevron rotation */

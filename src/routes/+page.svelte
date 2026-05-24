@@ -7,19 +7,28 @@
    */
 
   import { onMount, onDestroy, untrack } from 'svelte';
-  import { notesStore, toastStore, settingsStore, aiStore, operationsStore, filesStore, editorStore, todoStore, uiStore, lineageStore, updaterStore } from '$lib/stores';
+  import { notesStore, toastStore, settingsStore, aiStore, operationsStore, filesStore, editorStore, todoStore, uiStore, lineageStore, updaterStore, noteWorkspaceStore, protectionStore } from '$lib/stores';
   import { Sidebar, Breadcrumbs, QuickSwitcher, TagDetailView, FolderOverview, SearchPanel, GraphView } from '$lib/components/navigation';
   import NoteContextMenu from '$lib/components/navigation/NoteContextMenu.svelte';
   import CreateFolderModal from '$lib/components/navigation/CreateFolderModal.svelte';
   import DeleteFolderModal from '$lib/components/navigation/DeleteFolderModal.svelte';
-  import { ConflictBanner, EditorShell, EditorTabs } from '$lib/components/editor';
+  import { NotePaneWorkspace, WorkspaceTabs } from '$lib/components/editor';
   import { StatusBar, SettingsPanel, LogPanel, ToastContainer, PulseInbox, ClipboardHistoryPicker, SyncConflictWorkspace } from '$lib/components/shared';
   import { logStore } from '$lib/stores';
   import { AICommandCenter } from '$lib/components/ai-command';
   import { TodoWorkspace } from '$lib/components/todo';
-  import { Copy, FolderOpen, FolderSearch, Hash, History, MoreHorizontal, Star, Trash2, X } from '@lucide/svelte';
-  import { save as saveDialog } from '@tauri-apps/plugin-dialog';
+  import { AlertCircle, Copy, FileText, FolderOpen, FolderSearch, Hash, History, MoreHorizontal, Star, Trash2, Upload, X } from '@lucide/svelte';
+  import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
   import { listenToMenuBarCommands, type MenuBarCommand } from '$lib/desktop/menuBar';
+  import {
+    formatMarkdownDropAcceptedLabel,
+    formatMarkdownDropSkippedLabel,
+    formatMarkdownImportTargetFolder,
+    type MarkdownDropPreview,
+    openImportedMarkdownSummary,
+    resolveMarkdownImportTargetFolder,
+    summarizeMarkdownDropPaths,
+  } from '$lib/desktop/markdownImportFlow';
   import { DEFAULT_TODO_VIEW, type TodoView } from '$lib/domain/values/TodoView';
   import { events } from '$lib/events';
   import type { EventMap } from '$lib/events/types';
@@ -33,12 +42,13 @@
     type GlobalKeymapBinder,
   } from '$lib/keymap';
   import { formatChord, type KeyChord } from '$lib/domain/values/KeyChord';
-  import { AI_UNAVAILABLE_MESSAGE, buildRefId } from '$lib/domain/values';
+  import { AI_UNAVAILABLE_MESSAGE, buildRefId, deriveTextNoteTitle, type NotePaneDirection } from '$lib/domain/values';
   import { copyTextToClipboard } from '$lib/utils/clipboard';
   import type { CommandService } from '$lib/ports/inbound/CommandService';
+  import type { DocumentService } from '$lib/ports/inbound/DocumentService';
   import type { KeymapService } from '$lib/ports/inbound/KeymapService';
   import type { FrecencyService } from '$lib/ports/inbound/FrecencyService';
-  import type { FolderDropPosition } from '$lib/ports/inbound';
+  import type { FolderDropPosition, MarkdownImportSummary } from '$lib/ports/inbound';
 
   function formatShortcut(chord: KeyChord): string {
     return formatChord(chord, navigator.platform.toLowerCase().includes('mac') ? 'mac' : 'other');
@@ -74,6 +84,16 @@
   let settingsOpen = $derived(uiStore.settingsOpen);
   let focusMode = $derived(uiStore.focusMode);
   let tasksWorkspaceOpen = $derived(uiStore.tasksWorkspaceOpen);
+  let markdownDropPreview = $state<MarkdownDropPreview | null>(null);
+  let pasteCreateInFlight = false;
+
+  const LIKELY_SECRET_CONTENT_PATTERNS = [
+    /^\s*(?:export\s+)?[A-Z0-9_]{3,}\s*=\s*['"]?[^'"\s#]{12,}/im,
+    /-----BEGIN (?:RSA |EC |OPENSSH |)PRIVATE KEY-----/,
+    /\b(?:sk|pk|rk|ghp|github_pat|xox[baprs])_[A-Za-z0-9_\-]{16,}\b/,
+    /\bAKIA[0-9A-Z]{16}\b/,
+    /\bAIza[0-9A-Za-z_\-]{20,}\b/,
+  ] as const;
 
   // Note context menu state (component-local — only opened from this page)
   let noteContextMenu = $state<{
@@ -210,8 +230,6 @@
   // Track if component is mounted (DOM is ready)
   let isMounted = $state(false);
 
-  // EditorShell component reference
-  let editorShell: EditorShell | undefined = $state(undefined);
   let todoWorkspace: TodoWorkspace | undefined = $state(undefined);
   let noteActionsMenuOpen = $state(false);
 
@@ -275,7 +293,10 @@
       }
     }
 
-    await notesStore.renameNote(path, newTitle);
+    const newPath = await notesStore.renameNote(path, newTitle);
+    if (newPath) {
+      noteWorkspaceStore.renameNotePath(path, newPath);
+    }
   }
 
   async function revealCurrentNote() {
@@ -376,9 +397,13 @@
       deleteInProgress = false;
     }
     if (deleted) {
+      const nextPath = noteWorkspaceStore.removeNotePath(note.path);
       uiStore.clearPendingNoteDelete();
       error = null;
       toastStore.info('Note deleted');
+      if (nextPath) {
+        notesStore.selectNote(nextPath);
+      }
       return;
     }
 
@@ -419,6 +444,222 @@
       console.error('Export error:', e);
       toastStore.error('Export failed');
     }
+  }
+
+  function getMarkdownImportTargetFolder(): string {
+    return resolveMarkdownImportTargetFolder({
+      activeFolderPath: notesStore.activeFolderPath,
+      selectedPath: notesStore.selectedPath,
+    });
+  }
+
+  function getSkippedImportMessage(summary: MarkdownImportSummary): string | null {
+    const skippedCount = summary.skipped.length;
+    if (skippedCount === 0) return null;
+
+    if (summary.imported.length === 0) {
+      if (summary.skipped.every((item) => item.reason === 'not-markdown')) {
+        return 'Only .md files can be opened.';
+      }
+      if (summary.skipped.every((item) => item.reason === 'unsupported-directory')) {
+        return 'Folder imports are not supported yet.';
+      }
+      return summary.skipped[0]?.message ?? 'No markdown files were imported.';
+    }
+
+    const fileLabel = skippedCount === 1 ? 'file' : 'files';
+    if (summary.skipped.every((item) => item.reason === 'not-markdown')) {
+      return `Skipped ${skippedCount} non-.md ${fileLabel}.`;
+    }
+    if (summary.skipped.every((item) => item.reason === 'unsupported-directory')) {
+      return `Skipped ${skippedCount} folder ${skippedCount === 1 ? 'drop' : 'drops'}.`;
+    }
+    return `Skipped ${skippedCount} ${fileLabel} that could not be imported.`;
+  }
+
+  function showMarkdownImportToasts(summary: MarkdownImportSummary): void {
+    if (summary.imported.length === 1) {
+      toastStore.success(`Imported ${summary.imported[0]?.title ?? 'markdown file'}`);
+    } else if (summary.imported.length > 1) {
+      toastStore.success(`Imported ${summary.imported.length} markdown files`);
+    }
+
+    const skippedMessage = getSkippedImportMessage(summary);
+    if (!skippedMessage) return;
+
+    if (summary.imported.length > 0) {
+      toastStore.warning(skippedMessage);
+    } else {
+      toastStore.error(skippedMessage);
+    }
+  }
+
+  function containsLikelySecretContent(text: string): boolean {
+    return LIKELY_SECRET_CONTENT_PATTERNS.some((pattern) => pattern.test(text));
+  }
+
+  async function protectSuggestedNote(path: string): Promise<void> {
+    if (editorStore.activePath === path && editorStore.isDirty) {
+      const saved = await editorStore.saveDocument();
+      if (!saved.ok) {
+        toastStore.error(saved.error.message);
+        return;
+      }
+    }
+    const meta = await protectionStore.protectNote(path);
+    if (!meta) {
+      toastStore.error(protectionStore.error?.message ?? 'Could not protect note');
+      return;
+    }
+    await notesStore.refresh();
+    if (editorStore.activePath === path) {
+      const result = await editorStore.reloadDocument(path, { flushDirty: true });
+      if (!result.ok) {
+        toastStore.error(result.error.message);
+        return;
+      }
+    }
+    toastStore.success('Note protected');
+  }
+
+  function suggestProtectNote(path: string, source: 'paste' | 'import'): void {
+    toastStore.warning(
+      source === 'paste'
+        ? 'This paste looks like secrets. Click to protect the note.'
+        : 'Imported note may contain secrets. Click to protect it.',
+      {
+        duration: 12000,
+        onClick: () => {
+          void protectSuggestedNote(path);
+        },
+      },
+    );
+  }
+
+  async function suggestProtectionForImportedSecrets(summary: MarkdownImportSummary): Promise<void> {
+    if (summary.imported.length === 0) return;
+    const ctx = getAppContext();
+    if (!ctx) return;
+    const documents = ctx.container.resolve<DocumentService>(TOKENS.DocumentService);
+    for (const item of summary.imported) {
+      const content = await documents.readContent(item.path);
+      if (content.ok && containsLikelySecretContent(content.value)) {
+        suggestProtectNote(item.path, 'import');
+      }
+    }
+  }
+
+  function showMarkdownDropPreview(paths: string[]): void {
+    markdownDropPreview = paths.length > 0 ? summarizeMarkdownDropPaths(paths) : null;
+  }
+
+  function clearMarkdownDropPreview(): void {
+    markdownDropPreview = null;
+  }
+
+  async function importExternalMarkdownPaths(paths: string[]): Promise<void> {
+    if (paths.length === 0) return;
+
+    const ctx = getAppContext();
+    if (!ctx) {
+      toastStore.error('Void is still starting up');
+      return;
+    }
+
+    const result = await ctx.markdownImport.importFiles(paths, {
+      targetFolder: getMarkdownImportTargetFolder(),
+    });
+
+    if (!result.ok) {
+      toastStore.error(`Import failed: ${result.error.message}`);
+      return;
+    }
+
+    const summary = result.value;
+    await openImportedMarkdownSummary(summary, {
+      refreshNotes: () => notesStore.refresh(),
+      openDocument: (path) => editorStore.loadDocument(path),
+      selectNote: (path) => notesStore.selectNote(path),
+    });
+    showMarkdownImportToasts(summary);
+    await suggestProtectionForImportedSecrets(summary);
+  }
+
+  async function openExternalMarkdownDialog(): Promise<void> {
+    try {
+      const selected = await openDialog({
+        title: 'Open Markdown File',
+        multiple: true,
+        filters: [{ name: 'Markdown', extensions: ['md'] }],
+      });
+
+      if (!selected) return;
+      await importExternalMarkdownPaths(Array.isArray(selected) ? selected : [selected]);
+    } catch (e) {
+      console.error('Open markdown file error:', e);
+      toastStore.error('Could not open Markdown file');
+    }
+  }
+
+  function getPasteTarget(event: ClipboardEvent): HTMLElement | null {
+    if (event.target instanceof HTMLElement) return event.target;
+    return document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  }
+
+  function isEditablePasteTarget(target: HTMLElement | null): boolean {
+    return !!target?.closest(
+      '.ProseMirror, input, textarea, select, [contenteditable], .command-center',
+    );
+  }
+
+  async function createNoteFromClipboardText(text: string): Promise<void> {
+    const ctx = getAppContext();
+    if (!ctx) {
+      toastStore.error('Void is still starting up');
+      return;
+    }
+
+    pasteCreateInFlight = true;
+    try {
+      const documents = ctx.container.resolve<DocumentService>(TOKENS.DocumentService);
+      const folder = notesStore.activeFolderPath ?? '';
+      const title = deriveTextNoteTitle(text, { fallbackPrefix: 'Paste' });
+      const result = await documents.createWithContent(
+        folder,
+        title,
+        text,
+        { type: 'user', autoFocus: true },
+        {
+          actor: { kind: 'user' },
+          intentKind: 'import',
+          summary: 'Created from clipboard paste',
+          source: { type: 'pasteboard' },
+        },
+      );
+
+      if (!result.ok) {
+        toastStore.error(`Paste failed: ${result.error.message}`);
+      } else if (containsLikelySecretContent(text)) {
+        suggestProtectNote(result.value.path, 'paste');
+      }
+    } finally {
+      pasteCreateInFlight = false;
+    }
+  }
+
+  function handleEmptyWorkspacePaste(event: ClipboardEvent): void {
+    if (event.defaultPrevented || pasteCreateInFlight) return;
+    if (notesStore.selectedPath !== null || editorStore.activePath !== null) return;
+
+    const snapshot = buildScopeSnapshot();
+    if (snapshot.modalOpen || snapshot.paletteOpen || snapshot.tasksWorkspaceOpen) return;
+    if (isEditablePasteTarget(getPasteTarget(event))) return;
+
+    const text = event.clipboardData?.getData('text/plain') ?? '';
+    if (!text.trim()) return;
+
+    event.preventDefault();
+    void createNoteFromClipboardText(text);
   }
 
   async function handleQuickCreate() {
@@ -543,6 +784,27 @@
     notesStore.selectNote(path);
   }
 
+  function openNoteAsSplit(path: string, direction: NotePaneDirection) {
+    uiStore.closeTasksWorkspace();
+    todoStore.closeWorkspace();
+    notesStore.showSidebar();
+
+    const activeTab = noteWorkspaceStore.activeTab;
+    if (!activeTab || !noteWorkspaceStore.activeNotePath) {
+      noteWorkspaceStore.openNoteTab(path);
+      notesStore.selectNote(path);
+      return;
+    }
+
+    const intent = direction === 'horizontal' ? 'right' : 'bottom';
+    const result = noteWorkspaceStore.splitPaneWithNote(activeTab.id, activeTab.activePaneId, intent, path);
+    if (result.notePath) notesStore.selectNote(result.notePath);
+    else {
+      noteWorkspaceStore.openNoteTab(path);
+      notesStore.selectNote(path);
+    }
+  }
+
   function openFolderOverview(path: string) {
     notesStore.selectFolderView(path);
   }
@@ -559,6 +821,9 @@
     switch (command) {
       case 'new-note':
         void handleQuickCreate();
+        break;
+      case 'open-markdown-file':
+        void openExternalMarkdownDialog();
         break;
       case 'open-search':
         uiStore.openQuickSwitcher();
@@ -619,6 +884,12 @@
 
   onMount(() => {
     isMounted = true;
+    noteWorkspaceStore.init();
+
+    const restoredNotePath = noteWorkspaceStore.activeNotePath;
+    if (restoredNotePath && !notesStore.selectedPath) {
+      notesStore.selectNote(restoredNotePath);
+    }
 
     // ─── Responsive sidebar default ───
     // The sidebar defaults to "open" in the store (good for desktop), but
@@ -655,6 +926,7 @@
       }
     };
     document.addEventListener('contextmenu', contextMenuHandler);
+    document.addEventListener('paste', handleEmptyWorkspacePaste);
 
     // Escape inside the tasks workspace closes it. This stays a route-level
     // handler because Escape semantics are highly contextual (modal-aware,
@@ -669,6 +941,22 @@
       closeTasksWorkspace();
     };
     window.addEventListener('keydown', escapeHandler);
+
+    const paneCycleHandler = (e: KeyboardEvent) => {
+      if (e.key !== 'F6') return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest('[data-pane-resizer]')) return;
+      if (!noteWorkspaceStore.isActiveTabSplit) return;
+      e.preventDefault();
+      const path = noteWorkspaceStore.focusNextPane(e.shiftKey ? -1 : 1);
+      if (path) {
+        notesStore.selectNote(path);
+        const paneId = noteWorkspaceStore.activePaneId;
+        if (paneId) editorStore.focusPane(paneId);
+      }
+    };
+    window.addEventListener('keydown', paneCycleHandler);
 
     // Power-user command spine: every other shortcut is now resolved by
     // the global keymap binder against the registered command set.
@@ -749,8 +1037,39 @@
 
     // Bridge command requests that need DOM-level orchestration this route
     // owns (file dialogs, focusing the tasks capture input).
+    const handleOpenMarkdownRequest = () => { void openExternalMarkdownDialog(); };
+    events.on('app:request-open-markdown-file', handleOpenMarkdownRequest);
     const handleExportRequest = () => { void exportAsMarkdown(); };
     events.on('app:request-export-markdown', handleExportRequest);
+
+    let dragDropDisposed = false;
+    let unlistenDragDrop: (() => void) | null = null;
+    import('@tauri-apps/api/window')
+      .then(({ getCurrentWindow }) =>
+        getCurrentWindow().onDragDropEvent((event) => {
+          if (event.payload.type === 'enter') {
+            showMarkdownDropPreview(event.payload.paths);
+            return;
+          }
+          if (event.payload.type === 'leave') {
+            clearMarkdownDropPreview();
+            return;
+          }
+          if (event.payload.type !== 'drop') return;
+          clearMarkdownDropPreview();
+          void importExternalMarkdownPaths(event.payload.paths);
+        })
+      )
+      .then((unlisten) => {
+        if (dragDropDisposed) {
+          unlisten();
+        } else {
+          unlistenDragDrop = unlisten;
+        }
+      })
+      .catch(() => {
+        // Browser-only dev and tests do not have a Tauri window to subscribe to.
+      });
 
     const handleOpenAIChat = (event: Event) => {
       const detail = (event as CustomEvent<{ conversationId?: string }>).detail;
@@ -766,6 +1085,14 @@
       todoWorkspace?.focusCapture();
     };
     events.on('tasks:request-new', handleTasksNewRequest);
+    const handleTasksSearchRequest = () => {
+      todoWorkspace?.focusSearch();
+    };
+    events.on('tasks:request-search', handleTasksSearchRequest);
+    const handleTasksEditSelectedRequest = () => {
+      todoWorkspace?.focusSelectedTitle();
+    };
+    events.on('tasks:request-edit-selected', handleTasksEditSelectedRequest);
 
     let menuBarDisposed = false;
     let unlistenMenuBar: (() => void) | null = null;
@@ -779,16 +1106,23 @@
 
     return () => {
       menuBarDisposed = true;
+      dragDropDisposed = true;
       unlistenMenuBar?.();
+      unlistenDragDrop?.();
       window.removeEventListener('keydown', escapeHandler);
+      window.removeEventListener('keydown', paneCycleHandler);
       window.removeEventListener('resize', handleViewportResize);
       keymapBinder?.dispose();
       keymapBinder = null;
       events.off('app:navigate', handleAppNavigate);
+      events.off('app:request-open-markdown-file', handleOpenMarkdownRequest);
       events.off('app:request-export-markdown', handleExportRequest);
       events.off('tasks:request-new', handleTasksNewRequest);
+      events.off('tasks:request-search', handleTasksSearchRequest);
+      events.off('tasks:request-edit-selected', handleTasksEditSelectedRequest);
       events.off('command:executed', handleCommandExecuted);
       window.removeEventListener('void:open-ai-chat', handleOpenAIChat);
+      document.removeEventListener('paste', handleEmptyWorkspacePaste);
       document.removeEventListener('contextmenu', contextMenuHandler);
     };
   });
@@ -817,10 +1151,16 @@
           notesStore.hideSidebar();
         }
         untrack(() => {
-          loadSelectedDocument(selectedPath);
+          if (noteWorkspaceStore.activeNotePath !== selectedPath) {
+            noteWorkspaceStore.openNoteTab(selectedPath);
+          }
+          void loadSelectedDocument(selectedPath);
         });
       } else if (oldPath !== null) {
         untrack(() => {
+          if (!uiStore.tasksWorkspaceOpen && !activeTagView && !activeFolderOverview) {
+            noteWorkspaceStore.closeActiveTab();
+          }
           editorStore.closeDocument();
           wordCount = 0;
           charCount = 0;
@@ -848,6 +1188,58 @@
     onclick={() => notesStore.hideSidebar()}
   ></button>
 
+  {#if markdownDropPreview}
+    <div
+      class="markdown-drop-overlay"
+      class:markdown-drop-overlay-mixed={markdownDropPreview.state === 'mixed'}
+      class:markdown-drop-overlay-invalid={markdownDropPreview.state === 'invalid'}
+      role="status"
+      aria-live="polite"
+      aria-label={markdownDropPreview.state === 'invalid' ? 'Only markdown files can be opened' : 'Release to import markdown files'}
+    >
+      <div class="markdown-drop-panel">
+        <div class="markdown-drop-icon" aria-hidden="true">
+          {#if markdownDropPreview.state === 'invalid'}
+            <AlertCircle size={24} strokeWidth={1.8} />
+          {:else}
+            <Upload size={24} strokeWidth={1.8} />
+          {/if}
+        </div>
+        <div class="markdown-drop-copy">
+          <span class="markdown-drop-kicker">External Markdown</span>
+          {#if markdownDropPreview.state === 'invalid'}
+            <h2>Only .md files can be opened</h2>
+            <p>Drop a Markdown file to import it into {formatMarkdownImportTargetFolder(getMarkdownImportTargetFolder())}.</p>
+          {:else}
+            <h2>
+              Release to import {markdownDropPreview.markdownCount}
+              {markdownDropPreview.markdownCount === 1 ? 'Markdown file' : 'Markdown files'}
+            </h2>
+            <p>
+              Void will copy {markdownDropPreview.markdownCount === 1 ? 'it' : 'them'} into
+              {formatMarkdownImportTargetFolder(getMarkdownImportTargetFolder())} and leave the original
+              {markdownDropPreview.markdownCount === 1 ? 'file' : 'files'} untouched.
+            </p>
+          {/if}
+        </div>
+        <div class="markdown-drop-facts" aria-label="Drop summary">
+          {#if markdownDropPreview.markdownCount > 0}
+            <span class="markdown-drop-fact markdown-drop-fact-valid">
+              <FileText size={13} strokeWidth={1.8} aria-hidden="true" />
+              <span class="markdown-drop-fact-label">{formatMarkdownDropAcceptedLabel(markdownDropPreview)}</span>
+            </span>
+          {/if}
+          {#if markdownDropPreview.unsupportedCount > 0}
+            <span class="markdown-drop-fact markdown-drop-fact-invalid">
+              <AlertCircle size={13} strokeWidth={1.8} aria-hidden="true" />
+              <span class="markdown-drop-fact-label">{formatMarkdownDropSkippedLabel(markdownDropPreview)}</span>
+            </span>
+          {/if}
+        </div>
+      </div>
+    </div>
+  {/if}
+
   <!-- Sidebar navigation -->
   <Sidebar
     visible={notesStore.sidebarVisible}
@@ -859,6 +1251,7 @@
     onRequestDeleteNote={requestNoteDelete}
     onNoteContextMenu={(path, title, position, isFolder = false) => { noteContextMenu = { path, title, isFolder, position }; }}
     onRequestCreateFolder={openCreateFolderModal}
+    onSplitNote={openNoteAsSplit}
   />
 
   <!-- Main column: header + content -->
@@ -1126,7 +1519,7 @@
             Try again
           </button>
         </div>
-      {:else if !currentDocument}
+      {:else if !currentDocument && !noteWorkspaceStore.hasTabs}
         <!-- Empty state — refined, with quick paths -->
         <div class="state-container animate-scale-in-subtle">
           <div class="empty-mark" aria-hidden="true">
@@ -1165,13 +1558,8 @@
           </div>
         </div>
       {:else}
-        <!-- Tab strip (only visible when 2+ tabs are open) -->
-        <EditorTabs />
-        <!-- Conflict banner (only visible when active session has external conflict) -->
-        <ConflictBanner />
-        <!-- Editor -->
-        <EditorShell
-          bind:this={editorShell}
+        <WorkspaceTabs />
+        <NotePaneWorkspace
           document={currentDocument}
           onSaveStatusChange={(status) => { saveStatus = status; }}
           onCountsChange={(wc, cc) => { wordCount = wc; charCount = cc; }}
@@ -1348,6 +1736,158 @@
      media query at the bottom flips visibility based on .sidebar-open. */
   .sidebar-overlay-backdrop {
     display: none;
+  }
+
+  .markdown-drop-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: var(--z-modal);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    pointer-events: none;
+    background: color-mix(in srgb, var(--bg-editor) 74%, transparent);
+    backdrop-filter: blur(8px) saturate(120%);
+    -webkit-backdrop-filter: blur(8px) saturate(120%);
+    animation: markdown-drop-overlay-in 120ms var(--ease-out-soft);
+  }
+
+  .markdown-drop-overlay::before {
+    content: '';
+    position: absolute;
+    inset: 14px;
+    border: 1.5px dashed var(--accent-primary);
+    border-radius: 8px;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-primary) 12%, transparent);
+    opacity: 0.9;
+  }
+
+  .markdown-drop-overlay-mixed::before {
+    border-color: var(--color-warning);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-warning) 18%, transparent);
+  }
+
+  .markdown-drop-overlay-invalid::before {
+    border-color: var(--color-error);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-error) 16%, transparent);
+  }
+
+  .markdown-drop-panel {
+    position: relative;
+    z-index: 1;
+    width: min(440px, calc(100vw - 56px));
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 14px;
+    padding: 18px;
+    border: 1px solid var(--border-light);
+    border-radius: 8px;
+    background: var(--bg-card);
+    box-shadow: var(--shadow-dialog);
+  }
+
+  .markdown-drop-icon {
+    width: 44px;
+    height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    color: var(--accent-primary);
+    background: var(--ai-accent-light);
+  }
+
+  .markdown-drop-overlay-mixed .markdown-drop-icon {
+    color: var(--color-warning);
+    background: color-mix(in srgb, var(--color-warning) 12%, var(--bg-subtle));
+  }
+
+  .markdown-drop-overlay-invalid .markdown-drop-icon {
+    color: var(--color-error);
+    background: var(--color-error-bg);
+  }
+
+  .markdown-drop-copy {
+    min-width: 0;
+  }
+
+  .markdown-drop-kicker {
+    display: block;
+    margin-bottom: 3px;
+    color: var(--text-tertiary);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .markdown-drop-copy h2 {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 17px;
+    font-weight: 650;
+    line-height: 1.25;
+  }
+
+  .markdown-drop-copy p {
+    margin: 6px 0 0;
+    color: var(--text-secondary);
+    font-size: var(--text-small);
+    line-height: 1.45;
+  }
+
+  .markdown-drop-facts {
+    grid-column: 2;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: -2px;
+  }
+
+  .markdown-drop-fact {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+    min-height: 23px;
+    max-width: min(300px, 100%);
+    padding: 3px 8px;
+    border: 1px solid var(--border-light);
+    border-radius: 999px;
+    background: var(--bg-subtle);
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .markdown-drop-fact-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .markdown-drop-fact-valid {
+    color: var(--accent-primary);
+    border-color: color-mix(in srgb, var(--accent-primary) 28%, var(--border-light));
+  }
+
+  .markdown-drop-fact-invalid {
+    color: var(--color-error);
+    border-color: color-mix(in srgb, var(--color-error) 24%, var(--border-light));
+  }
+
+  @keyframes markdown-drop-overlay-in {
+    from {
+      opacity: 0;
+      transform: scale(0.99);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
   }
 
   /* Focus/zen mode — hide chrome */

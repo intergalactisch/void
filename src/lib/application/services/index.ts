@@ -12,6 +12,13 @@ export { SettingsServiceImpl } from './SettingsServiceImpl';
 export { WorkspaceServiceImpl } from './WorkspaceServiceImpl';
 export { FileServiceImpl } from './FileServiceImpl';
 export { CredentialServiceImpl } from './CredentialServiceImpl';
+export { ProtectionRuntime } from './ProtectionRuntime';
+export { ProtectionServiceImpl } from './ProtectionServiceImpl';
+export {
+  assertProtectedAIReadAllowed,
+  assertProtectedAIWriteAllowed,
+  type AIPrivacyGateServices,
+} from './AIPrivacyGate';
 export { SyncServiceImpl } from './SyncServiceImpl';
 export { UpdaterServiceImpl } from './UpdaterServiceImpl';
 export { AIRewriteServiceImpl } from './AIRewriteServiceImpl';
@@ -49,6 +56,7 @@ export { NotesServiceImpl } from './NotesServiceImpl';
 
 // Document service (headless content API for AI tools)
 export { DocumentServiceImpl } from './DocumentServiceImpl';
+export { MarkdownImportServiceImpl, isStrictMarkdownPath } from './MarkdownImportServiceImpl';
 export { NoteCollaborationServiceImpl } from './NoteCollaborationServiceImpl';
 
 // Capture service (global quick-capture)

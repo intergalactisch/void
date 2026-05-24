@@ -16,6 +16,7 @@
   import OperationItem from './OperationItem.svelte';
   import OperationDetail from './OperationDetail.svelte';
   import OperationTemplateSelector from './OperationTemplateSelector.svelte';
+  import { InfoPopover } from '$lib/components/shared';
 
   let showTemplates = $state(false);
   let templateVariables = $state<Record<string, string>>({});
@@ -134,7 +135,19 @@
     <!-- Header -->
     <div class="panel-header">
       <div class="header-left">
-        <h2 class="panel-title">AI Operations</h2>
+        <h2 class="panel-title">
+          AI Operations
+          <InfoPopover
+            title="AI operations"
+            body="Operations are background AI jobs that may produce changes for you to review."
+            items={[
+              'Active jobs are running now.',
+              'Sessions can be resumed later.',
+              'Completed jobs may still have results waiting to apply.',
+            ]}
+            align="start"
+          />
+        </h2>
         {#if operationsStore.queueStatus}
           <div class="queue-badges">
             <span class="badge active">
@@ -214,7 +227,15 @@
     <div class="operations-list">
       {#if operationsStore.activeOperations.length > 0}
         <div class="section">
-          <h3 class="section-title">Active</h3>
+          <h3 class="section-title">
+            Active
+            <InfoPopover
+              title="Active operations"
+              body="Active operations are running right now and may still be reading context or writing a response."
+              items={['Cancel stops the job when the operation supports cancellation.']}
+              align="start"
+            />
+          </h3>
           {#each operationsStore.activeOperations as operation (operation.id)}
             <OperationItem
               {operation}
@@ -227,7 +248,18 @@
 
       {#if operationsStore.sessions.length > 0}
         <div class="section">
-          <h3 class="section-title">Sessions</h3>
+          <h3 class="section-title">
+            Sessions
+            <InfoPopover
+              title="Sessions"
+              body="Sessions are longer-running AI threads that can continue after the initial operation."
+              items={[
+                'Resume brings the session back into focus.',
+                'The underlying note is not changed until a result is applied.',
+              ]}
+              align="start"
+            />
+          </h3>
           {#each operationsStore.sessions as operation (operation.id)}
             <OperationItem
               {operation}
@@ -242,7 +274,15 @@
 
       {#if operationsStore.completedOperations.length > 0}
         <div class="section">
-          <h3 class="section-title">Completed</h3>
+          <h3 class="section-title">
+            Completed
+            <InfoPopover
+              title="Completed operations"
+              body="Completed means the operation finished; it does not always mean the result has been applied to your notes."
+              items={['Open the detail to review any available outputs.']}
+              align="start"
+            />
+          </h3>
           {#each operationsStore.completedOperations as operation (operation.id)}
             <OperationItem
               {operation}
@@ -255,7 +295,18 @@
       {#if operationsStore.historyOperations.length > 0}
         <div class="section">
           <div class="section-header">
-            <h3 class="section-title">History</h3>
+            <h3 class="section-title">
+              History
+              <InfoPopover
+                title="Operation history"
+                body="History keeps older operations around for reference after they leave the active queue."
+                items={[
+                  'Clearing history removes the list entry, not your note content.',
+                  'Interrupted items may be resumable if they were sessions.',
+                ]}
+                align="start"
+              />
+            </h3>
             <button
               type="button"
               class="section-clear"
@@ -358,6 +409,9 @@
   }
 
   .panel-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
     font-size: 1.125rem;
     font-weight: 600;
     color: var(--text-primary);
@@ -568,6 +622,9 @@
   }
 
   .section-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
     margin: 0;
     padding: 0 0.25rem;
     font-size: 0.6875rem;

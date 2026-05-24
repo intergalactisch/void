@@ -308,6 +308,48 @@ describe('MemoryConversationAdapter', () => {
         expect(result.value[0]?.updatedAt).toBeInstanceOf(Date);
       }
     });
+
+    it('lists paged summaries with search and date filters', async () => {
+      let research = createTestConversation({
+        id: 'conv-research',
+        title: 'Research Command',
+        status: 'active',
+        createdAt: new Date('2024-01-08T00:00:00Z'),
+        updatedAt: new Date('2024-01-12T12:00:00Z'),
+      });
+      research = addMessage(research, createUserMessage('Find source-backed notes about agents'));
+      research = { ...research, updatedAt: new Date('2024-01-12T12:00:00Z') };
+      await adapter.save(research);
+
+      const firstPage = await adapter.listSummaries({
+        query: 'source-backed',
+        dateFrom: '2024-01-12T00:00:00Z',
+        dateTo: '2024-01-12T23:59:59Z',
+        limit: 1,
+      });
+
+      expect(firstPage.ok).toBe(true);
+      if (!firstPage.ok) return;
+      expect(firstPage.value.items.map((summary) => summary.id)).toEqual(['conv-research']);
+      expect(firstPage.value.nextCursor).toBeNull();
+      expect(firstPage.value.total).toBe(1);
+    });
+
+    it('pages summary results without returning hydrated messages', async () => {
+      const firstPage = await adapter.listSummaries({ limit: 2 });
+
+      expect(firstPage.ok).toBe(true);
+      if (!firstPage.ok) return;
+      expect(firstPage.value.items).toHaveLength(2);
+      expect(firstPage.value.nextCursor).toBe('2');
+      expect(firstPage.value.items[0]).not.toHaveProperty('messages');
+
+      const secondPage = await adapter.listSummaries({ limit: 2, cursor: firstPage.value.nextCursor });
+      expect(secondPage.ok).toBe(true);
+      if (!secondPage.ok) return;
+      expect(secondPage.value.items.map((summary) => summary.id)).toEqual(['conv-3']);
+      expect(secondPage.value.nextCursor).toBeNull();
+    });
   });
 
   describe('exists()', () => {

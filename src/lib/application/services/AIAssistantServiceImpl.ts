@@ -459,6 +459,16 @@ export class AIAssistantServiceImpl implements AIAssistantService {
     return this.conversationStore.list();
   }
 
+  async listConversationSummaries(
+    query?: Parameters<AIAssistantService['listConversationSummaries']>[0]
+  ): ReturnType<AIAssistantService['listConversationSummaries']> {
+    try {
+      return ok(await this.conversationStore.listSummaries(query));
+    } catch (error) {
+      return err(toError(error));
+    }
+  }
+
   async clearConversation(conversationId: string): Promise<void> {
     return this.conversationStore.clear(conversationId);
   }
@@ -606,6 +616,11 @@ ${contextPrompt}
 Notes Folder: ${notesBasePath}
 ${artifactMemory}${relatedKnowledge.section}
 ${toolsPrompt}
+
+## Lineage Awareness
+Void stores a line-level history for notes in .void/lineage: stable line units, versions, actors, intents, deleted lines, branches, and repair warnings. Use lineage tools when the user asks why a line exists, what changed, where content came from, whether deleted material should return, or how to create the strongest current note from its history. For best-version drafting, prefer \`lineage:synthesize\` first; apply the returned full markdown with editor or note tools only when the user clearly wants the note changed.
+
+When the user asks to write, refactor, document, translate, format, annotate, or insert code inside a note, prefer \`editor:insert-code-block\` for new snippets and \`editor:update-code-block\` for existing snippets so fenced Markdown, language metadata, titles, line numbers, wrapping, and highlighted/focused lines are preserved.
 
 When the user asks you to perform actions, use the appropriate tools.
 Only interact with notes inside the configured notes folder.

@@ -92,6 +92,8 @@ export class AgentIntakeServiceImpl implements AgentIntakeService {
           '- direct_answer: conversational answer, explanation, or a small edit that does not need durable orchestration.',
           '- single_tool_action: one obvious typed app action is enough. Bounded action loops ("make N todos", "tag these N notes", "create a folder", "rename this file") also belong here — the chat layer can call the tool repeatedly without durable orchestration.',
           '- agent_run: reserved for work that spans multiple notes, requires research synthesis, or produces a connected artifact set (briefs, dossiers, knowledge bases). Use it when the model would need to create its own task plan AND keep working across multiple app actions to produce linked artifacts.',
+          '- Lineage/history questions about the current note usually stay direct_answer or single_tool_action; the chat layer can call lineage tools such as lineage:why, lineage:history, lineage:trace, lineage:context, and lineage:synthesize.',
+          '- Creating one best-version draft from a single note history should not become an agent_run unless the user asks to coordinate across multiple notes or artifacts.',
           '- Never expose scratchpad, internal prompts, or raw tool blobs to the user.',
           '',
           'Examples:',

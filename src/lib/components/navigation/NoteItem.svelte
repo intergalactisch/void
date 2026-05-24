@@ -8,14 +8,14 @@
 
   import type { NotesListItem } from '$lib/ports/inbound';
   import type { FolderDropPosition } from '$lib/ports/inbound';
-  import { ChevronRight, FileText, Folder, FolderOpen, FolderPlus, GripVertical, MoreHorizontal } from '@lucide/svelte';
+  import { ChevronRight, FileText, Folder, FolderOpen, FolderPlus, GripVertical, Lock, MoreHorizontal, Unlock } from '@lucide/svelte';
   import type { FolderReorderDnd } from './folderReorderDnd';
 
   interface Props {
     item: NotesListItem;
     isSelected: boolean;
     isExpanded?: boolean;
-    onClick: (item: NotesListItem) => void;
+    onClick: (item: NotesListItem, event?: MouseEvent | KeyboardEvent) => void;
     onToggle?: (item: NotesListItem) => void;
     onContextMenu?: ((item: NotesListItem, event: MouseEvent) => void) | undefined;
     /** Hover-only Plus button on folder rows. Receives this folder's path as the parent. */
@@ -51,7 +51,7 @@
 
   function handleClick(event: MouseEvent) {
     event.stopPropagation();
-    onClick(item);
+    onClick(item, event);
   }
 
   function handleToggle(event: MouseEvent) {
@@ -82,6 +82,18 @@
     event.preventDefault();
     event.stopPropagation();
   }
+
+  function handleNoteDragStart(event: DragEvent) {
+    if (item.isFolder) return;
+    const transfer = event.dataTransfer;
+    if (!transfer) return;
+    transfer.effectAllowed = 'copy';
+    transfer.setData('application/x-void-note', JSON.stringify({
+      path: item.path,
+      title: item.title,
+    }));
+    transfer.setData('text/plain', item.path);
+  }
 </script>
 
 <div
@@ -93,9 +105,12 @@
   class:drop-before={dropPosition === 'before'}
   class:drop-after={dropPosition === 'after'}
   use:sortableItemAction={{ id: item.path, groupId: parentPath, handle: '[data-folder-drag-handle]', disabled: !item.isFolder }}
+  data-note-path={item.path}
   onclick={handleClick}
+  draggable={!item.isFolder}
+  ondragstart={handleNoteDragStart}
   oncontextmenu={handleContextMenu}
-  onkeydown={(e) => e.key === 'Enter' && handleClick(e as unknown as MouseEvent)}
+  onkeydown={(e) => e.key === 'Enter' && onClick(item, e)}
   role="treeitem"
   tabindex="0"
   aria-selected={isSelected}
@@ -125,7 +140,15 @@
     <!-- Chevron-column spacer keeps file icons aligned with folder icons. -->
     <span class="note-item-toggle-spacer shrink-0" aria-hidden="true"></span>
     <span class="flex size-4 shrink-0 items-center justify-center">
-      <FileText class="note-item-icon" size={15} strokeWidth={1.5} aria-hidden="true" />
+      {#if item.protection?.level === 'protected'}
+        {#if item.protection.lockState === 'locked'}
+          <Lock class="note-item-icon note-item-lock" size={14} strokeWidth={1.7} aria-hidden="true" />
+        {:else}
+          <Unlock class="note-item-icon note-item-lock" size={14} strokeWidth={1.7} aria-hidden="true" />
+        {/if}
+      {:else}
+        <FileText class="note-item-icon" size={15} strokeWidth={1.5} aria-hidden="true" />
+      {/if}
     </span>
   {/if}
 
@@ -271,6 +294,9 @@
     flex-shrink: 0;
     color: var(--text-muted);
     transition: color var(--transition-fast);
+  }
+  :global(.note-item-lock) {
+    color: var(--color-warning, var(--text-muted));
   }
   .note-item:hover :global(.note-item-icon),
   .note-item:focus-visible :global(.note-item-icon),

@@ -10,6 +10,7 @@ import lineageCompare from '$lib/tools/lineage/compare.tool';
 import lineageRepair from '$lib/tools/lineage/repair.tool';
 import lineageContext from '$lib/tools/lineage/context.tool';
 import lineageActions from '$lib/tools/lineage/actions.tool';
+import lineageSynthesize from '$lib/tools/lineage/synthesize.tool';
 import { getAllTools } from '$lib/tools/registry';
 import type { ToolInvocation } from '$lib/domain/entities/ToolInvocation';
 import type { ToolServices } from '$lib/ports/inbound/ToolServices';
@@ -19,6 +20,7 @@ describe('lineage tools', () => {
   it('registers the AI-readable lineage context tool', () => {
     expect(getAllTools().map((entry) => entry.id)).toContain('lineage:context');
     expect(getAllTools().map((entry) => entry.id)).toContain('lineage:actions');
+    expect(getAllTools().map((entry) => entry.id)).toContain('lineage:synthesize');
   });
 
   it('explains why a line exists', async () => {
@@ -116,6 +118,56 @@ describe('lineage tools', () => {
     expect(result.target?.currentVersion.content).toBe('Alpha updated');
     expect(result.clusters.some((cluster) => cluster.summary.includes('Clarify line'))).toBe(true);
     expect(result.lines.map((line) => line.content)).toEqual(['Alpha updated']);
+  });
+
+  it('synthesizes an answer and best-note draft from lineage evidence', async () => {
+    const { services } = await createLineageFixture();
+    services.documents = {
+      readContent: vi.fn().mockResolvedValue({ ok: true, value: 'Alpha updated' }),
+    } as unknown as ToolServices['documents'];
+    services.ai = {
+      prompt: vi.fn().mockResolvedValue({
+        ok: true,
+        value: {
+          chat: JSON.stringify({
+            answer: 'The latest AI rewrite sharpened Alpha while preserving the original idea.',
+            draftMarkdown: 'Alpha updated\n\nHistorical note: Alpha mattered from the first draft.',
+            rationale: ['Preserves the accepted rewrite', 'Carries forward the original intent'],
+            historyInsights: ['Alpha was created by the user and later clarified by AI'],
+            restoreCandidates: [{ content: 'Alpha', reason: 'Original wording is useful context' }],
+            confidence: 0.82,
+          }),
+          toolCalls: [],
+          meta: { provider: 'test', model: 'mock', latencyMs: 1 },
+          truncated: false,
+          stopReason: 'end_turn',
+        },
+      }),
+    } as unknown as ToolServices['ai'];
+    services.branches = {
+      getPendingBranches: vi.fn().mockResolvedValue({ ok: true, value: [] }),
+    } as unknown as ToolServices['branches'];
+
+    const result = await lineageSynthesize.handler(
+      { output: 'both', question: 'Create the best note from history' },
+      createContext(services),
+    ) as {
+      answer: string;
+      draftMarkdown?: string;
+      evidence: { clusterCount: number; deletedLineCount: number };
+      confidence: number;
+    };
+
+    expect(result.answer).toContain('latest AI rewrite');
+    expect(result.draftMarkdown).toContain('Historical note');
+    expect(result.evidence.clusterCount).toBeGreaterThan(0);
+    expect(result.evidence.deletedLineCount).toBe(0);
+    expect(result.confidence).toBe(0.82);
+    expect(services.ai.prompt).toHaveBeenCalledWith(expect.objectContaining({
+      tools: [],
+      conversationHistory: [],
+      systemPrompt: expect.stringContaining('Void lineage analyst'),
+    }));
   });
 
   it('lists available actions for a lineage-tracked line', async () => {

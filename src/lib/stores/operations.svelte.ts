@@ -12,9 +12,12 @@ import { toError } from '$lib/core';
 import type {
   OperationService,
   OperationRequest,
+  OperationSummary,
+  OperationSummaryQuery,
   QueueStatus,
   OperationStateChange,
 } from '$lib/ports/inbound/OperationService';
+import type { PagedResult } from '$lib/ports/outbound/PagedQuery';
 import type { Operation } from '$lib/domain/entities/Operation';
 import type { OperationId } from '$lib/domain/values/OperationId';
 import type { SessionId } from '$lib/domain/values/SessionId';
@@ -45,6 +48,11 @@ class OperationsStore {
   selectedOperation = $state<Operation | null>(null);
   error = $state<Error | null>(null);
   panelOpen = $state(false);
+  operationSummaryPage = $state<PagedResult<OperationSummary>>({
+    items: [],
+    nextCursor: null,
+    total: null,
+  });
 
   // Derived state
   get activeOperations(): Operation[] {
@@ -236,6 +244,20 @@ class OperationsStore {
     } catch (e) {
       this.error = toError(e);
     }
+  }
+
+  async loadOperationSummaries(query?: OperationSummaryQuery): Promise<PagedResult<OperationSummary>> {
+    if (!this.#service) {
+      this.operationSummaryPage = { items: [], nextCursor: null, total: 0 };
+      return this.operationSummaryPage;
+    }
+    const result = await this.#service.listOperationSummaries(query);
+    if (!result.ok) {
+      this.error = result.error;
+      return this.operationSummaryPage;
+    }
+    this.operationSummaryPage = result.value;
+    return result.value;
   }
 
   /**

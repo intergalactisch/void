@@ -17,6 +17,7 @@ import type { BlockType } from '$lib/domain/values/BlockType';
 import type { AgentRunEvent } from '$lib/domain/entities/AgentRun';
 import type { Settings } from '$lib/domain/entities/Settings';
 import type { ResourceLockSnapshot } from './queue/ResourceLock';
+import type { EditorMenuPosition } from '$lib/ports/outbound/EditorPort';
 import type {
   SyncAuthState,
   SyncConflict,
@@ -25,6 +26,7 @@ import type {
   SyncStatus,
 } from '$lib/domain/values/Sync';
 import type { EditorInlineAIComposerState } from '$lib/ports/outbound/EditorPort';
+import type { AIContextAuthorization, LockState } from '$lib/domain/values/Protection';
 
 export type { Settings };
 
@@ -59,14 +61,14 @@ export type EventMap = {
   'editor:block-menu-request': {
     blockId: string;
     lineIndex: number;
-    position: { top: number; left: number };
+    position: EditorMenuPosition;
     currentType: BlockType;
     mode: 'actions' | 'convert';
   };
   'editor:lineage-inspect-request': {
     blockId: string;
     lineIndex: number;
-    position: { top: number; left: number };
+    position: EditorMenuPosition;
     currentType: BlockType;
   };
   'editor:page-link-clicked': { path: string };
@@ -90,6 +92,11 @@ export type EventMap = {
   'document:closed': { path: string };
   'document:save-failed': { path: string | null; error: Error };
   'document:load-failed': { path: string; error: Error };
+
+  // Protected note privacy events
+  'protection:changed': { path?: string; lockState: LockState };
+  'protection:ai-authorized': { authorization: AIContextAuthorization };
+  'protection:ai-revoked': { authorizationId: string };
 
   // Generic user-facing error. Stores emit this when an operation fails in
   // a way the user should see (load, save, create, delete). The toast
@@ -245,8 +252,12 @@ export type EventMap = {
 
   // Power-user shell requests (emitted by registered commands, consumed by
   // the route component that owns the relevant DOM/dialog).
+  'app:request-open-markdown-file': Record<string, never>;
   'app:request-export-markdown': Record<string, never>;
   'tasks:request-new': Record<string, never>;
+  'tasks:request-search': Record<string, never>;
+  'tasks:request-edit-selected': Record<string, never>;
+  'ai-command:focus-composer': Record<string, never>;
 
   // Power-user command execution (emitted by CommandServiceImpl after a
   // successful executeById). Frecency tracking and analytics subscribe.

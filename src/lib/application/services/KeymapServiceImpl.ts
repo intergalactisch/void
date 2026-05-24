@@ -59,6 +59,10 @@ function scopeMatches(scopes: string[], snapshot: ScopeSnapshot): boolean {
 }
 
 function isScopeActive(scope: string, snapshot: ScopeSnapshot): boolean {
+  if (scope.startsWith('context:')) {
+    return snapshot.activeContext === scope.slice('context:'.length);
+  }
+
   switch (scope) {
     case 'global':
       return true;
@@ -103,7 +107,8 @@ function isScopeActive(scope: string, snapshot: ScopeSnapshot): boolean {
 function specificity(scopes: string[]): number {
   let score = 0;
   for (const s of scopes) {
-    if (s !== 'global') score += 1;
+    if (s === 'global') continue;
+    score += s.startsWith('context:') ? 10 : 1;
   }
   return score;
 }
@@ -278,12 +283,14 @@ export class KeymapServiceImpl implements KeymapService {
   }
 
   private scopesOverlap(bindings: KeyBinding[]): boolean {
-    // Conservative: "global" overlaps with everything. Otherwise any shared
-    // token causes overlap.
+    // Conservative: "global" overlaps with everything. Context scopes are
+    // mutually exclusive, so the same chord can be reused safely between
+    // notes/tasks/AI contexts.
     for (let i = 0; i < bindings.length; i++) {
       for (let j = i + 1; j < bindings.length; j++) {
         const a = bindings[i]!.scope;
         const b = bindings[j]!.scope;
+        if (contextsAreMutuallyExclusive(a, b)) continue;
         if (a.includes('global') || b.includes('global')) return true;
         for (const token of a) {
           if (b.includes(token)) return true;
@@ -312,4 +319,14 @@ export class KeymapServiceImpl implements KeymapService {
       }
     }
   }
+}
+
+function contextToken(scopes: string[]): string | null {
+  return scopes.find((scope) => scope.startsWith('context:')) ?? null;
+}
+
+function contextsAreMutuallyExclusive(a: string[], b: string[]): boolean {
+  const aContext = contextToken(a);
+  const bContext = contextToken(b);
+  return !!aContext && !!bContext && aContext !== bContext;
 }

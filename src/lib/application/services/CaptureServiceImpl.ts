@@ -19,19 +19,12 @@ import type {
   CaptureService,
 } from '$lib/ports/inbound/CaptureService';
 import type { DocumentService } from '$lib/ports/inbound/DocumentService';
-import { dailyNotePath, formatDailyDate, formatDailyTime } from '$lib/domain';
+import { dailyNotePath, deriveTextNoteTitle, formatDailyDate, formatDailyTime } from '$lib/domain';
 import { getLogger } from '$lib/logging';
 
 const log = getLogger('CaptureService');
 
 const INBOX_FOLDER = 'Inbox';
-const MAX_TITLE_LENGTH = 60;
-
-/**
- * Characters that are problematic in note titles / file names. Replaced with `-`.
- * Excludes spaces (preserved) but strips slashes and other path-hostile chars.
- */
-const TITLE_SANITIZE_RE = /[\\/:*?"<>|\n\r\t]+/g;
 
 export class CaptureServiceImpl implements CaptureService {
   constructor(
@@ -58,7 +51,7 @@ export class CaptureServiceImpl implements CaptureService {
     tags: string[],
   ): Promise<Result<CaptureResult, Error>> {
     const now = this.now();
-    const title = deriveInboxTitle(text, now);
+    const title = deriveTextNoteTitle(text, { now, fallbackPrefix: 'Capture' });
     const markdown = buildInboxMarkdown(text, tags);
 
     const result = await this.documentService.createWithContent(
@@ -149,26 +142,6 @@ function normalizeTags(tags: readonly string[]): string[] {
     out.push(trimmed);
   }
   return out;
-}
-
-function deriveInboxTitle(text: string, now: Date): string {
-  const firstLine = text.split(/\r?\n/, 1)[0]?.trim() ?? '';
-  if (firstLine) {
-    const sanitized = firstLine
-      .replace(TITLE_SANITIZE_RE, '-')
-      .replace(/-{2,}/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .trim();
-    if (sanitized) {
-      return sanitized.length > MAX_TITLE_LENGTH
-        ? sanitized.slice(0, MAX_TITLE_LENGTH).trim()
-        : sanitized;
-    }
-  }
-  // Fallback: timestamp-based title for content with no usable first line.
-  const date = formatDailyDate(now);
-  const time = formatDailyTime(now).replace(':', '');
-  return `Capture ${date} ${time}`;
 }
 
 function buildInboxMarkdown(text: string, tags: string[]): string {

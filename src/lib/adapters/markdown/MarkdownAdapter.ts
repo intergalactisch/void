@@ -17,6 +17,11 @@ import type { DocumentMeta } from '$lib/domain/values/DocumentMeta';
 import { createDocument } from '$lib/domain/entities/Document';
 import { createDocumentMeta } from '$lib/domain/values/DocumentMeta';
 import { normalizeNoteTags } from '$lib/domain/values/NoteTags';
+import {
+  isProtectedDocumentMeta,
+  protectionMetaFromCustom,
+} from '$lib/domain/values/Protection';
+import type { ProtectionCodecPort } from '$lib/ports/outbound/ProtectionCodecPort';
 import { parseMarkdown } from './parser';
 import { serializeToMarkdown } from './serializer';
 import {
@@ -38,6 +43,8 @@ export interface MarkdownAdapterConfig {
   basePath: string;
   /** File extension for markdown files (default: '.md') */
   extension?: string;
+  /** Optional note-protection boundary handler. */
+  protection?: ProtectionCodecPort;
 }
 
 /**
@@ -54,12 +61,14 @@ export class MarkdownAdapter implements DocumentPort {
   private readonly fileSystem: FileSystemPort;
   private readonly basePath: string;
   private readonly extension: string;
+  private readonly protection: ProtectionCodecPort | null;
   private readonly watchers: Map<string, Set<(doc: Document) => void>> = new Map();
 
   constructor(fileSystem: FileSystemPort, config: MarkdownAdapterConfig) {
     this.fileSystem = fileSystem;
     this.basePath = config.basePath;
     this.extension = config.extension ?? '.md';
+    this.protection = config.protection ?? null;
   }
 
   /**
@@ -124,8 +133,35 @@ export class MarkdownAdapter implements DocumentPort {
     const markdown = readResult.value;
 
     try {
-      // Parse frontmatter and content
-      const { content, meta: parsedMeta } = parseMarkdownWithFrontmatter(markdown);
+      // Parse frontmatter first. Protected notes keep the markdown body as an
+      // encrypted envelope until the protection codec says the workspace is unlocked.
+      const { content: storedContent, meta: parsedMeta } = parseMarkdownWithFrontmatter(markdown);
+      const now = new Date();
+      const docId = parsedMeta.id ?? `doc-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+      let meta = this.createMetaFromParsed(parsedMeta, [], now, docId);
+      meta = this.protection?.metaForLoad(meta) ?? meta;
+
+      let content = storedContent;
+      if (isProtectedDocumentMeta(meta)) {
+        if (meta.protection?.lockState === 'locked') {
+          return ok({
+            meta,
+            path: this.toRelativePath(absolutePath),
+            blocks: this.protection?.createLockedDocumentBlocks() ?? [],
+            isDirty: false,
+          });
+        }
+
+        const decrypted = await this.protection?.decryptDocument(
+          this.toRelativePath(absolutePath),
+          meta,
+          storedContent,
+        );
+        if (!decrypted?.ok) {
+          return err(decrypted?.error ?? new Error('Protected note is locked'));
+        }
+        content = decrypted.value;
+      }
 
       // Parse markdown content to ProseMirror document
       const prosemirrorDoc = parseMarkdown(content, voidSchema);
@@ -133,21 +169,8 @@ export class MarkdownAdapter implements DocumentPort {
       // Convert ProseMirror nodes to domain blocks
       const blocks = prosemirrorDocToBlocks(prosemirrorDoc);
 
-      // Create document with merged metadata
-      const now = new Date();
-      const docId = parsedMeta.id ?? `doc-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-
-      const meta: DocumentMeta = createDocumentMeta({
-        id: docId,
-        title: parsedMeta.title ?? extractTitleFromBlocks(blocks) ?? 'Untitled',
-        tags: parsedMeta.tags ?? [],
-        category: parsedMeta.category ?? null,
-        color: parsedMeta.color ?? null,
-        createdAt: parsedMeta.createdAt ?? now,
-        updatedAt: parsedMeta.updatedAt ?? now,
-        pinned: parsedMeta.pinned ?? false,
-        custom: parsedMeta.custom ?? {},
-      });
+      meta = this.createMetaFromParsed(parsedMeta, blocks, now, docId);
+      meta = this.protection?.metaForLoad(meta) ?? meta;
 
       const document: Document = {
         meta,
@@ -191,9 +214,27 @@ export class MarkdownAdapter implements DocumentPort {
         updatedAt: new Date(),
       };
 
+      let metaForWrite = updatedMeta;
+      let contentForWrite = markdownContent;
+      if (isProtectedDocumentMeta(updatedMeta)) {
+        if (!this.protection) {
+          return err(new Error('Protected note support is not available'));
+        }
+        const protectedWrite = await this.protection.encryptDocument(
+          document.path,
+          updatedMeta,
+          markdownContent,
+        );
+        if (!protectedWrite.ok) {
+          return err(protectedWrite.error);
+        }
+        metaForWrite = protectedWrite.value.meta;
+        contentForWrite = protectedWrite.value.envelopeMarkdown;
+      }
+
       // Combine frontmatter with content
-      const frontmatter = serializeFrontmatter(updatedMeta);
-      const fullContent = frontmatter + markdownContent;
+      const frontmatter = serializeFrontmatter(metaForWrite);
+      const fullContent = frontmatter + contentForWrite;
 
       // Notify any open editor session that this is OUR write — see
       // 'editor:self-write' contract in lib/events/types.ts.
@@ -349,6 +390,32 @@ export class MarkdownAdapter implements DocumentPort {
 
   private shouldSkipDirectory(name: string): boolean {
     return name.startsWith('.') || name === '__MACOSX';
+  }
+
+  private createMetaFromParsed(
+    parsedMeta: Partial<DocumentMeta>,
+    blocks: import('$lib/domain/entities/Block').Block[],
+    now: Date,
+    docId: string,
+  ): DocumentMeta {
+    const protection = parsedMeta.protection
+      ?? protectionMetaFromCustom(parsedMeta.custom)
+      ?? null;
+    return createDocumentMeta({
+      id: docId,
+      title: parsedMeta.title ?? extractTitleFromBlocks(blocks) ?? 'Untitled',
+      tags: parsedMeta.tags ?? [],
+      category: parsedMeta.category ?? null,
+      color: parsedMeta.color ?? null,
+      createdAt: parsedMeta.createdAt ?? now,
+      updatedAt: parsedMeta.updatedAt ?? now,
+      pinned: parsedMeta.pinned ?? false,
+      status: parsedMeta.status ?? 'draft',
+      intent: parsedMeta.intent ?? 'general',
+      aiTouches: parsedMeta.aiTouches ?? 0,
+      protection,
+      custom: parsedMeta.custom ?? {},
+    });
   }
 
   /**

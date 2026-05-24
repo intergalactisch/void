@@ -15,6 +15,11 @@ import type { AIResponse, AIResponseChunk, AIStatusUpdate } from '$lib/domain/va
 import type { PromptContext } from '$lib/domain/values/PromptContext';
 import type { AIWebAccess } from '$lib/domain/values/AIWebAccess';
 import type { ToolId } from '$lib/domain/values/ToolId';
+import type {
+  ConversationSummary,
+  ConversationSummaryQuery,
+  PagedResult,
+} from '$lib/ports/outbound';
 
 /**
  * Options for sending a prompt.
@@ -153,6 +158,11 @@ export interface AIAssistantService {
    * @returns Array of conversations, most recent first
    */
   listConversations(): Promise<Conversation[]>;
+
+  /**
+   * Query conversation summaries without loading full transcripts.
+   */
+  listConversationSummaries(query?: ConversationSummaryQuery): Promise<Result<PagedResult<ConversationSummary>, Error>>;
 
   /**
    * Clear a conversation's messages.

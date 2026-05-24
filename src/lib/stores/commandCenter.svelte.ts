@@ -24,6 +24,20 @@ function taskOrderKey(task: AgentTask): string {
 
 export type CommandInspectorMode = 'now' | 'inbox' | 'history' | 'templates';
 export type PendingUserTurnStatus = 'routing' | 'submitted' | 'failed';
+export type CommandWorkIndexKind = 'threads' | 'runs' | 'jobs';
+export type CommandWorkDatePreset = 'all' | 'today' | 'week' | 'month' | 'custom';
+export type CommandPanelSide = 'history' | 'inspector';
+
+export interface CommandWorkIndexFilters {
+  kind: CommandWorkIndexKind;
+  query: string;
+  status: string;
+  datePreset: CommandWorkDatePreset;
+  dateFrom: string;
+  dateTo: string;
+  cursor: string | null;
+  pageSize: number;
+}
 
 export interface RunHistoryGroup {
   label: string;
@@ -109,6 +123,18 @@ class CommandCenterStore {
   pendingUserTurns = $state<PendingUserTurn[]>([]);
   collapsedRunIds = $state<string[]>([]);
   deletedConversationIds = $state<string[]>([]);
+  workIndexFilters = $state<CommandWorkIndexFilters>({
+    kind: 'threads',
+    query: '',
+    status: 'all',
+    datePreset: 'all',
+    dateFrom: '',
+    dateTo: '',
+    cursor: null,
+    pageSize: 80,
+  });
+  historyCollapsed = $state(false);
+  inspectorCollapsed = $state(false);
   resourceLocks = $state<ResourceLockSnapshot[]>(resourceLock.snapshot());
   collaborationTelemetry = $state<CollaborationHotspot[]>([]);
   /**
@@ -549,6 +575,62 @@ class CommandCenterStore {
     this.manualModeSelection = true;
   }
 
+  setWorkIndexKind(kind: CommandWorkIndexKind): void {
+    this.workIndexFilters = { ...this.workIndexFilters, kind, cursor: null };
+  }
+
+  setWorkIndexQuery(query: string): void {
+    this.workIndexFilters = { ...this.workIndexFilters, query, cursor: null };
+  }
+
+  setWorkIndexStatus(status: string): void {
+    this.workIndexFilters = { ...this.workIndexFilters, status, cursor: null };
+  }
+
+  setWorkIndexDatePreset(datePreset: CommandWorkDatePreset): void {
+    this.workIndexFilters = {
+      ...this.workIndexFilters,
+      datePreset,
+      dateFrom: datePreset === 'custom' ? this.workIndexFilters.dateFrom : '',
+      dateTo: datePreset === 'custom' ? this.workIndexFilters.dateTo : '',
+      cursor: null,
+    };
+  }
+
+  setWorkIndexDateRange(dateFrom: string, dateTo: string): void {
+    this.workIndexFilters = {
+      ...this.workIndexFilters,
+      datePreset: 'custom',
+      dateFrom,
+      dateTo,
+      cursor: null,
+    };
+  }
+
+  setWorkIndexCursor(cursor: string | null): void {
+    this.workIndexFilters = { ...this.workIndexFilters, cursor };
+  }
+
+  resetWorkIndexFilters(): void {
+    this.workIndexFilters = {
+      ...this.workIndexFilters,
+      query: '',
+      status: 'all',
+      datePreset: 'all',
+      dateFrom: '',
+      dateTo: '',
+      cursor: null,
+    };
+  }
+
+  togglePanel(side: CommandPanelSide): void {
+    if (side === 'history') {
+      this.historyCollapsed = !this.historyCollapsed;
+      return;
+    }
+    this.inspectorCollapsed = !this.inspectorCollapsed;
+  }
+
   selectResultOperation(operationId: OperationId): void {
     this.inspectorMode = 'inbox';
     this.selectedRunId = null;
@@ -651,6 +733,18 @@ class CommandCenterStore {
     this.pendingUserTurns = [];
     this.collapsedRunIds = [];
     this.deletedConversationIds = [];
+    this.workIndexFilters = {
+      kind: 'threads',
+      query: '',
+      status: 'all',
+      datePreset: 'all',
+      dateFrom: '',
+      dateTo: '',
+      cursor: null,
+      pageSize: 80,
+    };
+    this.historyCollapsed = false;
+    this.inspectorCollapsed = false;
     this.resourceLocks = resourceLock.snapshot();
     this.collaborationTelemetry = [];
     this.manualModeSelection = false;

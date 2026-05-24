@@ -1,6 +1,7 @@
 import { defineTool } from '../define';
 import { aiPrompt } from '../context';
 import type { NotesListItem } from '$lib/ports/inbound/NotesService';
+import { assertProtectedAIReadAllowed } from '../protectionGuard';
 
 export default defineTool({
   id: 'action:thread',
@@ -40,6 +41,11 @@ export default defineTool({
     const sourcePaths: string[] = [];
     const lowerTopic = topic.toLowerCase();
     for (const note of allNotes.slice(0, 20)) {
+      try {
+        await assertProtectedAIReadAllowed(services, note.path, 'related.read');
+      } catch {
+        continue;
+      }
       const content = await services.documents.readContent(note.path);
       if (content.ok && content.value.toLowerCase().includes(lowerTopic)) {
         excerpts.push(`### ${note.title} (${note.path})\n${content.value.slice(0, 500)}`);

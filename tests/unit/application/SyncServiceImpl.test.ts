@@ -179,12 +179,16 @@ describe('SyncServiceImpl', () => {
         { path: 'plan.md', title: 'Plan', isDirty: true, isSaving: false, conflictState: 'clean' },
       ],
       activePath: 'plan.md',
+      activePaneId: null,
+      panes: {},
       selection: EMPTY_SELECTION,
       isReady: true,
       isDirty: true,
       isSaving: false,
       conflictState: 'clean',
       aiProcessing: null,
+      aiInlineComposers: [],
+      activeAIInlineComposerId: null,
     });
     const sync = new SyncServiceImpl(git, github, settings, credentials, notesPath, notes, editor, documents, voidStorage);
 
@@ -526,12 +530,16 @@ describe('SyncServiceImpl', () => {
         { path: 'idea.md', title: 'Idea', isDirty: true, isSaving: false, conflictState: 'clean' },
       ],
       activePath: 'plan.md',
+      activePaneId: null,
+      panes: {},
       selection: EMPTY_SELECTION,
       isReady: true,
       isDirty: true,
       isSaving: false,
       conflictState: 'clean',
       aiProcessing: null,
+      aiInlineComposers: [],
+      activeAIInlineComposerId: null,
     };
     const editor = createEditor(editorState);
     const sync = new SyncServiceImpl(git, github, settings, credentials, notesPath, notes, editor, documents, voidStorage);
@@ -553,12 +561,16 @@ describe('SyncServiceImpl', () => {
         { path: 'plan.md', title: 'Plan', isDirty: true, isSaving: false, conflictState: 'external-modified' },
       ],
       activePath: 'plan.md',
+      activePaneId: null,
+      panes: {},
       selection: EMPTY_SELECTION,
       isReady: true,
       isDirty: true,
       isSaving: false,
       conflictState: 'external-modified',
       aiProcessing: null,
+      aiInlineComposers: [],
+      activeAIInlineComposerId: null,
     };
     const editor = createEditor(editorState);
     const sync = new SyncServiceImpl(git, github, settings, credentials, notesPath, notes, editor, documents, voidStorage);

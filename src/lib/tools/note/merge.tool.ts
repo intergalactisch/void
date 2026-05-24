@@ -1,5 +1,6 @@
 import { defineTool } from '../define';
 import { normalizeNotePath } from './paths';
+import { assertProtectedAIReadAllowed } from '../protectionGuard';
 
 interface MergeArgs {
   noteIds: string[];
@@ -34,6 +35,7 @@ export default defineTool<MergeArgs, { success: boolean; newPath: string; merged
     const contents: string[] = [];
     const noteIds = await Promise.all(args.noteIds.map((noteId) => normalizeNotePath(noteId, services)));
     for (const noteId of noteIds) {
+      await assertProtectedAIReadAllowed(services, noteId, 'note.read');
       const metaResult = await services.documents.readMeta(noteId);
       const contentResult = await services.documents.readContent(noteId);
 

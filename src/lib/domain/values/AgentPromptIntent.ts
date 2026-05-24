@@ -14,6 +14,15 @@ export function classifyDurableAgentPrompt(prompt: string): DurableAgentPromptIn
   const normalized = prompt.trim().toLowerCase().replace(/\s+/g, ' ');
   if (!normalized) return null;
 
+  const singleNoteLineageWork =
+    /\b(lineage|history|versions?|previous edits?|prior edits?|deleted lines?|line history|provenance)\b/.test(normalized) &&
+    /\b(best|draft|synthesi[sz]e|create|rewrite|restore|why|changed|origin|source)\b/.test(normalized) &&
+    !/\b(across|multiple notes?|all notes?|vault|folder|research|dossier|briefing|knowledge base)\b/.test(normalized);
+
+  if (singleNoteLineageWork) {
+    return null;
+  }
+
   const explicitResearch =
     /^(please\s+)?(do\s+)?(full\s+|deep\s+|extensive\s+|thorough\s+|complete\s+)?(research|deep dive|investigation|study)\s+(on|about|into|for)?\s*\S/.test(normalized) ||
     /^(please\s+)?(can you|could you|please)\s+(do\s+)?(full\s+|deep\s+|extensive\s+|thorough\s+|complete\s+)?(research|investigate|study)\s+(on|about|into|for)?\s*\S/.test(normalized) ||

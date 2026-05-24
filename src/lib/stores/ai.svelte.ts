@@ -35,7 +35,12 @@ import type { Conversation } from '$lib/domain/entities/Conversation';
 import type { Document } from '$lib/domain/entities/Document';
 import type { ToolInvocation } from '$lib/domain/entities/ToolInvocation';
 import type { AIResponse, AIResponseChunk } from '$lib/domain/values/AIResponse';
-import type { ConversationSummary } from '$lib/ports/outbound/ConversationStoragePort';
+import type {
+  ConversationSummary,
+  ConversationSummaryQuery,
+} from '$lib/ports/outbound/ConversationStoragePort';
+import type { AgentRunSummary, AgentRunSummaryQuery } from '$lib/ports/outbound/AgentRunStoragePort';
+import type { PagedResult } from '$lib/ports/outbound/PagedQuery';
 import type { Operation } from '$lib/domain/entities/Operation';
 import type { OperationTemplate } from '$lib/domain/values/OperationTemplate';
 import {
@@ -99,6 +104,11 @@ class AIStore {
   // Sidebar view state
   sidebarView = $state<SidebarView>('chat');
   conversationSummaries = $state<ConversationSummary[]>([]);
+  conversationSummaryPage = $state<PagedResult<ConversationSummary>>({
+    items: [],
+    nextCursor: null,
+    total: null,
+  });
 
   // Operations state (for quick actions)
   activeOperations = $state<Operation[]>([]);
@@ -118,6 +128,11 @@ class AIStore {
     runs: [],
     isRunning: false,
     error: null,
+  });
+  agentRunSummaryPage = $state<PagedResult<AgentRunSummary>>({
+    items: [],
+    nextCursor: null,
+    total: null,
   });
 
   lastIntakeDecision = $state<AgentIntakeDecision | null>(null);
@@ -230,7 +245,24 @@ class AIStore {
    * Load conversation summaries for the history view.
    */
   async loadConversationHistory(): Promise<void> {
-    await this.#refreshConversations();
+    await this.loadConversationSummaries();
+  }
+
+  async loadConversationSummaries(query?: ConversationSummaryQuery): Promise<PagedResult<ConversationSummary>> {
+    if (!this.#service) {
+      this.conversationSummaryPage = { items: [], nextCursor: null, total: 0 };
+      this.conversationSummaries = [];
+      return this.conversationSummaryPage;
+    }
+
+    const result = await this.#service.listConversationSummaries(query);
+    if (!result.ok) {
+      this.error = result.error;
+      return this.conversationSummaryPage;
+    }
+    this.conversationSummaryPage = result.value;
+    this.conversationSummaries = result.value.items;
+    return result.value;
   }
 
   /**
@@ -373,6 +405,36 @@ class AIStore {
     if (!result.ok) {
       this.error = result.error;
     }
+  }
+
+  async loadAgentRun(runId: string): Promise<void> {
+    if (!this.#agentOrchestrationService) return;
+    const result = await this.#agentOrchestrationService.getRun(runId);
+    if (!result.ok) {
+      this.error = result.error;
+      return;
+    }
+    if (!result.value) return;
+    const runs = this.agentRunState.runs.filter((run) => run.id !== runId);
+    this.agentRunState = {
+      ...this.agentRunState,
+      runs: [...runs, result.value].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+      currentRun: this.agentRunState.currentRun?.id === runId ? result.value : this.agentRunState.currentRun,
+    };
+  }
+
+  async loadAgentRunSummaries(query?: AgentRunSummaryQuery): Promise<PagedResult<AgentRunSummary>> {
+    if (!this.#agentOrchestrationService) {
+      this.agentRunSummaryPage = { items: [], nextCursor: null, total: 0 };
+      return this.agentRunSummaryPage;
+    }
+    const result = await this.#agentOrchestrationService.listRunSummaries(query);
+    if (!result.ok) {
+      this.error = result.error;
+      return this.agentRunSummaryPage;
+    }
+    this.agentRunSummaryPage = result.value;
+    return result.value;
   }
 
   // =========================================================================
@@ -734,6 +796,11 @@ class AIStore {
     const conversations = await this.#service.listConversations();
     this.conversations = conversations;
     this.conversationSummaries = this.#toConversationSummaries(conversations);
+    this.conversationSummaryPage = {
+      items: this.conversationSummaries,
+      nextCursor: null,
+      total: this.conversationSummaries.length,
+    };
   }
 
   #toConversationSummaries(conversations: Conversation[]): ConversationSummary[] {

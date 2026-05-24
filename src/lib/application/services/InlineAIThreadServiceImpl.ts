@@ -1,17 +1,27 @@
 import { ok, err, type Result } from '$lib/core';
 import type {
   AIAssistantService,
+  DocumentService,
   EditorService,
   InlineAISelectionPromptInput,
   InlineAIThreadService,
   NoteCollaborationService,
+  ProtectionService,
   ProvenanceService,
 } from '$lib/ports/inbound';
 import type { VoidStoragePort } from '$lib/ports/outbound/VoidStoragePort';
 import type { ToolCall } from '$lib/domain/values/AIResponse';
 import type { ToolId } from '$lib/domain/values/ToolId';
+import { buildCodeBlockMarkdown, buildUpdatedCodeBlockMarkdown } from '$lib/core/codeFence';
 import { inlineAIPath, noteNameFromPath } from '$lib/domain/values/VoidPath';
+import { createAISelectionResource } from '$lib/domain/values/Protection';
 import { parseRefId } from '$lib/domain/values/RefId';
+import type { Block } from '$lib/domain/entities/Block';
+import {
+  assertProtectedAIReadAllowed,
+  assertProtectedAIWriteAllowed,
+  type AIPrivacyGateServices,
+} from './AIPrivacyGate';
 import {
   appendInlineAITurn,
   appendInlineAIThreadEvent,
@@ -39,6 +49,8 @@ export const INLINE_SELECTION_TOOL_IDS = [
   'editor:replace',
   'editor:replace-block',
   'editor:insert-blocks',
+  'editor:insert-code-block',
+  'editor:update-code-block',
   'editor:apply-note-patch',
 ] as ToolId[];
 
@@ -50,6 +62,8 @@ Choose the least invasive correct outcome:
 - If only one exact substring inside the selection should change, call editor:replace with targetText and occurrence, or with an explicit subrange if provided.
 - If a whole visible block should be rewritten, call editor:replace-block with one of the supplied block IDs.
 - If new blocks should be inserted after a visible block, call editor:insert-blocks with afterBlockId.
+- If the edit creates a fenced code snippet, call editor:insert-code-block so code, language, title, line numbers, wrap, and highlighted/focused lines are preserved.
+- If the edit changes an existing code block, call editor:update-code-block instead of generic text replacement; preserve unspecified code, language, and metadata.
 - If the entire note must change, call editor:apply-note-patch with complete markdown for the note.
 
 Tool calls are staged proposals. They will not be executed until the user explicitly accepts them. Never claim that an edit has already been applied.
@@ -80,6 +94,8 @@ export class InlineAIThreadServiceImpl implements InlineAIThreadService {
     private readonly collaboration: NoteCollaborationService,
     private readonly editor: EditorService,
     private readonly provenance: ProvenanceService | null = null,
+    private readonly documents: DocumentService | null = null,
+    private readonly protection: ProtectionService | null = null,
   ) {}
 
   async loadForDocument(notePath: string): Promise<Result<InlineAIThread[], Error>> {
@@ -109,6 +125,9 @@ export class InlineAIThreadServiceImpl implements InlineAIThreadService {
 
   async submitSelectionPrompt(input: InlineAISelectionPromptInput): Promise<Result<InlineAIThread, Error>> {
     const notePath = normalizeNotePath(input.notePath);
+    const allowed = await this.assertInlineAIRequestAllowed(notePath, input);
+    if (!allowed.ok) return err(allowed.error);
+
     const loaded = await this.ensureLoaded(notePath);
     if (!loaded.ok) return err(loaded.error);
 
@@ -143,6 +162,9 @@ export class InlineAIThreadServiceImpl implements InlineAIThreadService {
   async retryThread(threadId: string): Promise<Result<InlineAIThread, Error>> {
     const found = this.findThread(threadId);
     if (!found) return err(new Error(`Inline AI thread not found: ${threadId}`));
+    const allowed = await this.assertInlineAIThreadRequestAllowed(found.thread);
+    if (!allowed.ok) return err(allowed.error);
+
     const prompt = found.thread.turns.at(-1)?.prompt ?? '';
     if (!prompt.trim()) return err(new Error('No prompt available to retry'));
     if (this.activeGenerations.has(threadId)) {
@@ -162,6 +184,9 @@ export class InlineAIThreadServiceImpl implements InlineAIThreadService {
     if (!trimmed) return err(new Error('Follow-up prompt is empty'));
     const found = this.findThread(threadId);
     if (!found) return err(new Error(`Inline AI thread not found: ${threadId}`));
+    const allowed = await this.assertInlineAIThreadRequestAllowed(found.thread);
+    if (!allowed.ok) return err(allowed.error);
+
     if (this.activeGenerations.has(threadId)) {
       return err(new Error('This inline AI response is already generating'));
     }
@@ -178,6 +203,9 @@ export class InlineAIThreadServiceImpl implements InlineAIThreadService {
     const found = this.findThread(threadId);
     if (!found) return err(new Error(`Inline AI thread not found: ${threadId}`));
     const { thread } = found;
+    const allowed = await this.assertInlineAIThreadWriteAllowed(thread);
+    if (!allowed.ok) return err(allowed.error);
+
     if (!thread.proposal || thread.proposal.status !== 'pending') {
       return err(new Error('No pending inline AI proposal to accept'));
     }
@@ -305,6 +333,64 @@ export class InlineAIThreadServiceImpl implements InlineAIThreadService {
       afterText,
       surroundingText: `${beforeText}${input.selectionText}${afterText}`,
     };
+  }
+
+  private gateServices(): AIPrivacyGateServices | null {
+    if (!this.documents || !this.protection) return null;
+    return {
+      documents: this.documents,
+      protection: this.protection,
+    };
+  }
+
+  private async assertInlineAIRequestAllowed(
+    notePath: string,
+    input: Pick<InlineAISelectionPromptInput, 'from' | 'to' | 'selectionText'>,
+  ): Promise<Result<void, Error>> {
+    const services = this.gateServices();
+    if (!services) return ok(undefined);
+
+    const resource = createAISelectionResource({
+      notePath,
+      from: input.from,
+      to: input.to,
+      selectedText: input.selectionText,
+    });
+
+    try {
+      await assertProtectedAIReadAllowed(services, notePath, 'selection.read', resource);
+      await assertProtectedAIWriteAllowed(services, notePath, resource);
+      return ok(undefined);
+    } catch (error) {
+      return err(toError(error));
+    }
+  }
+
+  private assertInlineAIThreadRequestAllowed(thread: InlineAIThread): Promise<Result<void, Error>> {
+    return this.assertInlineAIRequestAllowed(thread.notePath, {
+      from: thread.anchor.range?.from ?? null,
+      to: thread.anchor.range?.to ?? null,
+      selectionText: thread.anchor.selectedText,
+    });
+  }
+
+  private async assertInlineAIThreadWriteAllowed(thread: InlineAIThread): Promise<Result<void, Error>> {
+    const services = this.gateServices();
+    if (!services) return ok(undefined);
+
+    const resource = createAISelectionResource({
+      notePath: thread.notePath,
+      from: thread.anchor.range?.from ?? null,
+      to: thread.anchor.range?.to ?? null,
+      selectedText: thread.anchor.selectedText,
+    });
+
+    try {
+      await assertProtectedAIWriteAllowed(services, thread.notePath, resource);
+      return ok(undefined);
+    } catch (error) {
+      return err(toError(error));
+    }
   }
 
   private getVisibleBlockContext(blockIds: string[]): string {
@@ -775,7 +861,7 @@ export function parseInlineAIProposalFromToolCalls(input: {
   toolCalls: ToolCall[];
   notePath: string;
   anchor: InlineAIThread['anchor'];
-  editor: Pick<EditorService, 'getBlockInfo' | 'getMarkdown' | 'getTextBetween'>;
+  editor: Pick<EditorService, 'getBlockInfo' | 'getMarkdown' | 'getTextBetween' | 'getState'>;
 }): InlineAIProposal | null {
   const changes: InlineAIProposedChange[] = [];
 
@@ -822,6 +908,64 @@ export function parseInlineAIProposalFromToolCalls(input: {
           kind: 'insert-blocks',
           afterBlockId: normalizeBlockId(afterBlockId),
           markdown,
+        });
+        break;
+      }
+      case 'editor:insert-code-block': {
+        const code = asString(args.code);
+        if (code == null) break;
+        const markdown = buildCodeBlockMarkdown({
+          code,
+          ...(typeof args.language === 'string' ? { language: args.language } : {}),
+          ...(typeof args.meta === 'string' ? { meta: args.meta } : {}),
+          ...(typeof args.title === 'string' ? { title: args.title } : {}),
+        });
+
+        if (args.replaceSelection === true && input.anchor.range) {
+          changes.push({
+            kind: 'replace-range',
+            from: input.anchor.range.from,
+            to: input.anchor.range.to,
+            markdown,
+            originalText: input.editor.getTextBetween(input.anchor.range.from, input.anchor.range.to),
+          });
+          break;
+        }
+
+        const afterBlockId = asString(args.afterBlockId) ?? input.anchor.blockIds.at(-1);
+        if (!afterBlockId) break;
+        changes.push({
+          kind: 'insert-blocks',
+          afterBlockId: normalizeBlockId(afterBlockId),
+          markdown,
+        });
+        break;
+      }
+      case 'editor:update-code-block': {
+        const rawBlockId = asString(args.blockId);
+        if (!rawBlockId) break;
+        const blockId = normalizeBlockId(rawBlockId);
+        const block = findBlockById(input.editor.getState().document?.blocks ?? [], blockId);
+        if (!block) break;
+        const mode = args.mode === 'append' || args.mode === 'prepend' || args.mode === 'replace'
+          ? args.mode
+          : undefined;
+        const markdown = buildUpdatedCodeBlockMarkdown(block, {
+          ...(typeof args.code === 'string' ? { code: args.code } : {}),
+          ...(typeof args.language === 'string' ? { language: args.language } : {}),
+          ...(typeof args.meta === 'string' ? { meta: args.meta } : {}),
+          ...(typeof args.title === 'string' ? { title: args.title } : {}),
+          ...(typeof args.lineNumbers === 'boolean' ? { lineNumbers: args.lineNumbers } : {}),
+          ...(typeof args.wrap === 'boolean' ? { wrap: args.wrap } : {}),
+          ...(typeof args.highlightLines === 'string' ? { highlightLines: args.highlightLines } : {}),
+          ...(typeof args.focusLines === 'string' ? { focusLines: args.focusLines } : {}),
+          ...(mode ? { mode } : {}),
+        });
+        changes.push({
+          kind: 'replace-block',
+          blockId,
+          markdown,
+          originalText: block.content,
         });
         break;
       }
@@ -958,6 +1102,15 @@ function resolveReplaceRange(
 function normalizeBlockId(blockId: string): string {
   const ref = parseRefId(blockId.trim());
   return ref?.kind === 'block' ? ref.blockId : blockId.trim();
+}
+
+function findBlockById(blocks: Block[], blockId: string): Block | null {
+  for (const block of blocks) {
+    if (block.id === blockId) return block;
+    const child = findBlockById(block.children ?? [], blockId);
+    if (child) return child;
+  }
+  return null;
 }
 
 function normalizeNotePath(notePath: string): string {

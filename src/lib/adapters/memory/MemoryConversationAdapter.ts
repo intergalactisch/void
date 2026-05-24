@@ -15,8 +15,16 @@ import { deserializeActivityEntries } from '$lib/domain/entities/Message';
 import type {
   ConversationStoragePort,
   ConversationSummary,
+  ConversationSummaryQuery,
   ListConversationsOptions,
 } from '$lib/ports/outbound/ConversationStoragePort';
+import {
+  clampPageLimit,
+  coerceDate,
+  cursorToOffset,
+  nextOffsetCursor,
+  type PagedResult,
+} from '$lib/ports/outbound/PagedQuery';
 
 /**
  * In-memory implementation of ConversationStoragePort.
@@ -151,6 +159,59 @@ export class MemoryConversationAdapter implements ConversationStoragePort {
       }));
 
       return ok(summaries);
+    } catch (e) {
+      return err(e instanceof Error ? e : new Error(String(e)));
+    }
+  }
+
+  async listSummaries(query: ConversationSummaryQuery = {}): Promise<Result<PagedResult<ConversationSummary>, Error>> {
+    try {
+      const limit = clampPageLimit(query.limit);
+      const offset = cursorToOffset(query.cursor);
+      const dateFrom = coerceDate(query.dateFrom);
+      const dateTo = coerceDate(query.dateTo);
+      const needle = query.query?.trim().toLocaleLowerCase() ?? '';
+      const sortBy = query.sortBy ?? 'updatedAt';
+      const sortOrder = query.sortOrder ?? 'desc';
+
+      const summaries = Array.from(this.conversations.values())
+        .filter((conversation) => query.status && query.status !== 'all' ? conversation.status === query.status : true)
+        .filter((conversation) => query.documentPath ? conversation.documentPath === query.documentPath : true)
+        .filter((conversation) => query.tag ? conversation.tags.includes(query.tag) : true)
+        .filter((conversation) => {
+          const updatedAt = new Date(conversation.updatedAt);
+          if (dateFrom && updatedAt < dateFrom) return false;
+          if (dateTo && updatedAt > dateTo) return false;
+          return true;
+        })
+        .map((conversation) => ({
+          id: conversation.id,
+          title: conversation.title,
+          messageCount: conversation.messages.length,
+          status: conversation.status,
+          createdAt: new Date(conversation.createdAt),
+          updatedAt: new Date(conversation.updatedAt),
+          preview: getPreview(conversation),
+        }))
+        .filter((summary) => {
+          if (!needle) return true;
+          return [
+            summary.title,
+            summary.preview,
+            summary.id,
+          ].some((value) => value.toLocaleLowerCase().includes(needle));
+        })
+        .sort((a, b) => {
+          const aTime = new Date(sortBy === 'createdAt' ? a.createdAt : a.updatedAt).getTime();
+          const bTime = new Date(sortBy === 'createdAt' ? b.createdAt : b.updatedAt).getTime();
+          return sortOrder === 'asc' ? aTime - bTime : bTime - aTime;
+        });
+
+      return ok({
+        items: summaries.slice(offset, offset + limit),
+        nextCursor: nextOffsetCursor(offset, limit, summaries.length),
+        total: summaries.length,
+      });
     } catch (e) {
       return err(e instanceof Error ? e : new Error(String(e)));
     }

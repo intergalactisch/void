@@ -7,6 +7,7 @@
 
 import type { NoteIntent } from './NoteIntent';
 import type { NoteStatus } from './NoteStatus';
+import type { ProtectedNoteMeta } from './Protection';
 import { normalizeNoteTags } from './NoteTags';
 
 export interface DocumentMeta {
@@ -32,6 +33,8 @@ export interface DocumentMeta {
   intent: NoteIntent;
   /** Count of AI-originated interactions */
   aiTouches: number;
+  /** Note-level protection state. Null/undefined means normal portable markdown. */
+  protection?: ProtectedNoteMeta | null;
   /** Optional custom metadata */
   custom: Record<string, unknown>;
 }
@@ -52,6 +55,7 @@ export function createDocumentMeta(
     status: partial.status ?? 'draft',
     intent: partial.intent ?? 'general',
     aiTouches: partial.aiTouches ?? 0,
+    protection: partial.protection ?? null,
     custom: partial.custom ?? {},
   };
 }

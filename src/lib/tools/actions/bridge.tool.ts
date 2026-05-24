@@ -1,6 +1,7 @@
 import { defineTool } from '../define';
 import { aiPrompt } from '../context';
 import type { NotesListItem } from '$lib/ports/inbound/NotesService';
+import { assertProtectedAIReadAllowed, assertProtectedAIWriteAllowed } from '../protectionGuard';
 
 export default defineTool({
   id: 'action:bridge',
@@ -15,6 +16,9 @@ export default defineTool({
   async execute(_args, { services, progress }) {
     progress(10, 'Reading current note...');
     const state = services.editor.getState();
+    const currentPath = state.document?.path ?? '';
+    await assertProtectedAIReadAllowed(services, currentPath, 'note.read');
+    await assertProtectedAIWriteAllowed(services, currentPath);
     const content = state.document?.blocks.map(b => b.content).join('\n') ?? '';
     const title = state.document?.meta.title ?? '';
 
@@ -47,6 +51,11 @@ export default defineTool({
     const summaries: string[] = [];
     const contextPaths: string[] = [];
     for (const note of otherNotes) {
+      try {
+        await assertProtectedAIReadAllowed(services, note.path, 'related.read');
+      } catch {
+        continue;
+      }
       const noteContent = await services.documents.readContent(note.path);
       if (noteContent.ok) {
         summaries.push(`"${note.title}" (${note.path}): ${noteContent.value.slice(0, 200)}`);
@@ -60,7 +69,7 @@ export default defineTool({
     );
 
     progress(90, 'Inserting bridges...');
-    const currentContent = await services.documents.readContent(state.document?.path ?? '');
+    const currentContent = await services.documents.readContent(currentPath);
     if (currentContent.ok && state.document) {
       await services.collaboration.applyNoteContent(
         state.document.path,

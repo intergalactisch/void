@@ -686,28 +686,54 @@ describe('Todo entity', () => {
       expect(sorted[2]?.isCompleted).toBe(true);
     });
 
-    it('sorts completed todos by priority', () => {
+    it('sorts completed todos by completion date newest first', () => {
       const open = createBasicTodo({ isCompleted: false, lineNumber: 1 });
-      const lowCompleted = createBasicTodo({ isCompleted: true, priority: 'low', lineNumber: 2 });
-      const highCompleted = createBasicTodo({ isCompleted: true, priority: 'high', lineNumber: 3 });
+      const olderCompleted = createBasicTodo({
+        content: 'Older completion',
+        isCompleted: true,
+        priority: 'high',
+        dates: { completedAt: new Date('2026-05-01T09:00:00.000Z') },
+        lineNumber: 2,
+      });
+      const newerCompleted = createBasicTodo({
+        content: 'Newer completion',
+        isCompleted: true,
+        priority: 'low',
+        dates: { completedAt: new Date('2026-05-02T09:00:00.000Z') },
+        lineNumber: 3,
+      });
 
-      const sorted = sortTodosWithCompletedLast([lowCompleted, open, highCompleted]);
+      const sorted = sortTodosWithCompletedLast([olderCompleted, open, newerCompleted]);
 
       expect(sorted[0]?.isCompleted).toBe(false);
-      expect(sorted[1]?.priority).toBe('high');
-      expect(sorted[2]?.priority).toBe('low');
+      expect(sorted.map((todo) => todo.content)).toEqual([
+        open.content,
+        'Newer completion',
+        'Older completion',
+      ]);
     });
 
-    it('handles all completed todos', () => {
+    it('handles all completed todos by completion date', () => {
       const todos = [
-        createBasicTodo({ isCompleted: true, priority: 'low', lineNumber: 1 }),
-        createBasicTodo({ isCompleted: true, priority: 'high', lineNumber: 2 }),
+        createBasicTodo({
+          content: 'Older',
+          isCompleted: true,
+          priority: 'low',
+          dates: { completedAt: new Date('2026-05-01T09:00:00.000Z') },
+          lineNumber: 1,
+        }),
+        createBasicTodo({
+          content: 'Newer',
+          isCompleted: true,
+          priority: 'high',
+          dates: { completedAt: new Date('2026-05-02T09:00:00.000Z') },
+          lineNumber: 2,
+        }),
       ];
 
       const sorted = sortTodosWithCompletedLast(todos);
 
-      expect(sorted[0]?.priority).toBe('high');
-      expect(sorted[1]?.priority).toBe('low');
+      expect(sorted.map((todo) => todo.content)).toEqual(['Newer', 'Older']);
     });
 
     it('handles all open todos', () => {

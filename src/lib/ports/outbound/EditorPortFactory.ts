@@ -10,6 +10,7 @@ import type {
   EditorInlineGenerateRequest,
   EditorPort,
   EditorInlineGenerateCallbacks,
+  EditorMenuPosition,
   EditorMenuStatePayload,
   EditorPageLinkNote,
 } from './EditorPort';
@@ -29,7 +30,7 @@ export interface EditorPortFactoryOptions {
   onPageLinkChange?: (state: EditorMenuStatePayload) => void;
   onBlockMenuRequest?: (
     blockId: string,
-    position: { top: number; left: number },
+    position: EditorMenuPosition,
     currentType: BlockType,
     lineIndex: number,
     mode: EditorBlockMenuMode
@@ -37,7 +38,7 @@ export interface EditorPortFactoryOptions {
   onLineageInspectRequest?: (
     blockId: string,
     lineIndex: number,
-    position: { top: number; left: number },
+    position: EditorMenuPosition,
     currentType: BlockType
   ) => void;
   onPageLinkClick?: (path: string) => void;

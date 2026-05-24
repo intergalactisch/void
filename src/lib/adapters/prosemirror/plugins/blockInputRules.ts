@@ -16,6 +16,7 @@ import type { Schema } from 'prosemirror-model';
 import { TextSelection } from 'prosemirror-state';
 import type { Plugin } from 'prosemirror-state';
 import { generateBlockId } from '$lib/domain/entities/Block';
+import { parseCodeFenceInfo } from '$lib/core/codeFence';
 
 /**
  * Create input rules plugin for block-level conversions.
@@ -83,13 +84,17 @@ export function createBlockInputRules(schema: Schema): Plugin {
   // Code block: ``` with optional language
   if (codeBlock) {
     rules.push(
-      new InputRule(/^```([a-zA-Z]*)$/, (state, match, start, end) => {
-        const language = match[1] || null;
+      new InputRule(/^```([^\n`]*)$/, (state, match, start, end) => {
+        const info = parseCodeFenceInfo(match[1]);
         const $from = state.doc.resolve(start);
         const blockStart = $from.before($from.depth);
         const blockEnd = $from.after($from.depth);
 
-        const newBlock = codeBlock.create({ id: generateBlockId(), language });
+        const newBlock = codeBlock.create({
+          id: generateBlockId(),
+          language: info.language,
+          meta: info.meta,
+        });
         const tr = state.tr.replaceWith(blockStart, blockEnd, newBlock);
         // Place cursor inside the code block
         tr.setSelection(TextSelection.near(tr.doc.resolve(blockStart + 1)));

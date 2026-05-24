@@ -336,6 +336,43 @@ describe('MarkdownAdapter', () => {
       expect(fileResult.value).toContain('Keep the context.');
     });
 
+    it('round-trips code fence language, metadata, and longer fences safely', async () => {
+      fs.seed({
+        '/notes/code.md': [
+          '---',
+          'title: Code',
+          '---',
+          '```ts title="api.ts" lineNumbers {2}',
+          'const fence = "```";',
+          'console.log(fence);',
+          '```',
+        ].join('\n'),
+      });
+
+      const loadResult = await adapter.load('code.md');
+      expect(loadResult.ok).toBe(true);
+      if (!loadResult.ok) return;
+
+      const block = loadResult.value.blocks[0];
+      expect(block?.type).toBe('codeBlock');
+      expect(block?.attrs).toMatchObject({
+        type: 'codeBlock',
+        language: 'ts',
+        meta: 'title="api.ts" lineNumbers {2}',
+      });
+
+      const saveResult = await adapter.save(loadResult.value);
+      expect(saveResult.ok).toBe(true);
+
+      const fileResult = await fs.readFile('/notes/code.md');
+      expect(fileResult.ok).toBe(true);
+      if (!fileResult.ok) return;
+
+      expect(fileResult.value).toContain('````ts title="api.ts" lineNumbers {2}');
+      expect(fileResult.value).toContain('const fence = "```";');
+      expect(fileResult.value).toContain('\n````');
+    });
+
     it('round-trips GitHub pipe tables as structured table blocks', async () => {
       fs.seed({
         '/notes/table.md': '---\ntitle: Table\n---\n| Name | Status |\n| --- | --- |\n| Void | Ready |\n',

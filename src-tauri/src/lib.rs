@@ -14,21 +14,29 @@ use commands::{
     github_complete_device_auth, github_create_repo, github_get_repository, github_get_void_ready,
     github_list_branches, github_list_repositories, github_revoke_token, github_validate_token,
     has_credential, list_directory, move_to_trash, read_file, remove_directory, rename_path,
-    run_cli_prompt, save_settings, spawn_cli_process, start_clipboard_watcher, store_credential,
-    unwatch_all, unwatch_directory, void_append_jsonl, void_append_provenance, void_ensure_dir,
+    protection_decrypt_string, protection_encrypt_string, protection_generate_key,
+    protection_random_id, protection_unwrap_key_with_passphrase,
+    protection_wrap_key_with_passphrase, run_cli_prompt, save_settings, spawn_cli_process,
+    start_clipboard_watcher, store_credential, unwatch_all, unwatch_directory,
+    void_append_jsonl, void_append_provenance, void_ensure_dir,
     void_list_dir, void_read_json, void_read_jsonl, void_read_provenance, void_updater_check,
     void_updater_current_version, void_updater_install, void_updater_restart, void_write_json,
     watch_directory, web_fetch, write_file, PendingUpdate, ProcessRegistry, WatcherRegistry,
 };
 use serde::Serialize;
 use std::time::{Duration, Instant};
-use tauri::{menu::MenuBuilder, tray::TrayIconBuilder, Emitter, Manager};
+use tauri::{
+    menu::{MenuBuilder, MenuItem, SubmenuBuilder},
+    tray::TrayIconBuilder,
+    Emitter, Manager,
+};
 use window_placement::{restore_or_center_main_window, save_window_placement};
 
 const MAIN_WINDOW_LABEL: &str = "main";
 const MENU_BAR_EVENT: &str = "void:menu-command";
 
 const MENU_NEW_NOTE: &str = "void-menu-new-note";
+const MENU_OPEN_MARKDOWN_FILE: &str = "void-menu-open-markdown-file";
 const MENU_OPEN_SEARCH: &str = "void-menu-open-search";
 const MENU_ASK_VOID: &str = "void-menu-ask-void";
 const MENU_OPEN_TASKS: &str = "void-menu-open-tasks";
@@ -84,6 +92,7 @@ fn emit_menu_command(app: &tauri::AppHandle, command: &'static str) {
 fn handle_menu_event(app: &tauri::AppHandle, menu_id: &str) {
     match menu_id {
         MENU_NEW_NOTE => emit_menu_command(app, "new-note"),
+        MENU_OPEN_MARKDOWN_FILE => emit_menu_command(app, "open-markdown-file"),
         MENU_OPEN_SEARCH => emit_menu_command(app, "open-search"),
         MENU_ASK_VOID => emit_menu_command(app, "ask-void"),
         MENU_OPEN_TASKS => emit_menu_command(app, "open-tasks"),
@@ -96,9 +105,43 @@ fn handle_menu_event(app: &tauri::AppHandle, menu_id: &str) {
     }
 }
 
+fn setup_app_menu(app: &mut tauri::App) -> tauri::Result<()> {
+    let quit_item = MenuItem::with_id(app, MENU_QUIT, "Quit Void", true, Some("CmdOrCtrl+Q"))?;
+    let file_menu = SubmenuBuilder::new(app, "File")
+        .text(MENU_NEW_NOTE, "New Note")
+        .text(MENU_OPEN_MARKDOWN_FILE, "Open Markdown File…")
+        .separator()
+        .text(MENU_OPEN_SEARCH, "Open/Search Notes")
+        .separator()
+        .text(MENU_OPEN_SETTINGS, "Settings")
+        .text(MENU_CHECK_UPDATES, "Check for Updates…")
+        .separator()
+        .item(&quit_item)
+        .build()?;
+
+    let edit_menu = SubmenuBuilder::new(app, "Edit")
+        .undo()
+        .redo()
+        .separator()
+        .cut()
+        .copy()
+        .paste()
+        .select_all()
+        .build()?;
+
+    let menu = MenuBuilder::new(app)
+        .item(&file_menu)
+        .item(&edit_menu)
+        .build()?;
+
+    app.set_menu(menu)?;
+    Ok(())
+}
+
 fn setup_menu_bar(app: &mut tauri::App) -> tauri::Result<()> {
     let menu = MenuBuilder::new(app)
         .text(MENU_NEW_NOTE, "New Note")
+        .text(MENU_OPEN_MARKDOWN_FILE, "Open Markdown File…")
         .text(MENU_OPEN_SEARCH, "Open/Search Notes")
         .text(MENU_ASK_VOID, "Ask Void")
         .text(MENU_OPEN_TASKS, "Tasks")
@@ -116,9 +159,7 @@ fn setup_menu_bar(app: &mut tauri::App) -> tauri::Result<()> {
         .menu(&menu)
         .tooltip("Void")
         .show_menu_on_left_click(true)
-        .on_menu_event(|app, event| {
-            handle_menu_event(app, event.id().as_ref());
-        });
+        .icon_as_template(true);
 
     if let Ok(icon) = tauri::image::Image::from_bytes(include_bytes!("../icons/menu-bar.png")) {
         tray = tray.icon(icon);
@@ -143,7 +184,11 @@ pub fn run() {
         .manage(ProcessRegistry::default())
         .manage(PendingUpdate::default())
         .manage(WatcherRegistry::default())
+        .on_menu_event(|app, event| {
+            handle_menu_event(app, event.id().as_ref());
+        })
         .setup(|app| {
+            setup_app_menu(app)?;
             setup_menu_bar(app)?;
             setup_main_window(app.handle());
             // Background clipboard watcher: emits void://clipboard-changed
@@ -212,6 +257,13 @@ pub fn run() {
             get_credential,
             delete_credential,
             has_credential,
+            // Protected notes crypto commands
+            protection_generate_key,
+            protection_random_id,
+            protection_encrypt_string,
+            protection_decrypt_string,
+            protection_wrap_key_with_passphrase,
+            protection_unwrap_key_with_passphrase,
             // CLI AI commands
             check_cli_available,
             run_cli_prompt,

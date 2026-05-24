@@ -13,6 +13,7 @@
 
   import { ArrowLeft, FolderOpen, Layers, Plus } from '@lucide/svelte';
   import WorkspaceCard from '$lib/components/shared/WorkspaceCard.svelte';
+  import { InfoPopover } from '$lib/components/shared';
   import { settingsStore, workspaceStore } from '$lib/stores';
   import {
     MANAGED_DEFAULT_WORKSPACE_PATH,
@@ -144,7 +145,19 @@
           <Layers size={14} strokeWidth={1.8} />
           <span>Void</span>
         </div>
-        <h1>Workspaces</h1>
+        <h1>
+          Workspaces
+          <InfoPopover
+            title="Workspace folders"
+            body="A workspace is one notes folder, plus the local Void data that belongs to it."
+            items={[
+              'Switching changes which folder Void opens.',
+              'GitHub sync is configured per workspace.',
+              'Forgetting a workspace does not delete the folder.',
+            ]}
+            align="start"
+          />
+        </h1>
         <p>Each workspace is a notes folder you can sync to its own private GitHub repo.</p>
       </div>
       <div class="header-actions">
@@ -364,6 +377,9 @@
   }
 
   .title-group h1 {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
     margin: 0;
     font-size: var(--text-h1);
     line-height: var(--text-h1-line-height);

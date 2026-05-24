@@ -8,7 +8,11 @@
  * decide whether a command is currently applicable.
  */
 
+export type ActiveKeymapContext = 'notes' | 'tasks' | 'ai-command-center' | 'global';
+
 export interface ScopeSnapshot {
+  /** Foreground/focused app context that owns context-specific shortcuts. */
+  activeContext: ActiveKeymapContext;
   /** Path of the active note in the editor, or null when no note is open. */
   activeNotePath: string | null;
   /** True when the ProseMirror editor (or another contenteditable) has focus. */
@@ -33,6 +37,7 @@ export interface ScopeSnapshot {
 
 /** Empty snapshot — useful for tests and as a starting state in scope resolution. */
 export const EMPTY_SCOPE: ScopeSnapshot = {
+  activeContext: 'notes',
   activeNotePath: null,
   editorFocused: false,
   modalOpen: false,

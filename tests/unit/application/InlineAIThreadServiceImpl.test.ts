@@ -10,8 +10,10 @@ import {
 import { createInlineAIAnchor } from '$lib/domain/entities/InlineAIThread';
 import type {
   AIAssistantService,
+  DocumentService,
   EditorService,
   NoteCollaborationService,
+  ProtectionService,
 } from '$lib/ports/inbound';
 
 describe('parseInlineAIProposalFromToolCalls', () => {
@@ -26,7 +28,10 @@ describe('parseInlineAIProposalFromToolCalls', () => {
       content: 'block text',
     }),
     getMarkdown: () => ok('current markdown'),
-  } as Pick<EditorService, 'getBlockInfo' | 'getMarkdown' | 'getTextBetween'>;
+    getState: () => ({
+      document: null,
+    }),
+  } as Pick<EditorService, 'getBlockInfo' | 'getMarkdown' | 'getTextBetween' | 'getState'>;
 
   it('parses targetText replacements into absolute staged ranges', () => {
     const anchor = createInlineAIAnchor({
@@ -81,6 +86,80 @@ describe('parseInlineAIProposalFromToolCalls', () => {
       originalText: 'text:12-12',
     });
   });
+
+  it('maps insert-code-block tool calls to staged block insertions', () => {
+    const anchor = createInlineAIAnchor({
+      notePath: 'demo.md',
+      selectedText: '',
+      range: { from: 12, to: 12 },
+      blockIds: ['p1'],
+    });
+    const proposal = parseInlineAIProposalFromToolCalls({
+      toolCalls: [{
+        id: 'tc_1',
+        toolId: 'editor:insert-code-block',
+        args: {
+          afterBlockId: 'p1',
+          code: 'const x = 1;',
+          language: 'ts',
+          title: 'api.ts',
+        },
+      }],
+      notePath: 'demo.md',
+      anchor,
+      editor,
+    });
+
+    expect(proposal?.changes[0]).toMatchObject({
+      kind: 'insert-blocks',
+      afterBlockId: 'p1',
+      markdown: '```ts title="api.ts"\nconst x = 1;\n```',
+    });
+  });
+
+  it('maps update-code-block tool calls to staged block replacements', () => {
+    const anchor = createInlineAIAnchor({
+      notePath: 'demo.md',
+      selectedText: '',
+      blockIds: ['code-1'],
+    });
+    const proposal = parseInlineAIProposalFromToolCalls({
+      toolCalls: [{
+        id: 'tc_1',
+        toolId: 'editor:update-code-block',
+        args: {
+          blockId: 'code-1',
+          lineNumbers: true,
+          highlightLines: '1',
+        },
+      }],
+      notePath: 'demo.md',
+      anchor,
+      editor: {
+        ...editor,
+        getState: () => ({
+          document: {
+            path: 'demo.md',
+            blocks: [{
+              id: 'code-1',
+              type: 'codeBlock',
+              content: 'const x = 1;',
+              marks: [],
+              children: [],
+              attrs: { type: 'codeBlock', language: 'ts', meta: 'title="api.ts"' },
+            }],
+          },
+        }),
+      },
+    });
+
+    expect(proposal?.changes[0]).toMatchObject({
+      kind: 'replace-block',
+      blockId: 'code-1',
+      markdown: '```ts title="api.ts" lineNumbers {1}\nconst x = 1;\n```',
+      originalText: 'const x = 1;',
+    });
+  });
 });
 
 describe('buildInlineSelectionPrompt', () => {
@@ -115,6 +194,181 @@ describe('buildInlineSelectionPrompt', () => {
 });
 
 describe('InlineAIThreadServiceImpl', () => {
+  function protectedDocuments(lockState: 'locked' | 'unlocked' = 'unlocked'): DocumentService {
+    return {
+      readMeta: vi.fn(async () => ok({
+        title: 'Secrets',
+        protection: {
+          level: 'protected',
+          noteId: 'pnote_1',
+          keyId: 'pkey_1',
+          algorithm: 'AES-256-GCM',
+          envelopeVersion: 2,
+          protectedAt: '2026-05-23T00:00:00.000Z',
+          titleVisible: true,
+          lockState,
+        },
+      })),
+    } as unknown as DocumentService;
+  }
+
+  function protectionService(
+    hasAIContextAuthorization: ProtectionService['hasAIContextAuthorization'],
+  ): ProtectionService {
+    return {
+      currentPolicy: () => ({
+        idleLockMinutes: 15,
+        lockOnAppClose: true,
+        lockOnSleep: false,
+        hideProtectedPreviews: true,
+        requireAIApprovalForProtectedReads: true,
+        requireAIApprovalForProtectedWrites: true,
+      }),
+      hasAIContextAuthorization,
+    } as unknown as ProtectionService;
+  }
+
+  function inlineEditor(): EditorService {
+    return {
+      getTextContent: () => 'a secret note',
+      getTextBetween: (from: number, to: number) => {
+        if (from === 2 && to === 8) return 'secret';
+        if (to === 2) return 'before ';
+        if (from === 8) return ' after';
+        return '';
+      },
+      getMarkdown: () => ok('a secret note'),
+      getBlockInfo: () => null,
+      getState: () => ({
+        document: { path: 'secret.md', meta: { title: 'Secrets' } },
+      }),
+    } as unknown as EditorService;
+  }
+
+  it('blocks protected inline ASK before creating conversations, threads, or prompts', async () => {
+    const voidStorage = new MemoryVoidStorageAdapter();
+    const aiAssistant = {
+      createNewConversation: vi.fn(async () => ({ id: 'conv_1' })),
+      prompt: vi.fn(),
+    } as unknown as AIAssistantService;
+    const service = new InlineAIThreadServiceImpl(
+      voidStorage,
+      '/notes',
+      aiAssistant,
+      {} as unknown as NoteCollaborationService,
+      inlineEditor(),
+      null,
+      protectedDocuments(),
+      protectionService(vi.fn(() => false)),
+    );
+
+    const created = await service.submitSelectionPrompt({
+      prompt: 'Improve this',
+      selectionText: 'secret',
+      notePath: 'secret.md',
+      from: 2,
+      to: 8,
+      blockIds: ['block-a'],
+    });
+
+    expect(created.ok).toBe(false);
+    if (created.ok) throw new Error('Expected protected inline AI denial');
+    expect(created.error.message).toContain('Grant AI access to this highlighted text');
+    expect(aiAssistant.createNewConversation).not.toHaveBeenCalled();
+    expect(aiAssistant.prompt).not.toHaveBeenCalled();
+    expect(service.getThreads('secret.md')).toHaveLength(0);
+  });
+
+  it('allows protected inline ASK after selection-scoped read and write approval', async () => {
+    const voidStorage = new MemoryVoidStorageAdapter();
+    const aiAssistant = {
+      createNewConversation: vi.fn(async () => ({ id: 'conv_1' })),
+      loadDocumentConversations: vi.fn(async () => []),
+      prompt: vi.fn(async () => ok({
+        chat: 'Answer only.',
+        toolCalls: [],
+        meta: { provider: 'test', model: 'test', latencyMs: 1 },
+        truncated: false,
+        stopReason: 'stop',
+      })),
+    } as unknown as AIAssistantService;
+    const service = new InlineAIThreadServiceImpl(
+      voidStorage,
+      '/notes',
+      aiAssistant,
+      {} as unknown as NoteCollaborationService,
+      inlineEditor(),
+      null,
+      protectedDocuments(),
+      protectionService(vi.fn((_noteId, _scope, resource) => String(resource ?? '').startsWith('selection:secret.md#2-8:'))),
+    );
+
+    const created = await service.submitSelectionPrompt({
+      prompt: 'Explain this',
+      selectionText: 'secret',
+      notePath: 'secret.md',
+      from: 2,
+      to: 8,
+      blockIds: ['block-a'],
+    });
+
+    expect(created.ok).toBe(true);
+    await waitFor(() => service.getThreads('secret.md')[0]?.status === 'answer');
+    expect(aiAssistant.createNewConversation).toHaveBeenCalledTimes(1);
+    expect(aiAssistant.prompt).toHaveBeenCalledTimes(1);
+  });
+
+  it('requires write approval again before accepting a protected inline proposal', async () => {
+    const voidStorage = new MemoryVoidStorageAdapter();
+    const replaceRange = vi.fn(async () => ok(undefined));
+    let writeAllowed = true;
+    const aiAssistant = {
+      createNewConversation: vi.fn(async () => ({ id: 'conv_1' })),
+      loadDocumentConversations: vi.fn(async () => []),
+      prompt: vi.fn(async () => ok({
+        chat: 'I drafted the replacement.',
+        toolCalls: [{
+          id: 'tc_1',
+          toolId: 'editor:replace',
+          args: { from: 2, to: 8, text: 'safer' },
+        }],
+        meta: { provider: 'test', model: 'test', latencyMs: 1 },
+        truncated: false,
+        stopReason: 'tool_use',
+      })),
+    } as unknown as AIAssistantService;
+    const service = new InlineAIThreadServiceImpl(
+      voidStorage,
+      '/notes',
+      aiAssistant,
+      { replaceRange } as unknown as NoteCollaborationService,
+      inlineEditor(),
+      null,
+      protectedDocuments(),
+      protectionService(vi.fn((_noteId, scope, resource) =>
+        String(resource ?? '').startsWith('selection:secret.md#2-8:') &&
+        (scope === 'selection.read' || (scope === 'note.write' && writeAllowed))
+      )),
+    );
+
+    const created = await service.submitSelectionPrompt({
+      prompt: 'Improve this',
+      selectionText: 'secret',
+      notePath: 'secret.md',
+      from: 2,
+      to: 8,
+      blockIds: ['block-a'],
+    });
+    if (!created.ok) throw created.error;
+    await waitFor(() => service.getThreads('secret.md')[0]?.proposal?.status === 'pending');
+
+    writeAllowed = false;
+    const accepted = await service.acceptProposal(created.value.id);
+
+    expect(accepted.ok).toBe(false);
+    expect(replaceRange).not.toHaveBeenCalled();
+  });
+
   it('stages selection edits and applies them only after accept', async () => {
     const voidStorage = new MemoryVoidStorageAdapter();
     const replaceRange = vi.fn(async () => ok(undefined));

@@ -7,6 +7,7 @@
    */
 
   import type { OperationResult, OperationOutput } from '$lib/domain/values/OperationResult';
+  import { InfoPopover } from '$lib/components/shared';
 
   interface Props {
     result: OperationResult;
@@ -37,7 +38,18 @@
 
 <div class="result-preview">
   <div class="result-header">
-    <span class="result-count">{result.outputs.length} output(s)</span>
+    <span class="result-count">
+      {result.outputs.length} output(s)
+      <InfoPopover
+        title="Apply or discard"
+        body="These outputs are a preview until you choose what to do with them."
+        items={[
+          'Apply All writes the proposed changes into your workspace.',
+          'Discard removes this operation result from the review queue.',
+        ]}
+        align="start"
+      />
+    </span>
     <span class="result-duration">{Math.round(result.durationMs / 1000)}s</span>
   </div>
 
@@ -74,9 +86,15 @@
   }
   .result-header {
     display: flex;
+    align-items: center;
     justify-content: space-between;
     font-size: 0.75rem;
     color: var(--text-muted);
+  }
+  .result-count {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
   }
   .result-outputs {
     display: flex;

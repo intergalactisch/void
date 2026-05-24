@@ -8,6 +8,7 @@
 import type { Result } from '$lib/core';
 import type { AgentRun } from '$lib/domain/entities/AgentRun';
 import type { AIWebAccess } from '$lib/domain/values/AIWebAccess';
+import type { AgentRunSummary, AgentRunSummaryQuery, PagedResult } from '$lib/ports/outbound';
 
 export interface AgentRunState {
   currentRun: AgentRun | null;
@@ -42,6 +43,7 @@ export interface AgentOrchestrationService {
   continueWorker(options: ContinueWorkerOptions): Promise<Result<AgentRun, Error>>;
   getRun(runId: string): Promise<Result<AgentRun | null, Error>>;
   listRuns(): Promise<Result<AgentRun[], Error>>;
+  listRunSummaries(query?: AgentRunSummaryQuery): Promise<Result<PagedResult<AgentRunSummary>, Error>>;
   reconcileStuckRuns(): Promise<void>;
   getState(): AgentRunState;
   subscribe(callback: (state: AgentRunState) => void): () => void;

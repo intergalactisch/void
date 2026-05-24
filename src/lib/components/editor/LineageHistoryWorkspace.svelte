@@ -11,6 +11,7 @@
     uiStore,
     type LineageTimelineFilter,
   } from '$lib/stores';
+  import { InfoPopover } from '$lib/components/shared';
   import {
     AlertTriangle,
     ArchiveRestore,
@@ -296,6 +297,15 @@
             Durable
           </span>
         {/if}
+        <InfoPopover
+          title="Saved history"
+          body="History compares the note you are editing with the saved record Void keeps beside the markdown file."
+          items={[
+            'Durable means the latest changes are saved in history.',
+            'Pending means the editor has unsaved changes in the preview.',
+            'Restores write a new version instead of erasing old history.',
+          ]}
+        />
         <button type="button" class="icon-button" onclick={refresh} title="Refresh history" aria-label="Refresh history">
           <RotateCcw size={14} strokeWidth={1.8} aria-hidden="true" />
         </button>
@@ -331,6 +341,16 @@
           <span>
             <ListFilter size={12} strokeWidth={1.8} aria-hidden="true" />
             Timeline
+            <InfoPopover
+              title="Timeline filters"
+              body="Use filters to narrow the same saved history without changing the note."
+              items={[
+                'Focused line follows the line you opened from the editor.',
+                'Deleted shows archived lines that may still be restorable.',
+                'Warnings shows places where Void is unsure which old line matches.',
+              ]}
+              align="start"
+            />
           </span>
           {#if focusedLine}
             <span>Focus line {focusedLine}</span>
@@ -364,7 +384,18 @@
         {#if lineageStore.timelineFilter === 'deleted'}
           <section class="deleted-archive" aria-label="Deleted line archive">
             <header>
-              <span>Deleted archive</span>
+              <span>
+                Deleted archive
+                <InfoPopover
+                  title="Deleted archive"
+                  body="Deleted lines stay in the side history so you can inspect or restore them later."
+                  items={[
+                    'Restore preview checks where the line most likely belongs now.',
+                    'Applying a restore adds it back as a new edit.',
+                  ]}
+                  align="start"
+                />
+              </span>
               <span>{deletedLines.length}</span>
             </header>
             {#if deletedLines.length === 0}
@@ -435,6 +466,15 @@
             <span>
               <MessageSquare size={12} strokeWidth={1.8} aria-hidden="true" />
               AI Conversations
+              <InfoPopover
+                title="AI conversation trace"
+                body="This view connects inline AI requests to the text they saw, the answer they gave, and any proposed or applied edits."
+                items={[
+                  'Jump returns to the original inline thread.',
+                  'Changed lines switches back to the saved edit history.',
+                ]}
+                align="start"
+              />
             </span>
             <span>{aiItems.length}</span>
           </div>
@@ -538,6 +578,15 @@
                 <span>
                   <LocateFixed size={13} strokeWidth={1.8} aria-hidden="true" />
                   Invocation
+                  <InfoPopover
+                    title="Invocation context"
+                    body="Invocation shows what the AI request was anchored to when it started."
+                    items={[
+                      'Before, selected, and after are the local context sent with the request.',
+                      'Blocks and range help you find the source text again.',
+                    ]}
+                    align="start"
+                  />
                 </span>
               </header>
               <div class="detail-grid ai-invocation-meta">
@@ -592,6 +641,15 @@
                   <span>
                     <GitBranch size={13} strokeWidth={1.8} aria-hidden="true" />
                     Proposed Edit
+                    <InfoPopover
+                      title="Proposed edit"
+                      body="A proposed edit is AI-suggested text that may or may not have been accepted into the note."
+                      items={[
+                        'Before is the text the proposal expected to replace.',
+                        'After is the text the AI wanted to write.',
+                      ]}
+                      align="start"
+                    />
                   </span>
                   <span class="confidence">{selectedAIItem.thread.proposal.status}</span>
                 </header>
@@ -776,6 +834,15 @@
                 <span>
                   <ArchiveRestore size={13} strokeWidth={1.8} aria-hidden="true" />
                   Restore Preview
+                  <InfoPopover
+                    title="Restore preview"
+                    body="Preview checks where deleted text should return before the note is changed."
+                    items={[
+                      'The match percentage is a confidence signal, not a guarantee.',
+                      'Apply restore writes a new edit and keeps the old history.',
+                    ]}
+                    align="start"
+                  />
                 </span>
                 <span class="confidence">{Math.round(restorePreview.confidence * 100)}% match</span>
               </header>
@@ -807,6 +874,15 @@
               <span>
                 <GitBranch size={13} strokeWidth={1.8} aria-hidden="true" />
                 Sentence Diff
+                <InfoPopover
+                  title="Sentence diff"
+                  body="Sentence diff highlights what changed inside the selected edit cluster."
+                  items={[
+                    'Before and After show full captured line text.',
+                    'Colored text marks the exact words added or removed.',
+                  ]}
+                  align="start"
+                />
               </span>
             </header>
             {#if selectedHunks.length === 0}
@@ -848,6 +924,15 @@
                 <span>
                   <Route size={13} strokeWidth={1.8} aria-hidden="true" />
                   Selected Line Trace
+                  <InfoPopover
+                    title="Selected line trace"
+                    body="Trace follows the selected line through linked versions."
+                    items={[
+                      'Source versions fed into the current line.',
+                      'Downstream versions reused this line later.',
+                    ]}
+                    align="start"
+                  />
                 </span>
               </header>
               <pre class="current-line">{lineageStore.explanation.currentVersion.content}</pre>
@@ -894,6 +979,15 @@
                 <span>
                   <AlertTriangle size={13} strokeWidth={1.8} aria-hidden="true" />
                   Repair Warnings
+                  <InfoPopover
+                    title="Repair warnings"
+                    body="A repair warning means Void could not confidently match a current line to its older history."
+                    items={[
+                      'Assign to unit reconnects the line to the suggested history.',
+                      'Use repair only when the suggestion clearly matches your text.',
+                    ]}
+                    align="start"
+                  />
                 </span>
               </header>
               <div class="warning-list">
@@ -919,6 +1013,15 @@
                 <span>
                   <Clock3 size={13} strokeWidth={1.8} aria-hidden="true" />
                   Restore Preview
+                  <InfoPopover
+                    title="Previous versions"
+                    body="These are older saved versions of the selected line."
+                    items={[
+                      'Restore replaces the current line with that older text.',
+                      'The restore itself is saved as a new history entry.',
+                    ]}
+                    align="start"
+                  />
                 </span>
               </header>
               <ol class="version-list">

@@ -20,8 +20,16 @@ import { deserializeActivityEntries } from '$lib/domain/entities/Message';
 import type {
   ConversationStoragePort,
   ConversationSummary,
+  ConversationSummaryQuery,
   ListConversationsOptions,
 } from '$lib/ports/outbound/ConversationStoragePort';
+import {
+  clampPageLimit,
+  coerceDate,
+  cursorToOffset,
+  nextOffsetCursor,
+  type PagedResult,
+} from '$lib/ports/outbound/PagedQuery';
 import { fileCommands } from './commands';
 
 /**
@@ -33,6 +41,8 @@ const CONVERSATIONS_DIR = '.void/conversations';
  * File extension for conversation files.
  */
 const CONVERSATION_EXT = '.json';
+const COMMAND_CENTER_INDEX_DIR = '.void/index/command-center';
+const CONVERSATION_INDEX_FILE = 'conversations.json';
 
 /**
  * Raw conversation data from JSON (dates are strings).
@@ -71,6 +81,23 @@ interface RawMessage {
   clientTurnId?: string;
 }
 
+interface IndexedConversationSummary {
+  id: string;
+  title: string;
+  messageCount: number;
+  status: 'active' | 'completed' | 'archived';
+  createdAt: string;
+  updatedAt: string;
+  preview: string;
+  documentPath: string | null;
+  tags: string[];
+}
+
+interface ConversationSummaryIndex {
+  version: 1;
+  summaries: IndexedConversationSummary[];
+}
+
 /**
  * Tauri file-based implementation of ConversationStoragePort.
  *
@@ -79,11 +106,15 @@ interface RawMessage {
 export class TauriConversationAdapter implements ConversationStoragePort {
   private notesPath: string;
   private conversationsDir: string;
+  private indexDir: string;
+  private indexPath: string;
   private initialized = false;
 
   constructor(notesPath: string) {
     this.notesPath = notesPath;
     this.conversationsDir = `${notesPath}/${CONVERSATIONS_DIR}`;
+    this.indexDir = `${notesPath}/${COMMAND_CENTER_INDEX_DIR}`;
+    this.indexPath = `${this.indexDir}/${CONVERSATION_INDEX_FILE}`;
   }
 
   /**
@@ -140,6 +171,7 @@ export class TauriConversationAdapter implements ConversationStoragePort {
       const content = JSON.stringify(conversation, null, 2);
 
       await fileCommands.writeFile(filePath, content);
+      await this.upsertIndexedSummary(conversation);
       return ok(undefined);
     } catch (e) {
       return err(toError(e));
@@ -182,6 +214,7 @@ export class TauriConversationAdapter implements ConversationStoragePort {
       if (exists) {
         await fileCommands.deleteFile(filePath);
       }
+      await this.removeIndexedSummary(id);
 
       return ok(undefined);
     } catch (e) {
@@ -193,72 +226,74 @@ export class TauriConversationAdapter implements ConversationStoragePort {
    * List conversation summaries.
    */
   async list(options: ListConversationsOptions = {}): Promise<Result<ConversationSummary[], Error>> {
+    const query: ConversationSummaryQuery = { status: options.status ?? 'all' };
+    if (options.limit !== undefined) query.limit = options.limit;
+    if (options.offset !== undefined) query.cursor = String(options.offset);
+    if (options.sortBy !== undefined) query.sortBy = options.sortBy;
+    if (options.sortOrder !== undefined) query.sortOrder = options.sortOrder;
+    const result = await this.listSummaries(query);
+    if (!result.ok) return err(result.error);
+    return ok(result.value.items);
+  }
+
+  async listSummaries(query: ConversationSummaryQuery = {}): Promise<Result<PagedResult<ConversationSummary>, Error>> {
     try {
       await this.ensureDirectory();
 
-      const {
-        status,
-        limit,
-        offset = 0,
-        sortBy = 'updatedAt',
-        sortOrder = 'desc',
-      } = options;
+      const limit = clampPageLimit(query.limit);
+      const offset = cursorToOffset(query.cursor);
+      const dateFrom = coerceDate(query.dateFrom);
+      const dateTo = coerceDate(query.dateTo);
+      const needle = query.query?.trim().toLocaleLowerCase() ?? '';
+      const sortBy = query.sortBy ?? 'updatedAt';
+      const sortOrder = query.sortOrder ?? 'desc';
 
-      // List all conversation files
-      const entries = await fileCommands.listDirectory(this.conversationsDir);
-      const jsonFiles = entries.filter(
-        (e) => e.isFile && e.name.endsWith(CONVERSATION_EXT)
-      );
-
-      // Load and filter conversations
-      const summaries: ConversationSummary[] = [];
-
-      for (const file of jsonFiles) {
-        try {
-          const content = await fileCommands.readFile(file.path);
-          const raw = JSON.parse(content) as RawConversation;
-
-          // Filter by status if specified
-          if (status && raw.status !== status) {
-            continue;
-          }
-
-          const conversation = this.transformConversation(raw);
-
-          summaries.push({
-            id: conversation.id,
-            title: conversation.title,
-            messageCount: conversation.messages.length,
-            status: conversation.status,
-            createdAt: conversation.createdAt,
-            updatedAt: conversation.updatedAt,
-            preview: getPreview(conversation),
-          });
-        } catch {
-          // Skip invalid files
-          console.warn(`[TauriConversationAdapter] Failed to load ${file.path}`);
-        }
-      }
+      let summaries = (await this.readSummaryIndex())
+        .filter((summary) => query.status && query.status !== 'all' ? summary.status === query.status : true)
+        .filter((summary) => query.documentPath ? summary.documentPath === query.documentPath : true)
+        .filter((summary) => query.tag ? summary.tags.includes(query.tag) : true)
+        .filter((summary) => {
+          const updatedAt = new Date(summary.updatedAt);
+          if (dateFrom && updatedAt < dateFrom) return false;
+          if (dateTo && updatedAt > dateTo) return false;
+          return true;
+        })
+        .filter((summary) => {
+          if (!needle) return true;
+          return [
+            summary.title,
+            summary.preview,
+            summary.id,
+            summary.documentPath ?? '',
+            ...summary.tags,
+          ].some((value) => value.toLocaleLowerCase().includes(needle));
+        });
 
       // Sort
       summaries.sort((a, b) => {
-        const aValue = sortBy === 'createdAt' ? a.createdAt : a.updatedAt;
-        const bValue = sortBy === 'createdAt' ? b.createdAt : b.updatedAt;
+        const aValue = new Date(sortBy === 'createdAt' ? a.createdAt : a.updatedAt);
+        const bValue = new Date(sortBy === 'createdAt' ? b.createdAt : b.updatedAt);
         return sortOrder === 'asc'
           ? aValue.getTime() - bValue.getTime()
           : bValue.getTime() - aValue.getTime();
       });
 
-      // Paginate
-      let result = summaries;
-      if (offset > 0) {
-        result = result.slice(offset);
-      }
-      if (limit !== undefined) {
-        result = result.slice(0, limit);
-      }
+      const total = summaries.length;
+      const items: ConversationSummary[] = summaries.slice(offset, offset + limit).map((summary) => ({
+        id: summary.id,
+        title: summary.title,
+        messageCount: summary.messageCount,
+        status: summary.status,
+        createdAt: new Date(summary.createdAt),
+        updatedAt: new Date(summary.updatedAt),
+        preview: summary.preview,
+      }));
 
-      return ok(result);
+      return ok({
+        items,
+        nextCursor: nextOffsetCursor(offset, limit, total),
+        total,
+      });
     } catch (e) {
       return err(toError(e));
     }
@@ -335,6 +370,7 @@ export class TauriConversationAdapter implements ConversationStoragePort {
           console.warn(`[TauriConversationAdapter] Failed to delete ${file.path}`);
         }
       }
+      await this.writeSummaryIndex([]);
 
       return ok(deleted);
     } catch (e) {
@@ -353,12 +389,95 @@ export class TauriConversationAdapter implements ConversationStoragePort {
     return this.conversationsDir;
   }
 
+  private async ensureIndexDirectory(): Promise<void> {
+    const exists = await fileCommands.exists(this.indexDir);
+    if (!exists) {
+      await fileCommands.createDirectory(this.indexDir);
+    }
+  }
+
+  private toIndexedSummary(conversation: Conversation): IndexedConversationSummary {
+    return {
+      id: conversation.id,
+      title: conversation.title,
+      messageCount: conversation.messages.filter((message) => message.visibility !== 'internal').length,
+      status: conversation.status,
+      createdAt: conversation.createdAt.toISOString(),
+      updatedAt: conversation.updatedAt.toISOString(),
+      preview: getPreview(conversation),
+      documentPath: conversation.documentPath,
+      tags: conversation.tags,
+    };
+  }
+
+  private async readSummaryIndex(): Promise<IndexedConversationSummary[]> {
+    await this.ensureIndexDirectory();
+    const exists = await fileCommands.exists(this.indexPath);
+    if (exists) {
+      try {
+        const raw = JSON.parse(await fileCommands.readFile(this.indexPath)) as ConversationSummaryIndex;
+        if (raw.version === 1 && Array.isArray(raw.summaries)) {
+          return raw.summaries;
+        }
+      } catch {
+        // Rebuild below.
+      }
+    }
+
+    return this.rebuildSummaryIndex();
+  }
+
+  private async writeSummaryIndex(summaries: IndexedConversationSummary[]): Promise<void> {
+    await this.ensureIndexDirectory();
+    await fileCommands.writeFile(this.indexPath, JSON.stringify({ version: 1, summaries }, null, 2));
+  }
+
+  private async rebuildSummaryIndex(): Promise<IndexedConversationSummary[]> {
+    const entries = await fileCommands.listDirectory(this.conversationsDir);
+    const jsonFiles = entries.filter((entry) => entry.isFile && entry.name.endsWith(CONVERSATION_EXT));
+    const summaries: IndexedConversationSummary[] = [];
+
+    for (const file of jsonFiles) {
+      try {
+        const raw = JSON.parse(await fileCommands.readFile(file.path)) as RawConversation;
+        summaries.push(this.toIndexedSummary(this.transformConversation(raw)));
+      } catch {
+        console.warn(`[TauriConversationAdapter] Failed to index ${file.path}`);
+      }
+    }
+
+    await this.writeSummaryIndex(summaries);
+    return summaries;
+  }
+
+  private async upsertIndexedSummary(conversation: Conversation): Promise<void> {
+    try {
+      const summaries = await this.readSummaryIndex();
+      const next = summaries.filter((summary) => summary.id !== conversation.id);
+      next.push(this.toIndexedSummary(conversation));
+      await this.writeSummaryIndex(next);
+    } catch {
+      // Derived cache; listing will rebuild if needed.
+    }
+  }
+
+  private async removeIndexedSummary(id: string): Promise<void> {
+    try {
+      const summaries = await this.readSummaryIndex();
+      await this.writeSummaryIndex(summaries.filter((summary) => summary.id !== id));
+    } catch {
+      // Derived cache; listing will rebuild if needed.
+    }
+  }
+
   /**
    * Update the notes path (called when settings change).
    */
   setNotesPath(notesPath: string): void {
     this.notesPath = notesPath;
     this.conversationsDir = `${notesPath}/${CONVERSATIONS_DIR}`;
+    this.indexDir = `${notesPath}/${COMMAND_CENTER_INDEX_DIR}`;
+    this.indexPath = `${this.indexDir}/${CONVERSATION_INDEX_FILE}`;
     this.initialized = false;
   }
 }

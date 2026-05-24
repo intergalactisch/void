@@ -51,12 +51,16 @@ function createMockEditorService(): EditorService & {
     document: null,
     tabs: [],
     activePath: null,
+    activePaneId: null,
+    panes: {},
     selection: EMPTY_SELECTION,
     isReady: false,
     isDirty: false,
     isSaving: false,
     conflictState: 'clean',
     aiProcessing: null,
+    aiInlineComposers: [],
+    activeAIInlineComposerId: null,
   };
 
   return {
