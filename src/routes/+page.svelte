@@ -2490,8 +2490,8 @@
       transform: translateX(0);
     }
 
-    /* Hide resize handle when sidebar is a drawer. */
-    .app-shell :global(.sidebar .resize-handle) {
+    /* Hide resize rail when sidebar is a drawer. */
+    .app-shell :global(.sidebar .sidebar-resize-rail) {
       display: none;
     }
 

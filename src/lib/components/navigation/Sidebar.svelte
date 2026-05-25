@@ -21,6 +21,17 @@
   import FolderTree from './FolderTree.svelte';
   import { createFolderReorderDnd } from './folderReorderDnd';
   import SelectShell from '$lib/components/shared/SelectShell.svelte';
+  import {
+    SIDEBAR_DEFAULT_WIDTH,
+    SIDEBAR_DESKTOP_BREAKPOINT,
+    SIDEBAR_MIN_WIDTH,
+    SIDEBAR_WIDTH_STORAGE_KEY,
+    clampSidebarWidth,
+    getSidebarEffectiveMaxWidth,
+    isDesktopSidebarViewport,
+    parseStoredSidebarWidth,
+    resolveSidebarWidth,
+  } from './sidebarResize';
   import { ChevronRight, Clock, FileText, Folder, FolderPlus, Hash, Home, Layers, Lock, MoreHorizontal, Plus, RefreshCw, Star, Unlock, X } from '@lucide/svelte';
 
   interface Props {
@@ -326,80 +337,119 @@
     handleOpenTagView(tag);
   }
 
-  // Sidebar resize.
-  // Default width tracks viewport: on tablet/smaller the sidebar floats as
-  // an overlay drawer (handled in CSS via `position: absolute`), so we
-  // narrow the default at those sizes so the drawer doesn't dominate the
-  // screen when it opens.
-  const MIN_WIDTH = 180;
-  const MAX_WIDTH = 400;
-  const DEFAULT_WIDTH = 260;
-  const OVERLAY_BREAKPOINT = 880;
-
-  function pickDefaultWidth() {
-    if (typeof window === 'undefined') return DEFAULT_WIDTH;
-    const vw = window.innerWidth;
-    if (vw < OVERLAY_BREAKPOINT) {
-      // Drawer mode — never wider than ~80% of viewport so the user can
-      // see what they're navigating to.
-      return Math.min(300, Math.max(MIN_WIDTH, Math.floor(vw * 0.8)));
-    }
-    if (vw < 1100) return 232;
-    return DEFAULT_WIDTH;
+  function getViewportWidth() {
+    return typeof window === 'undefined' ? SIDEBAR_DESKTOP_BREAKPOINT : window.innerWidth;
   }
 
-  let sidebarWidth = $state(pickDefaultWidth());
-  let isResizing = $state(false);
-  let sidebarElement: HTMLElement | undefined = $state(undefined);
+  function readPreferredSidebarWidth(viewportWidth: number): number | null {
+    if (typeof localStorage === 'undefined') return null;
+    try {
+      return parseStoredSidebarWidth(localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY), viewportWidth);
+    } catch {
+      return null;
+    }
+  }
 
-  // Track viewport size so the inline width re-clamps automatically when
-  // crossing breakpoints. Without this the desktop width sticks around
-  // when the user shrinks the window below the overlay breakpoint and
-  // the drawer ends up covering ~75% of a phone screen.
+  function persistPreferredSidebarWidth(width: number): void {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(width));
+    } catch {
+      // Local layout preference only; ignore storage quota/private-mode errors.
+    }
+  }
+
+  const initialViewportWidth = getViewportWidth();
+  const initialPreferredSidebarWidth = readPreferredSidebarWidth(initialViewportWidth);
+  let viewportWidth = $state(initialViewportWidth);
+  let preferredSidebarWidth = $state<number | null>(initialPreferredSidebarWidth);
+  let sidebarWidth = $state(resolveSidebarWidth(initialViewportWidth, initialPreferredSidebarWidth));
+  let isResizing = $state(false);
+  let resizeStartX = 0;
+  let resizeStartWidth = 0;
+
+  const isDesktopViewport = $derived(isDesktopSidebarViewport(viewportWidth));
+  const sidebarResizeMax = $derived(getSidebarEffectiveMaxWidth(viewportWidth));
+  const sidebarWidthStyle = $derived(visible ? `${sidebarWidth}px` : '0px');
+
   $effect(() => {
     if (typeof window === 'undefined') return;
+
     const handle = () => {
-      if (isResizing) return;
-      sidebarWidth = pickDefaultWidth();
+      viewportWidth = window.innerWidth;
+      sidebarWidth = resolveSidebarWidth(viewportWidth, preferredSidebarWidth);
     };
+
+    handle();
     window.addEventListener('resize', handle);
     return () => window.removeEventListener('resize', handle);
   });
 
-  function handleResizeStart(e: MouseEvent) {
-    e.preventDefault();
-    isResizing = true;
-    const startX = e.clientX;
-    const startWidth = sidebarWidth;
-
-    function onMouseMove(e: MouseEvent) {
-      const delta = e.clientX - startX;
-      const newWidth = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, startWidth + delta));
-      sidebarWidth = newWidth;
-      if (sidebarElement) {
-        sidebarElement.style.width = `${newWidth}px`;
-      }
+  function applySidebarWidth(nextWidth: number, persist = false): void {
+    if (!isDesktopSidebarViewport(viewportWidth)) return;
+    const clamped = clampSidebarWidth(nextWidth, viewportWidth);
+    sidebarWidth = clamped;
+    if (persist) {
+      preferredSidebarWidth = clamped;
+      persistPreferredSidebarWidth(clamped);
     }
-
-    function onMouseUp() {
-      isResizing = false;
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    }
-
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', onMouseUp);
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
   }
 
-  function handleResizeDoubleClick() {
-    sidebarWidth = pickDefaultWidth();
-    if (sidebarElement) {
-      sidebarElement.style.width = `${sidebarWidth}px`;
+  function resetSidebarWidth(): void {
+    applySidebarWidth(SIDEBAR_DEFAULT_WIDTH, true);
+  }
+
+  function setResizeDocumentState(active: boolean): void {
+    if (typeof document === 'undefined') return;
+    document.body.style.cursor = active ? 'col-resize' : '';
+    document.body.style.userSelect = active ? 'none' : '';
+  }
+
+  function handleResizePointerDown(event: PointerEvent): void {
+    if (!isDesktopViewport) return;
+    event.preventDefault();
+    isResizing = true;
+    resizeStartX = event.clientX;
+    resizeStartWidth = sidebarWidth;
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    setResizeDocumentState(true);
+  }
+
+  function handleResizePointerMove(event: PointerEvent): void {
+    if (!isResizing) return;
+    applySidebarWidth(resizeStartWidth + event.clientX - resizeStartX);
+  }
+
+  function finishResize(event: PointerEvent): void {
+    if (!isResizing) return;
+    isResizing = false;
+    setResizeDocumentState(false);
+    preferredSidebarWidth = sidebarWidth;
+    persistPreferredSidebarWidth(sidebarWidth);
+    const target = event.currentTarget as HTMLElement;
+    if (target.hasPointerCapture(event.pointerId)) {
+      target.releasePointerCapture(event.pointerId);
     }
+  }
+
+  function handleResizeKeydown(event: KeyboardEvent): void {
+    if (!isDesktopViewport) return;
+    const step = event.shiftKey ? 40 : 10;
+    let nextWidth: number | null = null;
+
+    if (event.key === 'ArrowLeft') nextWidth = sidebarWidth - step;
+    else if (event.key === 'ArrowRight') nextWidth = sidebarWidth + step;
+    else if (event.key === 'Home') nextWidth = SIDEBAR_MIN_WIDTH;
+    else if (event.key === 'End') nextWidth = sidebarResizeMax;
+    else if (event.key === 'Enter') {
+      event.preventDefault();
+      resetSidebarWidth();
+      return;
+    }
+
+    if (nextWidth === null) return;
+    event.preventDefault();
+    applySidebarWidth(nextWidth, true);
   }
 
   function handleWorkspaceSelect(event: Event) {
@@ -410,12 +460,12 @@
 </script>
 
 <nav
-  bind:this={sidebarElement}
   class="sidebar"
   class:sidebar-visible={visible}
   class:sidebar-hidden={!visible}
+  class:sidebar-resizing={isResizing}
   aria-label="Notes navigation"
-  style="width: {visible ? sidebarWidth + 'px' : '0px'};"
+  style="width: {sidebarWidthStyle};"
 >
   <!-- Workspace Identity -->
   <div class="workspace-identity">
@@ -913,13 +963,28 @@
     </button>
   </div>
 
-  <!-- Resize handle -->
-  {#if visible}
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <!-- Resize rail -->
+  {#if visible && isDesktopViewport}
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div
-      class="resize-handle"
-      onmousedown={handleResizeStart}
-      ondblclick={handleResizeDoubleClick}
+      class="sidebar-resize-rail"
+      class:dragging={isResizing}
+      role="separator"
+      aria-label="Resize notes sidebar"
+      aria-orientation="vertical"
+      aria-valuemin={SIDEBAR_MIN_WIDTH}
+      aria-valuemax={sidebarResizeMax}
+      aria-valuenow={Math.round(sidebarWidth)}
+      aria-valuetext={`${Math.round(sidebarWidth)} pixels`}
+      tabindex="0"
+      title="Resize notes sidebar"
+      onpointerdown={handleResizePointerDown}
+      onpointermove={handleResizePointerMove}
+      onpointerup={finishResize}
+      onpointercancel={finishResize}
+      onkeydown={handleResizeKeydown}
+      ondblclick={resetSidebarWidth}
     ></div>
   {/if}
 
@@ -985,6 +1050,10 @@
     user-select: none;
     -webkit-user-select: none;
     transition: width 280ms var(--ease-out-soft);
+  }
+
+  .sidebar-resizing {
+    transition: none;
   }
 
   .sidebar-visible {
@@ -1881,36 +1950,49 @@
     box-shadow: 0 0 0 2px var(--accent-light);
   }
 
-/* Resize handle */
-  .resize-handle {
+  /* Resize rail */
+  .sidebar-resize-rail {
     position: absolute;
     top: 0;
-    right: -3px;
-    width: 6px;
+    right: 0;
+    width: 8px;
     height: 100%;
     cursor: col-resize;
     z-index: 10;
+    padding: 0;
+    border: 0;
     background: transparent;
+    touch-action: none;
+    outline: none;
   }
 
-  .resize-handle::after {
+  .sidebar-resize-rail::before {
     content: '';
     position: absolute;
     top: 0;
-    left: 2px;
-    width: 2px;
+    bottom: 0;
+    right: 0;
+    width: 1px;
+    background: var(--border-faint);
+  }
+
+  .sidebar-resize-rail::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    right: 0;
+    width: 3px;
     height: 100%;
-    background: transparent;
-    transition: background var(--transition-fast) 120ms;
+    background: var(--accent-primary);
+    box-shadow: 0 0 0 3px var(--accent-glow);
+    opacity: 0;
+    transition: opacity var(--transition-fast);
   }
 
-  .resize-handle:hover::after {
-    background: var(--accent-primary);
-    opacity: 0.45;
-  }
-
-  .resize-handle:active::after {
-    background: var(--accent-primary);
-    opacity: 0.7;
+  .sidebar-resize-rail:hover::after,
+  .sidebar-resize-rail:focus-visible::after,
+  .sidebar-resize-rail.dragging::after {
+    opacity: 0.75;
   }
 </style>
