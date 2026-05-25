@@ -52,6 +52,20 @@ export interface TagGroup {
 }
 
 /**
+ * A note available in the app-managed Trash.
+ */
+export interface TrashedNoteItem {
+  /** Stable trash entry ID */
+  id: string;
+  /** Original relative note path before deletion */
+  originalPath: string;
+  /** Note title at deletion time */
+  title: string;
+  /** Timestamp when the note was moved to Trash */
+  deletedAt: Date;
+}
+
+/**
  * Notes list state exposed to the UI.
  */
 export interface NotesState {
@@ -122,6 +136,30 @@ export interface NotesService {
    * @returns Result indicating success or failure
    */
   deleteNote(path: string): Promise<Result<void, Error>>;
+
+  /**
+   * Permanently delete an active note. Intended for internal cleanup paths
+   * that have already written a replacement, not for user-facing deletion.
+   */
+  deleteNotePermanently(path: string): Promise<Result<void, Error>>;
+
+  /**
+   * List notes that are currently in recoverable Trash.
+   */
+  listTrashedNotes(): Promise<Result<TrashedNoteItem[], Error>>;
+
+  /**
+   * Restore a note from recoverable Trash.
+   * @param trashId - Stable trash entry ID
+   * @returns The restored document
+   */
+  restoreNoteFromTrash(trashId: string): Promise<Result<Document, Error>>;
+
+  /**
+   * Permanently remove a recoverable Trash entry.
+   * @param trashId - Stable trash entry ID
+   */
+  deleteTrashedNote(trashId: string): Promise<Result<void, Error>>;
 
   /**
    * Rename a note.

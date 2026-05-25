@@ -11,6 +11,7 @@ import {
   type NoteWorkspaceLayoutState,
   type NoteWorkspaceTab,
 } from '$lib/domain';
+import { events } from '$lib/events';
 
 const STORAGE_KEY = 'void:note-workspace-layout:v1';
 
@@ -415,14 +416,28 @@ class NoteWorkspaceStore {
   highlightedPaneId = $state<string | null>(null);
   private highlightTimeout: ReturnType<typeof setTimeout> | null = null;
   private loaded = false;
+  private eventsRegistered = false;
+
+  constructor() {
+    this.registerEventHandlers();
+  }
 
   init(): void {
+    this.registerEventHandlers();
     if (this.loaded) return;
     this.loaded = true;
     if (typeof localStorage === 'undefined') return;
     const state = parseStoredState(localStorage.getItem(STORAGE_KEY));
     this.tabs = state.tabs;
     this.activeTabId = state.activeTabId;
+  }
+
+  private registerEventHandlers(): void {
+    if (this.eventsRegistered) return;
+    this.eventsRegistered = true;
+    events.on('note:deleted', ({ path }) => {
+      this.removeNotePath(path);
+    });
   }
 
   get activeTab(): NoteWorkspaceTab | null {

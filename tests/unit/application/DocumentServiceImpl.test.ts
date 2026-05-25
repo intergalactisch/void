@@ -74,6 +74,22 @@ function createMockDocumentPort(): DocumentPort {
       documents.delete(path);
       return ok(undefined);
     }),
+    trash: vi.fn().mockImplementation(async (path: string) => {
+      documents.delete(path);
+      return ok({
+        id: 'trash-1',
+        originalPath: path,
+        title: path.replace(/\.md$/i, ''),
+        deletedAt: new Date(),
+      });
+    }),
+    listTrash: vi.fn().mockResolvedValue(ok([])),
+    restoreFromTrash: vi.fn().mockImplementation(async (id: string) => ok({
+      path: 'restored.md',
+      meta: createMeta(`Restored ${id}`),
+      blocks: [],
+    })),
+    deleteFromTrash: vi.fn().mockResolvedValue(ok(undefined)),
     list: vi.fn().mockResolvedValue(ok([])),
     listFolders: vi.fn().mockResolvedValue(ok([])),
     exists: vi.fn().mockImplementation((path: string) =>
@@ -118,6 +134,10 @@ function createMockNotesService(docPort: DocumentPort): NotesService {
     }),
     createQuickNote: vi.fn().mockResolvedValue(ok({ path: 'quick.md', meta: createMeta('Quick'), blocks: [] })),
     deleteNote: vi.fn().mockResolvedValue(ok(undefined)),
+    deleteNotePermanently: vi.fn().mockResolvedValue(ok(undefined)),
+    listTrashedNotes: vi.fn().mockResolvedValue(ok([])),
+    restoreNoteFromTrash: vi.fn().mockResolvedValue(ok({ path: 'restored.md', meta: createMeta('Restored'), blocks: [] })),
+    deleteTrashedNote: vi.fn().mockResolvedValue(ok(undefined)),
     renameNote: vi.fn().mockResolvedValue(ok('renamed.md')),
     searchNotes: vi.fn().mockResolvedValue(ok([])),
     selectNote: vi.fn(),

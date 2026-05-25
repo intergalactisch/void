@@ -20,6 +20,36 @@ function createMockDocumentPort(existingPaths: Set<string> = new Set()): Documen
     load: vi.fn(),
     save: vi.fn(),
     delete: vi.fn(),
+    trash: vi.fn().mockImplementation((path: string) => {
+      existingPaths.delete(path);
+      return Promise.resolve(ok({
+        id: 'trash-1',
+        originalPath: path,
+        title: path.replace(/\.md$/i, ''),
+        deletedAt: new Date(),
+      }));
+    }),
+    listTrash: vi.fn().mockResolvedValue(ok([])),
+    restoreFromTrash: vi.fn().mockImplementation((id: string) => Promise.resolve(ok({
+      path: 'restored.md',
+      meta: {
+        id,
+        title: 'Restored',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        tags: [],
+        category: null,
+        color: null,
+        pinned: false,
+        status: 'draft',
+        intent: 'general',
+        aiTouches: 0,
+        custom: {},
+      },
+      blocks: [],
+      isDirty: false,
+    }))),
+    deleteFromTrash: vi.fn().mockResolvedValue(ok(undefined)),
     list: vi.fn().mockResolvedValue(ok([])),
     listFolders: vi.fn().mockResolvedValue(ok([])),
     exists: vi.fn().mockImplementation((path: string) => Promise.resolve(ok(existingPaths.has(path)))),
@@ -338,6 +368,78 @@ describe('NotesServiceImpl', () => {
         // Subscription should have received the selection
         expect(stateUpdates).toContain(result.value.path);
       }
+    });
+  });
+
+  describe('trash operations', () => {
+    it('moves deleted notes to recoverable Trash', async () => {
+      const existingPaths = new Set(['old-note.md']);
+      const mockPort = createMockDocumentPort(existingPaths);
+      const service = new NotesServiceImpl(mockPort);
+
+      const result = await service.deleteNote('old-note.md');
+
+      expect(result.ok).toBe(true);
+      expect(mockPort.trash).toHaveBeenCalledWith('old-note.md');
+      expect(mockPort.delete).not.toHaveBeenCalled();
+    });
+
+    it('lists trashed notes through the document port', async () => {
+      const deletedAt = new Date('2026-05-25T10:00:00.000Z');
+      const mockPort = createMockDocumentPort();
+      mockPort.listTrash = vi.fn().mockResolvedValue(ok([
+        {
+          id: 'trash-1',
+          originalPath: 'old-note.md',
+          title: 'Old Note',
+          deletedAt,
+        },
+      ]));
+      const service = new NotesServiceImpl(mockPort);
+
+      const result = await service.listTrashedNotes();
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value).toEqual([
+        {
+          id: 'trash-1',
+          originalPath: 'old-note.md',
+          title: 'Old Note',
+          deletedAt,
+        },
+      ]);
+    });
+
+    it('restores a trashed note and refreshes the tree', async () => {
+      const mockPort = createMockDocumentPort();
+      const restored: Document = {
+        path: 'old-note.md',
+        meta: {
+          id: 'restored',
+          title: 'Old Note',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          tags: [],
+          category: null,
+          color: null,
+          pinned: false,
+          status: 'draft',
+          intent: 'general',
+          aiTouches: 0,
+          custom: {},
+        },
+        blocks: [],
+        isDirty: false,
+      };
+      mockPort.restoreFromTrash = vi.fn().mockResolvedValue(ok(restored));
+      const service = new NotesServiceImpl(mockPort);
+
+      const result = await service.restoreNoteFromTrash('trash-1');
+
+      expect(result.ok).toBe(true);
+      expect(mockPort.restoreFromTrash).toHaveBeenCalledWith('trash-1');
+      expect(mockPort.list).toHaveBeenCalled();
     });
   });
 

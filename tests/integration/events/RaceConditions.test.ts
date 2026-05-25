@@ -70,6 +70,37 @@ function createSlowMockDocumentPort(
       return ok(undefined);
     }),
 
+    trash: vi.fn().mockImplementation(async (path: string) => {
+      operationLog.push(`trash:start:${path}`);
+      await new Promise((r) => setTimeout(r, delays.delete));
+      documents.delete(path);
+      existingPaths.delete(path);
+      operationLog.push(`trash:end:${path}`);
+      return ok({
+        id: 'trash-1',
+        originalPath: path,
+        title: path.replace(/\.md$/i, ''),
+        deletedAt: new Date(),
+      });
+    }),
+
+    listTrash: vi.fn().mockResolvedValue(ok([])),
+
+    restoreFromTrash: vi.fn().mockImplementation(async (id: string) => {
+      const path = 'restored.md';
+      existingPaths.add(path);
+      const doc: Document = {
+        path,
+        meta: createMeta('Restored'),
+        blocks: [],
+      };
+      documents.set(path, doc);
+      void id;
+      return ok(doc);
+    }),
+
+    deleteFromTrash: vi.fn().mockResolvedValue(ok(undefined)),
+
     list: vi.fn().mockResolvedValue(ok([])),
     listFolders: vi.fn().mockResolvedValue(ok([])),
 
@@ -335,7 +366,7 @@ describe('Race Conditions', () => {
 
       // Verify order: open should complete before delete starts
       const openEndIndex = operationLog.indexOf('load:end:test.md');
-      const deleteStartIndex = operationLog.indexOf('delete:start:test.md');
+      const deleteStartIndex = operationLog.indexOf('trash:start:test.md');
 
       expect(openEndIndex).toBeLessThan(deleteStartIndex);
     });

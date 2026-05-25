@@ -51,6 +51,29 @@ function createMockDocumentPort(existingPaths: Set<string> = new Set()): Documen
       existingPaths.delete(path);
       return ok(undefined);
     }),
+    trash: vi.fn().mockImplementation(async (path: string) => {
+      documents.delete(path);
+      existingPaths.delete(path);
+      return ok({
+        id: 'trash-1',
+        originalPath: path,
+        title: path.replace(/\.md$/i, ''),
+        deletedAt: new Date(),
+      });
+    }),
+    listTrash: vi.fn().mockResolvedValue(ok([])),
+    restoreFromTrash: vi.fn().mockImplementation(async (id: string) => {
+      const doc: Document = {
+        path: 'restored.md',
+        meta: createMeta('Restored'),
+        blocks: [],
+      };
+      documents.set(doc.path, doc);
+      existingPaths.add(doc.path);
+      void id;
+      return ok(doc);
+    }),
+    deleteFromTrash: vi.fn().mockResolvedValue(ok(undefined)),
     list: vi.fn().mockResolvedValue(ok([])),
     listFolders: vi.fn().mockResolvedValue(ok([])),
     exists: vi.fn().mockImplementation((path: string) =>
@@ -149,7 +172,17 @@ describe('CommandBus', () => {
       const result = await bus.deleteNote('to-delete.md');
 
       expect(result.success).toBe(true);
-      expect(mockPort.delete).toHaveBeenCalledWith('to-delete.md');
+      expect(mockPort.trash).toHaveBeenCalledWith('to-delete.md');
+    });
+
+    it('restores a note from trash', async () => {
+      const result = await bus.restoreNoteFromTrash('trash-1');
+
+      expect(result.success).toBe(true);
+      expect(mockPort.restoreFromTrash).toHaveBeenCalledWith('trash-1');
+      if (result.success) {
+        expect(result.value.path).toBe('restored.md');
+      }
     });
   });
 

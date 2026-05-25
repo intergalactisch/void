@@ -292,6 +292,7 @@ export const DEFAULT_SYNC_ARTIFACT_POLICY: SyncArtifactPolicy = {
   includePatterns: [
     '*.md',
     '**/*.md',
+    '.trash/**',
     '.void/provenance/**',
     '.void/lineage/**',
     '.void/conversations/**',

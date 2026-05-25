@@ -116,6 +116,28 @@ function createMockNotesService(): NotesService & {
     }),
     saveDocument: vi.fn().mockResolvedValue(ok(undefined)),
     deleteNote: vi.fn().mockResolvedValue(ok(undefined)),
+    deleteNotePermanently: vi.fn().mockResolvedValue(ok(undefined)),
+    listTrashedNotes: vi.fn().mockResolvedValue(ok([])),
+    restoreNoteFromTrash: vi.fn().mockImplementation(async (trashId: string) => ok({
+      meta: {
+        id: `restored-${trashId}`,
+        title: 'Restored Note',
+        tags: [],
+        category: null,
+        color: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        pinned: false,
+        status: 'draft',
+        intent: 'general',
+        aiTouches: 0,
+        custom: {},
+      },
+      path: 'restored-note.md',
+      blocks: [],
+      isDirty: false,
+    })),
+    deleteTrashedNote: vi.fn().mockResolvedValue(ok(undefined)),
     renameNote: vi.fn().mockImplementation(async (_path: string, newTitle: string) => {
       return ok(`${newTitle.toLowerCase().replace(/\s+/g, '-')}.md`);
     }),
@@ -872,6 +894,80 @@ describe('Notes Store Integration', () => {
       await expect(notesStore.deleteNote('note.md')).rejects.toThrow(
         'NotesStore not initialized'
       );
+    });
+  });
+
+  describe('trash operations', () => {
+    it('loads recoverable Trash items', async () => {
+      const deletedAt = new Date('2026-05-25T10:00:00.000Z');
+      mockService.listTrashedNotes = vi.fn().mockResolvedValue(ok([
+        {
+          id: 'trash-1',
+          originalPath: 'note-1.md',
+          title: 'Note 1',
+          deletedAt,
+        },
+      ]));
+      notesStore.init(mockService);
+
+      const result = await notesStore.loadTrashedNotes();
+
+      expect(result).toHaveLength(1);
+      expect(notesStore.trashedNotes[0]?.originalPath).toBe('note-1.md');
+      expect(mockService.listTrashedNotes).toHaveBeenCalled();
+    });
+
+    it('restores a trashed note and selects it', async () => {
+      const restored: Document = {
+        meta: {
+          id: 'restored',
+          title: 'Restored',
+          tags: [],
+          category: null,
+          color: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          pinned: false,
+          status: 'draft',
+          intent: 'general',
+          aiTouches: 0,
+          custom: {},
+        },
+        path: 'restored.md',
+        blocks: [],
+        isDirty: false,
+      };
+      mockService.restoreNoteFromTrash = vi.fn().mockResolvedValue(ok(restored));
+      notesStore.init(mockService);
+      notesStore.trashedNotes = [{
+        id: 'trash-1',
+        originalPath: 'old.md',
+        title: 'Old',
+        deletedAt: new Date(),
+      }];
+
+      const result = await notesStore.restoreTrashedNote('trash-1');
+
+      expect(result?.path).toBe('restored.md');
+      expect(mockService.restoreNoteFromTrash).toHaveBeenCalledWith('trash-1');
+      expect(mockService.selectNote).toHaveBeenCalledWith('restored.md');
+      expect(notesStore.trashedNotes.some((note) => note.id === 'trash-1')).toBe(false);
+    });
+
+    it('permanently deletes a trashed note entry', async () => {
+      notesStore.init(mockService);
+      notesStore.trashedNotes = [{
+        id: 'trash-1',
+        originalPath: 'old.md',
+        title: 'Old',
+        deletedAt: new Date(),
+      }];
+
+      const result = await notesStore.deleteTrashedNote('trash-1');
+
+      expect(result).toBe(true);
+      expect(mockService.deleteTrashedNote).toHaveBeenCalledWith('trash-1');
+      expect(notesStore.trashedNotes).toHaveLength(0);
     });
   });
 

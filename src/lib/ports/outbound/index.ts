@@ -43,7 +43,12 @@ export type {
   EditorNotesProvider,
 } from './EditorPortFactory';
 export type { ExternalNavigationPort } from './ExternalNavigationPort';
-export type { DocumentPort, DocumentListItem, DocumentFolderItem } from './DocumentPort';
+export type {
+  DocumentPort,
+  DocumentListItem,
+  DocumentFolderItem,
+  TrashedDocumentListItem,
+} from './DocumentPort';
 export type {
   AIProviderPort,
   AIRewriteRequest,

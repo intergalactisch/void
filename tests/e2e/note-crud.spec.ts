@@ -22,7 +22,7 @@ test.describe('Note CRUD', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/');
     // Wait for app to be ready
-    await expect(page.locator('main')).toBeVisible();
+    await expect(page.locator('main')).toBeVisible({ timeout: 15000 });
   });
 
   test('creates a quick note with the sidebar button', async ({ page }) => {
@@ -124,5 +124,31 @@ test.describe('Note CRUD', () => {
     await dispatchPaste(page, 'This should not create a new note', '.ProseMirror');
 
     await expect.poll(() => page.getByRole('treeitem').count(), { timeout: 500 }).toBe(noteCount);
+  });
+
+  test('moves a deleted note to Trash and restores it', async ({ page }) => {
+    const initialCount = await page.getByRole('treeitem').count();
+
+    await page
+      .getByRole('navigation', { name: 'Notes navigation' })
+      .getByRole('button', { name: 'Create new note' })
+      .click();
+    await expect(page.locator('.ProseMirror')).toBeVisible();
+    await expect.poll(() => page.getByRole('treeitem').count()).toBe(initialCount + 1);
+
+    await page.getByRole('button', { name: 'Note actions' }).click();
+    await page.getByRole('menuitem', { name: /move to trash/i }).click();
+    await page.getByRole('button', { name: /move to trash/i }).click();
+
+    await expect.poll(() => page.getByRole('treeitem').count()).toBe(initialCount);
+
+    await page.getByRole('link', { name: 'Trash' }).click();
+    await expect(page.getByRole('heading', { name: 'Trash', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: /^restore$/i })).toBeVisible();
+    await page.getByRole('button', { name: /^restore$/i }).click();
+
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.locator('.ProseMirror')).toBeVisible();
+    await expect.poll(() => page.getByRole('treeitem').count()).toBe(initialCount + 1);
   });
 });

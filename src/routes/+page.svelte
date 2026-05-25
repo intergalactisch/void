@@ -404,7 +404,7 @@
       const nextPath = noteWorkspaceStore.removeNotePath(note.path);
       uiStore.clearPendingNoteDelete();
       error = null;
-      toastStore.info('Note deleted');
+      toastStore.info('Note moved to Trash');
       if (nextPath) {
         notesStore.selectNote(nextPath);
       }
@@ -1444,7 +1444,7 @@
                   onclick={requestCurrentNoteDeleteFromMenu}
                 >
                   <Trash2 size={14} strokeWidth={1.7} aria-hidden="true" />
-                  <span>Delete note</span>
+                  <span>Move to Trash</span>
                 </button>
               </div>
             {/if}
@@ -1642,9 +1642,9 @@
         aria-describedby="delete-confirm-description"
       >
         <div class="delete-confirm-header">
-          <h2 id="delete-confirm-title" class="delete-confirm-title">Delete note?</h2>
+          <h2 id="delete-confirm-title" class="delete-confirm-title">Move note to Trash?</h2>
           <p id="delete-confirm-description" class="delete-confirm-description">
-            This removes “{pendingNoteDelete.title}” from disk. This action cannot be undone.
+            This moves "{pendingNoteDelete.title}" to Trash. You can restore it later.
           </p>
         </div>
         <div class="delete-confirm-actions">
@@ -1663,7 +1663,7 @@
             onclick={confirmDeleteNote}
             disabled={deleteInProgress}
           >
-            {deleteInProgress ? 'Deleting…' : 'Delete'}
+            {deleteInProgress ? 'Moving...' : 'Move to Trash'}
           </button>
         </div>
       </div>

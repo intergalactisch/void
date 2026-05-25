@@ -178,6 +178,93 @@ describe('MarkdownAdapter', () => {
     });
   });
 
+  describe('Trash', () => {
+    it('moves a note out of active listing and into recoverable Trash', async () => {
+      fs.seed({
+        '/notes/to-delete.md': '---\ntitle: To Delete\n---\n# To Delete',
+      });
+
+      const trashed = await adapter.trash('to-delete.md');
+      expect(trashed.ok).toBe(true);
+      if (!trashed.ok) return;
+
+      const active = await adapter.list();
+      expect(active.ok).toBe(true);
+      if (active.ok) expect(active.value.map((item) => item.path)).not.toContain('to-delete.md');
+
+      const trash = await adapter.listTrash();
+      expect(trash.ok).toBe(true);
+      if (!trash.ok) return;
+      expect(trash.value).toHaveLength(1);
+      expect(trash.value[0]).toMatchObject({
+        id: trashed.value.id,
+        originalPath: 'to-delete.md',
+        title: 'To Delete',
+      });
+    });
+
+    it('restores a trashed note to its original path', async () => {
+      fs.seed({
+        '/notes/to-restore.md': '---\ntitle: To Restore\n---\n# To Restore',
+      });
+      const trashed = await adapter.trash('to-restore.md');
+      expect(trashed.ok).toBe(true);
+      if (!trashed.ok) return;
+
+      const restored = await adapter.restoreFromTrash(trashed.value.id);
+
+      expect(restored.ok).toBe(true);
+      if (!restored.ok) return;
+      expect(restored.value.path).toBe('to-restore.md');
+      expect(restored.value.meta.title).toBe('To Restore');
+      const trash = await adapter.listTrash();
+      expect(trash.ok).toBe(true);
+      if (trash.ok) expect(trash.value).toHaveLength(0);
+    });
+
+    it('restores to a unique sibling path when the original path is occupied', async () => {
+      fs.seed({
+        '/notes/collision.md': '---\ntitle: Original\n---\n# Original',
+      });
+      const trashed = await adapter.trash('collision.md');
+      expect(trashed.ok).toBe(true);
+      if (!trashed.ok) return;
+      fs.seed({
+        '/notes/collision.md': '---\ntitle: Replacement\n---\n# Replacement',
+      });
+
+      const restored = await adapter.restoreFromTrash(trashed.value.id);
+
+      expect(restored.ok).toBe(true);
+      if (!restored.ok) return;
+      expect(restored.value.path).toBe('collision (restored).md');
+      const active = await adapter.list();
+      expect(active.ok).toBe(true);
+      if (active.ok) {
+        expect(active.value.map((item) => item.path)).toEqual(
+          expect.arrayContaining(['collision.md', 'collision (restored).md'])
+        );
+      }
+    });
+
+    it('permanently deletes a trash entry', async () => {
+      fs.seed({
+        '/notes/doomed.md': '---\ntitle: Doomed\n---\n# Doomed',
+      });
+      const trashed = await adapter.trash('doomed.md');
+      expect(trashed.ok).toBe(true);
+      if (!trashed.ok) return;
+
+      const deleted = await adapter.deleteFromTrash(trashed.value.id);
+
+      expect(deleted.ok).toBe(true);
+      const trash = await adapter.listTrash();
+      expect(trash.ok).toBe(true);
+      if (trash.ok) expect(trash.value).toHaveLength(0);
+      expect(fs.getPaths().some((path) => path.includes(trashed.value.id))).toBe(false);
+    });
+  });
+
   describe('listFolders()', () => {
     it('returns empty folders and nested folders as app-relative paths', async () => {
       await fs.createDirectory('/notes/Test');

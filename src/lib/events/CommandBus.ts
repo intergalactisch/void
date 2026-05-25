@@ -55,7 +55,8 @@ export class CommandBus {
   /** Known command types for hasHandler() */
   private static readonly KNOWN_TYPES = new Set([
     'note:create', 'note:create-quick', 'note:delete',
-    'note:rename', 'note:save', 'note:open', 'note:close',
+    'note:restore', 'note:delete-forever', 'note:rename',
+    'note:save', 'note:open', 'note:close',
   ]);
 
   constructor(documentPort: DocumentPort, options: CommandBusOptions = {}) {
@@ -122,13 +123,45 @@ export class CommandBus {
    */
   async deleteNote(path: string): Promise<CommandResult<void>> {
     return this.execute('note:delete', path, async (commandId) => {
-      const result = await this.documentPort.delete(path);
+      const result = await this.documentPort.trash(path);
       if (!result.ok) return commandFailure(commandId, result.error);
 
       if (this.options.emitDomainEvents) {
         events.emit('note:deleted', { path, source: 'user' });
       }
 
+      return commandSuccess(commandId, undefined);
+    });
+  }
+
+  /**
+   * Restore a note from app-managed Trash.
+   */
+  async restoreNoteFromTrash(trashId: string): Promise<CommandResult<Document>> {
+    return this.execute('note:restore', trashId, async (commandId) => {
+      const result = await this.documentPort.restoreFromTrash(trashId);
+      if (!result.ok) return commandFailure(commandId, result.error);
+
+      if (this.options.emitDomainEvents) {
+        events.emit('note:restored', {
+          path: result.value.path,
+          document: result.value,
+          trashId,
+          source: 'user',
+        });
+      }
+
+      return commandSuccess(commandId, result.value);
+    });
+  }
+
+  /**
+   * Permanently delete a recoverable Trash entry.
+   */
+  async deleteTrashedNote(trashId: string): Promise<CommandResult<void>> {
+    return this.execute('note:delete-forever', trashId, async (commandId) => {
+      const result = await this.documentPort.deleteFromTrash(trashId);
+      if (!result.ok) return commandFailure(commandId, result.error);
       return commandSuccess(commandId, undefined);
     });
   }

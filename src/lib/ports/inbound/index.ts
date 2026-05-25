@@ -94,6 +94,7 @@ export type {
   NotesState,
   NotesListItem,
   TagGroup,
+  TrashedNoteItem,
 } from './NotesService';
 
 // Document service (headless content API for AI tools)

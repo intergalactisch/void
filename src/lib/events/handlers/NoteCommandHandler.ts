@@ -121,8 +121,8 @@ export class NoteCommandHandler {
   async handleDelete(command: NoteDeleteCommand): Promise<CommandResult<void>> {
     const { path } = command.payload;
 
-    // Execute: delete the document
-    const result = await this.documentPort.delete(path);
+    // Execute: move the document into recoverable Trash.
+    const result = await this.documentPort.trash(path);
     if (!result.ok) {
       return commandFailure(command.id, result.error);
     }

@@ -42,7 +42,7 @@
     },
     trash: {
       title: 'Trash is empty',
-      subtitle: 'Deleted notes will appear here',
+      subtitle: 'Deleted notes will appear here.',
       hasAction: false,
     },
     welcome: {

@@ -8,8 +8,8 @@ interface DeleteArgs {
 
 export default defineTool<DeleteArgs, { success: boolean }>({
   id: 'note:delete',
-  name: 'Delete Note',
-  description: 'Delete a note permanently. This action requires confirmation.',
+  name: 'Move Note to Trash',
+  description: 'Move a note to recoverable Trash. This action requires confirmation.',
   category: 'note',
 
   args: {

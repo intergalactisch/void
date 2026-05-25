@@ -77,6 +77,17 @@ export type NoteDeletedEvent = DomainEvent<
   }
 >;
 
+/** A note was restored from Trash */
+export type NoteRestoredEvent = DomainEvent<
+  'note:restored',
+  {
+    path: string;
+    document: Document;
+    trashId: string;
+    source: 'user' | 'ai' | 'system';
+  }
+>;
+
 /** A note was renamed */
 export type NoteRenamedEvent = DomainEvent<
   'note:renamed',
@@ -149,6 +160,7 @@ export type NoteEvent =
   | NoteCreatedEvent
   | NoteSavedEvent
   | NoteDeletedEvent
+  | NoteRestoredEvent
   | NoteRenamedEvent
   | NoteOpenedEvent
   | NoteClosedEvent;
@@ -174,6 +186,7 @@ export type DomainEventMap = {
   'note:created': NoteCreatedEvent['payload'];
   'note:saved': NoteSavedEvent['payload'];
   'note:deleted': NoteDeletedEvent['payload'];
+  'note:restored': NoteRestoredEvent['payload'];
   'note:renamed': NoteRenamedEvent['payload'];
   'note:opened': NoteOpenedEvent['payload'];
   'note:closed': NoteClosedEvent['payload'];

@@ -921,11 +921,11 @@ export function createGlobalCommands(): RegisteredCommand[] {
     },
     {
       id: 'note.deleteCurrent',
-      label: 'Delete Current Note',
+      label: 'Move Current Note to Trash',
       keywords: ['delete', 'remove', 'trash'],
       category: 'note',
       icon: 'trash',
-      description: 'Delete the currently open note',
+      description: 'Move the currently open note to recoverable Trash',
       execute: () => {
         const path = notesStore.selectedPath;
         const doc = editorStore.document;

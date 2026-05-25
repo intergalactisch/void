@@ -36,6 +36,21 @@ export interface DocumentFolderItem {
 }
 
 /**
+ * A recoverable document that has been moved out of active navigation and
+ * into the app-managed Trash.
+ */
+export interface TrashedDocumentListItem {
+  /** Stable trash entry ID */
+  id: string;
+  /** Original relative document path before deletion */
+  originalPath: string;
+  /** Document title at the time it was moved to Trash */
+  title: string;
+  /** Timestamp when the document was moved to Trash */
+  deletedAt: Date;
+}
+
+/**
  * Outbound port for document persistence operations.
  *
  * This interface is implemented by secondary adapters (e.g., MarkdownAdapter)
@@ -64,6 +79,32 @@ export interface DocumentPort {
    * @returns Result indicating success or failure
    */
   delete(path: string): Promise<Result<void, Error>>;
+
+  /**
+   * Move a document into app-managed recoverable Trash.
+   * @param path - Relative path to the document to trash
+   * @returns Metadata for the newly created trash entry
+   */
+  trash(path: string): Promise<Result<TrashedDocumentListItem, Error>>;
+
+  /**
+   * List recoverable trashed documents.
+   */
+  listTrash(): Promise<Result<TrashedDocumentListItem[], Error>>;
+
+  /**
+   * Restore a trashed document to its original path, or a unique sibling path
+   * if the original path is occupied.
+   * @param id - Trash entry ID
+   * @returns The restored document
+   */
+  restoreFromTrash(id: string): Promise<Result<Document, Error>>;
+
+  /**
+   * Permanently delete a trashed document entry.
+   * @param id - Trash entry ID
+   */
+  deleteFromTrash(id: string): Promise<Result<void, Error>>;
 
   /**
    * List all documents.

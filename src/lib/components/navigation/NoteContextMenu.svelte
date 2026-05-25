@@ -107,7 +107,7 @@
           { id: 'copy-path', label: 'Copy Path' },
           { id: 'copy-ref', label: 'Copy Ref' },
           { id: 'separator2', label: '' },
-          { id: 'delete', label: 'Delete', destructive: true },
+          { id: 'delete', label: 'Move to Trash', destructive: true },
         ]
   );
 

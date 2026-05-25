@@ -228,6 +228,7 @@ export type EventMap = {
   'note:created': { path: string; document: import('$lib/domain/entities/Document').Document; source: 'user' | 'ai' | 'system' };
   'note:saved': { path: string; savedAt: Date; source: 'user' | 'ai' | 'system' };
   'note:deleted': { path: string; source: 'user' | 'ai' | 'system' };
+  'note:restored': { path: string; document: import('$lib/domain/entities/Document').Document; trashId: string; source: 'user' | 'ai' | 'system' };
   'note:renamed': { oldPath: string; newPath: string; newTitle: string; source: 'user' | 'ai' | 'system' };
   'note:opened': { path: string; document: import('$lib/domain/entities/Document').Document };
   'note:closed': { path: string };

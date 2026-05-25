@@ -51,7 +51,7 @@ export default defineTool<MoveArgs, { success: boolean; newPath: string }>({
       throw new Error(`Failed to save moved note: ${saveResult.error.message}`);
     }
 
-    const deleteResult = await services.notes.deleteNote(noteId);
+    const deleteResult = await services.notes.deleteNotePermanently(noteId);
     if (!deleteResult.ok) {
       throw new Error(`Moved note to ${newPath}, but failed to remove original ${noteId}: ${deleteResult.error.message}`);
     }

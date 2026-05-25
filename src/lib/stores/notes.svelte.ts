@@ -25,6 +25,7 @@ import type {
   NotesState,
   SidebarPreferencesService,
   TagGroup,
+  TrashedNoteItem,
 } from '$lib/ports/inbound';
 import type { ActionHistoryService } from '$lib/ports/inbound/ActionHistoryService';
 import type { DocumentService } from '$lib/ports/inbound/DocumentService';
@@ -176,6 +177,7 @@ class NotesStore {
   // Reactive state
   items = $state<NotesListItem[]>([]);
   tagGroups = $state<TagGroup[]>([]);
+  trashedNotes = $state<TrashedNoteItem[]>([]);
   selectedPath = $state<string | null>(null);
   /**
    * Active tag detail view (rendered inline in the main app shell).
@@ -190,10 +192,12 @@ class NotesStore {
    */
   activeFolderPath = $state<string | null>(null);
   isLoading = $state(false);
+  trashLoading = $state(false);
   searchQuery = $state('');
   searchResults = $state<NotesListItem[]>([]);
   expandedFolders = $state<Set<string>>(new Set());
   error = $state<Error | null>(null);
+  trashError = $state<Error | null>(null);
 
   // Sidebar visibility
   sidebarVisible = $state(true);
@@ -711,20 +715,89 @@ class NotesStore {
     await this.#deleteSidebarPath(path, 'note');
     this.#forgetDeletedNote(path);
 
+    let trashUndoId: string | null = null;
+    const trashResult = await this.#service.listTrashedNotes();
+    if (trashResult.ok) {
+      this.trashedNotes = trashResult.value;
+      trashUndoId = trashResult.value.find((note) => note.originalPath === path)?.id ?? null;
+    }
+
     // Record an action so Mod+Shift+Z can resurrect the note.
     if (restorePayload && this.#actionHistory && this.#documentService) {
       const docService = this.#documentService;
       const { content, title, folder } = restorePayload;
       this.#actionHistory.record({
         type: 'note.delete',
-        summary: `Deleted "${title}"`,
+        summary: `Moved "${title}" to Trash`,
         undo: async () => {
+          if (trashUndoId && this.#service) {
+            const restoreResult = await this.#service.restoreNoteFromTrash(trashUndoId);
+            if (restoreResult.ok) {
+              this.trashedNotes = this.trashedNotes.filter((note) => note.id !== trashUndoId);
+              this.selectNote(restoreResult.value.path);
+              return;
+            }
+          }
+
           const result = await docService.createWithContent(folder, title, content);
           if (!result.ok) throw result.error;
         },
       });
     }
 
+    return true;
+  }
+
+  async loadTrashedNotes(): Promise<TrashedNoteItem[]> {
+    if (!this.#service) throw new Error('NotesStore not initialized');
+
+    this.trashLoading = true;
+    this.trashError = null;
+
+    try {
+      const result = await this.#service.listTrashedNotes();
+      if (!result.ok) {
+        this.trashError = result.error;
+        events.emit('error:user-facing', { source: 'Loading Trash', error: result.error });
+        return [];
+      }
+
+      this.trashedNotes = result.value;
+      return result.value;
+    } finally {
+      this.trashLoading = false;
+    }
+  }
+
+  async restoreTrashedNote(trashId: string): Promise<Document | null> {
+    if (!this.#service) throw new Error('NotesStore not initialized');
+
+    this.trashError = null;
+    const result = await this.#service.restoreNoteFromTrash(trashId);
+    if (!result.ok) {
+      this.trashError = result.error;
+      events.emit('error:user-facing', { source: 'Restoring note', error: result.error });
+      return null;
+    }
+
+    this.trashedNotes = this.trashedNotes.filter((note) => note.id !== trashId);
+    await this.loadTrashedNotes();
+    this.selectNote(result.value.path);
+    return result.value;
+  }
+
+  async deleteTrashedNote(trashId: string): Promise<boolean> {
+    if (!this.#service) throw new Error('NotesStore not initialized');
+
+    this.trashError = null;
+    const result = await this.#service.deleteTrashedNote(trashId);
+    if (!result.ok) {
+      this.trashError = result.error;
+      events.emit('error:user-facing', { source: 'Deleting trashed note', error: result.error });
+      return false;
+    }
+
+    this.trashedNotes = this.trashedNotes.filter((note) => note.id !== trashId);
     return true;
   }
 
@@ -1920,6 +1993,12 @@ class NotesStore {
     this.favoriteRefs = this.favoriteRefs.filter((favorite) =>
       !(favorite.kind === 'note' && favorite.path === path)
     );
+
+    if (this.selectedPaths.has(path)) {
+      const nextSelected = new Set(this.selectedPaths);
+      nextSelected.delete(path);
+      this.selectedPaths = nextSelected;
+    }
 
     this.recentNotes = this.recentNotes.filter((recent) => recent.path !== path);
     this.#frecency?.forget('note', path);

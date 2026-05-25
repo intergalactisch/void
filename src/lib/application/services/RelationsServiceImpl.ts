@@ -58,6 +58,9 @@ export class RelationsServiceImpl implements RelationsService {
     events.on('note:deleted', ({ path }) => {
       this.removeNote(path);
     });
+    events.on('note:restored', ({ path }) => {
+      void this.indexNote(path);
+    });
     events.on('note:renamed', ({ oldPath, newPath }) => {
       this.removeNote(oldPath);
       void this.indexNote(newPath);

@@ -8,7 +8,13 @@
  * Part of Hexagonal Architecture application layer.
  */
 
-import type { NotesService, NotesState, NotesListItem, TagGroup } from '$lib/ports/inbound';
+import type {
+  NotesService,
+  NotesState,
+  NotesListItem,
+  TagGroup,
+  TrashedNoteItem,
+} from '$lib/ports/inbound';
 import type { DocumentFolderItem, DocumentListItem, DocumentPort } from '$lib/ports/outbound';
 import type { Document } from '$lib/domain';
 import { normalizeNoteTag, normalizeNoteTags } from '$lib/domain/values';
@@ -187,7 +193,7 @@ export class NotesServiceImpl implements NotesService {
     }
 
     // Fallback: direct DocumentPort call (backwards compatibility)
-    const result = await this.documentPort.delete(path);
+    const result = await this.documentPort.trash(path);
 
     if (!result.ok) {
       return result;
@@ -202,6 +208,57 @@ export class NotesServiceImpl implements NotesService {
     await this.loadFolderTree();
 
     return ok(undefined);
+  }
+
+  async deleteNotePermanently(path: string): Promise<Result<void, Error>> {
+    const result = await this.documentPort.delete(path);
+    if (!result.ok) return result;
+
+    if (this.state.selectedPath === path) {
+      this.selectNote(null);
+    }
+
+    events.emit('note:deleted', { path, source: 'system' });
+    await this.loadFolderTree();
+    return ok(undefined);
+  }
+
+  async listTrashedNotes(): Promise<Result<TrashedNoteItem[], Error>> {
+    const result = await this.documentPort.listTrash();
+    if (!result.ok) return err(result.error);
+    return ok(result.value.map((item) => ({ ...item })));
+  }
+
+  async restoreNoteFromTrash(trashId: string): Promise<Result<Document, Error>> {
+    if (this.commandBus) {
+      const result = await this.commandBus.restoreNoteFromTrash(trashId);
+      if (!result.success) return err(result.error);
+
+      await this.loadFolderTree();
+      return ok(result.value);
+    }
+
+    const result = await this.documentPort.restoreFromTrash(trashId);
+    if (!result.ok) return result;
+
+    events.emit('note:restored', {
+      path: result.value.path,
+      document: result.value,
+      trashId,
+      source: 'user',
+    });
+    await this.loadFolderTree();
+    return result;
+  }
+
+  async deleteTrashedNote(trashId: string): Promise<Result<void, Error>> {
+    if (this.commandBus) {
+      const result = await this.commandBus.deleteTrashedNote(trashId);
+      if (!result.success) return err(result.error);
+      return ok(undefined);
+    }
+
+    return this.documentPort.deleteFromTrash(trashId);
   }
 
   /**

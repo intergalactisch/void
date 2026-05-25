@@ -11,7 +11,12 @@
 
 import { ok, err, type Result } from '$lib/core';
 import type { FileSystemPort } from '$lib/ports/outbound/FileSystemPort';
-import type { DocumentPort, DocumentListItem, DocumentFolderItem } from '$lib/ports/outbound/DocumentPort';
+import type {
+  DocumentPort,
+  DocumentListItem,
+  DocumentFolderItem,
+  TrashedDocumentListItem,
+} from '$lib/ports/outbound/DocumentPort';
 import type { Document } from '$lib/domain/entities/Document';
 import type { DocumentMeta } from '$lib/domain/values/DocumentMeta';
 import { createDocument } from '$lib/domain/entities/Document';
@@ -46,6 +51,18 @@ export interface MarkdownAdapterConfig {
   /** Optional note-protection boundary handler. */
   protection?: ProtectionCodecPort;
 }
+
+interface TrashMetadata {
+  schemaVersion: 1;
+  id: string;
+  originalPath: string;
+  title: string;
+  deletedAt: string;
+}
+
+const TRASH_DIR = '.trash';
+const TRASH_NOTE_FILE = 'note.md';
+const TRASH_META_FILE = 'meta.json';
 
 /**
  * MarkdownAdapter implements DocumentPort using markdown files.
@@ -292,6 +309,141 @@ export class MarkdownAdapter implements DocumentPort {
     return ok(undefined);
   }
 
+  async trash(path: string): Promise<Result<TrashedDocumentListItem, Error>> {
+    let absolutePath: string;
+    try {
+      absolutePath = this.resolvePath(path);
+    } catch (error) {
+      return err(error instanceof Error ? error : new Error(String(error)));
+    }
+
+    const existsResult = await this.fileSystem.exists(absolutePath);
+    if (!existsResult.ok) return err(existsResult.error);
+    if (!existsResult.value) {
+      return err(new Error(`Document not found: ${path}`));
+    }
+
+    const originalPath = this.toRelativePath(absolutePath);
+    const loaded = await this.load(originalPath);
+    const title = loaded.ok
+      ? loaded.value.meta.title
+      : originalPath.split('/').pop()?.replace(
+          new RegExp(`${escapeRegExp(this.extension)}$`, 'i'),
+          ''
+        ) ?? originalPath;
+    const trashIdResult = await this.createUniqueTrashId();
+    if (!trashIdResult.ok) return err(trashIdResult.error);
+
+    const id = trashIdResult.value;
+    const entryDir = this.trashEntryDirPath(id);
+    const trashedNotePath = `${entryDir}/${TRASH_NOTE_FILE}`;
+    const metadata: TrashMetadata = {
+      schemaVersion: 1,
+      id,
+      originalPath,
+      title,
+      deletedAt: new Date().toISOString(),
+    };
+
+    const createDir = await this.fileSystem.createDirectory(entryDir);
+    if (!createDir.ok) return err(new Error(`Failed to create trash entry: ${createDir.error.message}`));
+
+    const writeMeta = await this.fileSystem.writeFile(
+      `${entryDir}/${TRASH_META_FILE}`,
+      JSON.stringify(metadata, null, 2)
+    );
+    if (!writeMeta.ok) {
+      await this.fileSystem.deleteDirectory(entryDir);
+      return err(new Error(`Failed to write trash metadata: ${writeMeta.error.message}`));
+    }
+
+    events.emit('editor:self-write', { path: absolutePath });
+    const moved = await this.fileSystem.renamePath(absolutePath, trashedNotePath);
+    if (!moved.ok) {
+      await this.fileSystem.deleteDirectory(entryDir);
+      return err(new Error(`Failed to move document to Trash: ${moved.error.message}`));
+    }
+
+    this.watchers.delete(originalPath);
+    return ok(this.trashMetadataToListItem(metadata));
+  }
+
+  async listTrash(): Promise<Result<TrashedDocumentListItem[], Error>> {
+    const trashRoot = this.trashRootPath();
+    const existsResult = await this.fileSystem.exists(trashRoot);
+    if (!existsResult.ok) return err(existsResult.error);
+    if (!existsResult.value) return ok([]);
+
+    const listResult = await this.fileSystem.listDirectory(trashRoot);
+    if (!listResult.ok) {
+      return err(new Error(`Failed to list Trash: ${listResult.error.message}`));
+    }
+
+    const items: TrashedDocumentListItem[] = [];
+    for (const entry of listResult.value) {
+      if (!entry.isDirectory) continue;
+      const metadata = await this.readTrashMetadata(entry.name);
+      if (!metadata.ok) continue;
+      const noteExists = await this.fileSystem.exists(`${this.trashEntryDirPath(entry.name)}/${TRASH_NOTE_FILE}`);
+      if (!noteExists.ok || !noteExists.value) continue;
+      items.push(this.trashMetadataToListItem(metadata.value));
+    }
+
+    items.sort((a, b) => b.deletedAt.getTime() - a.deletedAt.getTime());
+    return ok(items);
+  }
+
+  async restoreFromTrash(id: string): Promise<Result<Document, Error>> {
+    const metadata = await this.readTrashMetadata(id);
+    if (!metadata.ok) return err(metadata.error);
+
+    const entryDir = this.trashEntryDirPath(metadata.value.id);
+    const trashedNotePath = `${entryDir}/${TRASH_NOTE_FILE}`;
+    const noteExists = await this.fileSystem.exists(trashedNotePath);
+    if (!noteExists.ok) return err(noteExists.error);
+    if (!noteExists.value) return err(new Error(`Trash entry is missing note content: ${metadata.value.id}`));
+
+    const restorePath = await this.findAvailableRestorePath(metadata.value.originalPath);
+    if (!restorePath.ok) return err(restorePath.error);
+
+    let restoredAbsolutePath: string;
+    try {
+      restoredAbsolutePath = this.resolvePath(restorePath.value);
+    } catch (error) {
+      return err(error instanceof Error ? error : new Error(String(error)));
+    }
+
+    const ensureParent = await this.ensureParentDirectory(restoredAbsolutePath);
+    if (!ensureParent.ok) return err(ensureParent.error);
+
+    events.emit('editor:self-write', { path: restoredAbsolutePath });
+    const moved = await this.fileSystem.renamePath(trashedNotePath, restoredAbsolutePath);
+    if (!moved.ok) {
+      return err(new Error(`Failed to restore document: ${moved.error.message}`));
+    }
+
+    await this.fileSystem.deleteDirectory(entryDir);
+
+    const loaded = await this.load(restorePath.value);
+    if (!loaded.ok) return err(loaded.error);
+    return loaded;
+  }
+
+  async deleteFromTrash(id: string): Promise<Result<void, Error>> {
+    let entryDir: string;
+    try {
+      entryDir = this.trashEntryDirPath(id);
+    } catch (error) {
+      return err(error instanceof Error ? error : new Error(String(error)));
+    }
+
+    const deleted = await this.fileSystem.deleteDirectory(entryDir);
+    if (!deleted.ok) {
+      return err(new Error(`Failed to permanently delete Trash entry: ${deleted.error.message}`));
+    }
+    return ok(undefined);
+  }
+
   /**
    * List all documents in the base directory (recursively)
    */
@@ -400,6 +552,119 @@ export class MarkdownAdapter implements DocumentPort {
 
   private shouldSkipDirectory(name: string): boolean {
     return name.startsWith('.') || name === '__MACOSX';
+  }
+
+  private trashRootPath(): string {
+    return `${this.basePath}/${TRASH_DIR}`;
+  }
+
+  private trashEntryDirPath(id: string): string {
+    const safeId = this.validateTrashId(id);
+    return `${this.trashRootPath()}/${safeId}`;
+  }
+
+  private validateTrashId(id: string): string {
+    if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
+      throw new Error(`Invalid Trash entry ID: ${id}`);
+    }
+    return id;
+  }
+
+  private async createUniqueTrashId(): Promise<Result<string, Error>> {
+    const createId = () => `trash-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const id = createId();
+      const exists = await this.fileSystem.exists(this.trashEntryDirPath(id));
+      if (!exists.ok) return err(exists.error);
+      if (!exists.value) return ok(id);
+    }
+    return err(new Error('Failed to allocate a unique Trash entry ID'));
+  }
+
+  private async readTrashMetadata(id: string): Promise<Result<TrashMetadata, Error>> {
+    let metaPath: string;
+    try {
+      metaPath = `${this.trashEntryDirPath(id)}/${TRASH_META_FILE}`;
+    } catch (error) {
+      return err(error instanceof Error ? error : new Error(String(error)));
+    }
+
+    const read = await this.fileSystem.readFile(metaPath);
+    if (!read.ok) {
+      return err(new Error(`Failed to read Trash metadata: ${read.error.message}`));
+    }
+
+    try {
+      const parsed = JSON.parse(read.value) as Partial<TrashMetadata>;
+      if (
+        parsed.schemaVersion !== 1 ||
+        typeof parsed.id !== 'string' ||
+        parsed.id !== id ||
+        typeof parsed.originalPath !== 'string' ||
+        typeof parsed.title !== 'string' ||
+        typeof parsed.deletedAt !== 'string' ||
+        Number.isNaN(Date.parse(parsed.deletedAt))
+      ) {
+        return err(new Error(`Invalid Trash metadata: ${id}`));
+      }
+      this.validateTrashId(parsed.id);
+      return ok({
+        schemaVersion: 1,
+        id: parsed.id,
+        originalPath: parsed.originalPath,
+        title: parsed.title,
+        deletedAt: parsed.deletedAt,
+      });
+    } catch (error) {
+      return err(error instanceof Error ? error : new Error(`Invalid Trash metadata: ${id}`));
+    }
+  }
+
+  private trashMetadataToListItem(metadata: TrashMetadata): TrashedDocumentListItem {
+    return {
+      id: metadata.id,
+      originalPath: metadata.originalPath,
+      title: metadata.title,
+      deletedAt: new Date(metadata.deletedAt),
+    };
+  }
+
+  private async findAvailableRestorePath(originalPath: string): Promise<Result<string, Error>> {
+    const normalized = originalPath.replace(/\\/g, '/').replace(/^\/+/, '');
+    try {
+      this.resolvePath(normalized);
+    } catch (error) {
+      return err(error instanceof Error ? error : new Error(String(error)));
+    }
+
+    const originalExists = await this.exists(normalized);
+    if (!originalExists.ok) return err(originalExists.error);
+    if (!originalExists.value) return ok(normalized);
+
+    const slash = normalized.lastIndexOf('/');
+    const folder = slash >= 0 ? normalized.slice(0, slash + 1) : '';
+    const filename = slash >= 0 ? normalized.slice(slash + 1) : normalized;
+    const extensionPattern = new RegExp(`${escapeRegExp(this.extension)}$`, 'i');
+    const stem = filename.replace(extensionPattern, '');
+    const ext = extensionPattern.test(filename) ? filename.slice(stem.length) : this.extension;
+
+    for (let index = 1; index < 1000; index++) {
+      const suffix = index === 1 ? ' (restored)' : ` (restored ${index})`;
+      const candidate = `${folder}${stem}${suffix}${ext}`;
+      const exists = await this.exists(candidate);
+      if (!exists.ok) return err(exists.error);
+      if (!exists.value) return ok(candidate);
+    }
+
+    return err(new Error(`Could not find an available restore path for ${originalPath}`));
+  }
+
+  private async ensureParentDirectory(absolutePath: string): Promise<Result<void, Error>> {
+    const parentDir = absolutePath.substring(0, absolutePath.lastIndexOf('/'));
+    if (!parentDir || parentDir === this.basePath) return ok(undefined);
+    const created = await this.fileSystem.createDirectory(parentDir);
+    if (!created.ok) return err(new Error(`Failed to create restore folder: ${created.error.message}`));
+    return ok(undefined);
   }
 
   private createMetaFromParsed(
@@ -599,6 +864,10 @@ export class MarkdownAdapter implements DocumentPort {
       }
     }
   }
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 // =============================================================================
