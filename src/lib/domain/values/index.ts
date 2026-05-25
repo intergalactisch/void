@@ -192,6 +192,62 @@ export type { ResearchCitation } from './ResearchCitation';
 export { classifyDurableAgentPrompt } from './AgentPromptIntent';
 export type { DurableAgentPromptIntent, DurableAgentPromptMode } from './AgentPromptIntent';
 
+export {
+  DESKTOP_PLATFORM_CAPABILITIES,
+  IOS_PLATFORM_CAPABILITIES,
+  ANDROID_PLATFORM_CAPABILITIES,
+  BROWSER_PLATFORM_CAPABILITIES,
+  capabilitiesForPlatform,
+  inferFormFactor,
+  inferPlatformKind,
+} from './PlatformCapabilities';
+export type {
+  PlatformCapabilities,
+  PreferredShell,
+  VoidFormFactor,
+  VoidPlatformKind,
+  WorkspaceStorageMode,
+} from './PlatformCapabilities';
+
+export {
+  WORKSPACE_V2_MANIFEST_PATH,
+  WORKSPACE_V2_SCHEMA_VERSION,
+  createWorkspaceV2Manifest,
+  validateWorkspaceV2Manifest,
+} from './WorkspaceV2';
+export type {
+  WorkspaceV2Manifest,
+  WorkspaceV2MigrationState,
+  WorkspaceV2MigrationStatus,
+  WorkspaceV2Transport,
+  WorkspaceV2Validation,
+} from './WorkspaceV2';
+
+export {
+  DEFAULT_TRUSTED_DEVICE_PERMISSIONS,
+  createTrustedDevice,
+} from './DeviceTrust';
+export type {
+  PeerRemote,
+  TrustedDevice,
+  TrustedDeviceKind,
+  TrustedDevicePermissions,
+  TrustedDeviceStatus,
+} from './DeviceTrust';
+
+export {
+  DEFAULT_AI_JOB_POLICY,
+  createAIJob,
+} from './AIJob';
+export type {
+  AIJob,
+  AIJobEnvelope,
+  AIJobKind,
+  AIJobPolicy,
+  AIJobResultBundle,
+  AIJobStatus,
+} from './AIJob';
+
 // Todo-related value objects
 export {
   generateTodoId,

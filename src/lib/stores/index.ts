@@ -6,9 +6,13 @@
  */
 
 export { settingsStore } from './settings.svelte';
+export { platformStore } from './platform.svelte';
 export { protectionStore } from './protection.svelte';
 export { folderAccessStore } from './folderAccess.svelte';
 export { workspaceStore } from './workspace.svelte';
+export { workspaceV2Store } from './workspaceV2.svelte';
+export { deviceTrustStore } from './deviceTrust.svelte';
+export { aiJobQueueStore } from './aiJobQueue.svelte';
 export { editorStore } from './editor.svelte';
 export { noteWorkspaceStore } from './noteWorkspace.svelte';
 export { inlineAIStore } from './inlineAI.svelte';

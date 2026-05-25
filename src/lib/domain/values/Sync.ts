@@ -5,10 +5,19 @@
  * no browser APIs, no Tauri imports.
  */
 
-export type SyncProvider = 'github';
+export type SyncProvider = 'github' | 'peer';
+export type SyncRepositoryProvider = Extract<SyncProvider, 'github'>;
 export type SyncAuthMode = 'github-app' | 'token' | 'system-git';
 export type SyncAuthProbe = 'passive' | 'keychain';
 export type SyncMode = 'manual' | 'background';
+export type SyncTransportState =
+  | 'unconfigured'
+  | 'offline'
+  | 'available'
+  | 'syncing'
+  | 'conflicted'
+  | 'auth-required'
+  | 'error';
 export type SyncOperation =
   | 'idle'
   | 'detecting'
@@ -78,13 +87,23 @@ export type SyncConflictSessionStatus =
   | 'aborted';
 
 export interface SyncRepositoryRef {
-  provider: SyncProvider;
+  provider: SyncRepositoryProvider;
   owner: string;
   name: string;
   fullName: string;
   remoteUrl: string;
   branch: string;
   htmlUrl?: string;
+}
+
+export interface SyncTransportStatus {
+  provider: SyncProvider;
+  state: SyncTransportState;
+  label: string;
+  remoteId: string | null;
+  lastSyncAt: string | null;
+  pendingChanges: number;
+  message: string | null;
 }
 
 export interface SyncArtifactPolicy {
@@ -109,6 +128,7 @@ export type SyncConfig = SyncSettings;
 export interface SyncConflict {
   id: string;
   kind: SyncConflictKind;
+  source?: SyncProvider;
   path: string | null;
   message: string;
   localRef: string | null;
@@ -283,6 +303,7 @@ export interface GitHubVoidReadyProbe {
  */
 export const VOID_GITHUB_SCOPE = 'repo';
 export const VOID_REPO_MANIFEST_PATH = '.void/repo.json';
+export const VOID_WORKSPACE_MANIFEST_PATH = '.void/workspace.json';
 export const VOID_REPO_SCHEMA_VERSION = 1;
 export const VOID_REPO_ARTIFACT_POLICY_VERSION = 1;
 
@@ -299,7 +320,10 @@ export const DEFAULT_SYNC_ARTIFACT_POLICY: SyncArtifactPolicy = {
     '.void/branches/**',
     '.void/sessions/**',
     '.void/agents/**',
+    '.void/devices/**',
+    '.void/relay/**',
     VOID_REPO_MANIFEST_PATH,
+    VOID_WORKSPACE_MANIFEST_PATH,
   ],
   excludePatterns: [
     '.void/index/**',

@@ -16,6 +16,18 @@ export type {
   WorkspaceSwitchResult,
   CreateWorkspaceParams,
 } from './WorkspaceService';
+export type {
+  WorkspaceV2Service,
+  WorkspaceV2Status,
+} from './WorkspaceV2Service';
+export type {
+  DeviceTrustService,
+  TrustDeviceInput,
+} from './DeviceTrustService';
+export type {
+  AIJobQueueService,
+  QueueAIJobInput,
+} from './AIJobQueueService';
 export type { FileService } from './FileService';
 export type {
   AIContextAuthorizationRequest,

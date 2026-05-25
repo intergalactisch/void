@@ -54,6 +54,13 @@ import {
 import {
   MemoryFileSystemAdapter,
   MemoryFolderAccessAdapter,
+  MemoryPlatformCapabilitiesAdapter,
+  MemoryNotificationAdapter,
+  MemoryShareIntentAdapter,
+  MemoryPeerDiscoveryAdapter,
+  MemoryPeerTransportAdapter,
+  MemoryDeviceTrustAdapter,
+  MemoryAIJobExecutorAdapter,
   MemorySettingsAdapter,
   MemoryCredentialAdapter,
   MemoryCryptoAdapter,
@@ -72,6 +79,15 @@ import {
   MemoryWebFetchAdapter,
   MemoryUpdaterAdapter,
 } from './adapters/memory';
+import {
+  BrowserPlatformCapabilitiesAdapter,
+  NoopNotificationAdapter,
+  NoopShareIntentAdapter,
+  NoopPeerDiscoveryAdapter,
+  NoopPeerTransportAdapter,
+  NoopAIJobExecutorAdapter,
+  VoidDeviceTrustAdapter,
+} from './adapters/platform';
 import {
   VoidAgentRunStorageAdapter,
   VoidSessionStorageAdapter,
@@ -132,8 +148,11 @@ import {
 import {
   SettingsServiceImpl,
   WorkspaceServiceImpl,
+  WorkspaceV2ServiceImpl,
   FileServiceImpl,
   CredentialServiceImpl,
+  DeviceTrustServiceImpl,
+  AIJobQueueServiceImpl,
   ProtectionRuntime,
   ProtectionServiceImpl,
   SyncServiceImpl,
@@ -191,8 +210,12 @@ import { addToolInvocation, updateToolInvocation } from './domain/entities/Messa
 // Stores (UI primary adapters)
 import {
   settingsStore,
+  platformStore,
   protectionStore,
   workspaceStore,
+  workspaceV2Store,
+  deviceTrustStore,
+  aiJobQueueStore,
   aiStore,
   toolStore,
   todoStore,
@@ -228,8 +251,10 @@ import type { LoggerPort } from './ports/outbound/LoggerPort';
 import type {
   SettingsService,
   WorkspaceService,
+  WorkspaceV2Service,
   FileService,
   CredentialService,
+  DeviceTrustService,
   ProtectionService,
   EditorService,
   InlineAIThreadService,
@@ -264,6 +289,7 @@ import type {
   UpdaterService,
   SyncService,
   MarkdownImportService,
+  AIJobQueueService,
 } from './ports/inbound';
 import type {
   FileSystemPort,
@@ -299,6 +325,13 @@ import type {
   ContentSearchPort,
   GitRepositoryPort,
   GitHubPort,
+  PlatformCapabilitiesPort,
+  NotificationPort,
+  ShareIntentPort,
+  PeerDiscoveryPort,
+  PeerTransportPort,
+  DeviceTrustPort,
+  AIJobExecutorPort,
   LineageStoragePort,
   UpdaterPort,
 } from './ports/outbound';
@@ -321,8 +354,16 @@ export interface AppContext {
   container: Container;
   /** Settings management service */
   settings: SettingsService;
+  /** Platform capability map for desktop/tablet/mobile decisions. */
+  platform: PlatformCapabilitiesPort;
   /** Multi-workspace management service */
   workspaces: WorkspaceService;
+  /** Workspace V2 manifest and migration service. */
+  workspaceV2: WorkspaceV2Service;
+  /** Trusted peer/device registry service. */
+  deviceTrust: DeviceTrustService;
+  /** Encrypted queue for desktop-executed mobile AI jobs. */
+  aiJobQueue: AIJobQueueService;
   /** File system operations service */
   files: FileService;
   /** Credential storage service */
@@ -460,6 +501,27 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
   const container = new Container();
   const useMocks = options?.useMocks ?? false;
   const defaultNotesPath = options?.notesPath ?? '~/Documents/void';
+
+  container.register(TOKENS.PlatformCapabilities, () =>
+    useMocks
+      ? new MemoryPlatformCapabilitiesAdapter('browser', 'desktop')
+      : new BrowserPlatformCapabilitiesAdapter()
+  );
+  container.register(TOKENS.Notification, () =>
+    useMocks ? new MemoryNotificationAdapter() : new NoopNotificationAdapter()
+  );
+  container.register(TOKENS.ShareIntent, () =>
+    useMocks ? new MemoryShareIntentAdapter() : new NoopShareIntentAdapter()
+  );
+  container.register(TOKENS.PeerDiscovery, () =>
+    useMocks ? new MemoryPeerDiscoveryAdapter() : new NoopPeerDiscoveryAdapter()
+  );
+  container.register(TOKENS.PeerTransport, () =>
+    useMocks ? new MemoryPeerTransportAdapter() : new NoopPeerTransportAdapter()
+  );
+  container.register(TOKENS.AIJobExecutor, () =>
+    useMocks ? new MemoryAIJobExecutorAdapter() : new NoopAIJobExecutorAdapter()
+  );
 
   // 1. Register core adapters first (needed to load settings)
   if (useMocks) {
@@ -612,6 +674,15 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
       )
     );
   }
+
+  container.register(TOKENS.DeviceTrust, () =>
+    useMocks
+      ? new MemoryDeviceTrustAdapter()
+      : new VoidDeviceTrustAdapter(
+          container.resolve<VoidStoragePort>(TOKENS.VoidStorage),
+          notesPath,
+        )
+  );
 
   container.register(TOKENS.ProtectionCodec, () =>
     new ProtectionRuntime(
@@ -1002,6 +1073,25 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
       container.resolve<VoidStoragePort>(TOKENS.VoidStorage),
     )
   );
+  container.register(TOKENS.WorkspaceV2Service, () =>
+    new WorkspaceV2ServiceImpl(
+      container.resolve<SettingsService>(TOKENS.SettingsService),
+      container.resolve<VoidStoragePort>(TOKENS.VoidStorage),
+      notesPath,
+      container.resolve<GitRepositoryPort>(TOKENS.GitRepository),
+    )
+  );
+  container.register(TOKENS.DeviceTrustService, () =>
+    new DeviceTrustServiceImpl(
+      container.resolve<DeviceTrustPort>(TOKENS.DeviceTrust)
+    )
+  );
+  container.register(TOKENS.AIJobQueueService, () =>
+    new AIJobQueueServiceImpl(
+      container.resolve<VoidStoragePort>(TOKENS.VoidStorage),
+      notesPath,
+    )
+  );
 
   container.register(TOKENS.ReferenceService, () =>
     new ReferenceServiceImpl(
@@ -1277,7 +1367,11 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
   // 5. Resolve services
   // Note: settingsService was resolved earlier to load settings
   const settings = settingsService;
+  const platform = container.resolve<PlatformCapabilitiesPort>(TOKENS.PlatformCapabilities);
   const workspaces = container.resolve<WorkspaceService>(TOKENS.WorkspaceService);
+  const workspaceV2 = container.resolve<WorkspaceV2Service>(TOKENS.WorkspaceV2Service);
+  const deviceTrust = container.resolve<DeviceTrustService>(TOKENS.DeviceTrustService);
+  const aiJobQueue = container.resolve<AIJobQueueService>(TOKENS.AIJobQueueService);
   const files = container.resolve<FileService>(TOKENS.FileService);
   const credentials = container.resolve<CredentialService>(TOKENS.CredentialService);
   const protection = container.resolve<ProtectionService>(TOKENS.ProtectionService);
@@ -1600,6 +1694,7 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
 
   // 6. Initialize stores (UI primary adapters)
   settingsStore.init(settings);
+  platformStore.init(platform);
   folderAccessStore.init(
     folderAccess,
     workspaceId,
@@ -1611,6 +1706,9 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
   updaterStore.init(updater);
   void updaterStore.loadCurrentVersion();
   workspaceStore.init(workspaces);
+  workspaceV2Store.init(workspaceV2);
+  deviceTrustStore.init(deviceTrust);
+  aiJobQueueStore.init(aiJobQueue);
   aiStore.init(aiAssistant);
   aiStore.initAgent(container.resolve<AgentLoopService>(TOKENS.AgentLoopService));
   aiStore.initAgentOrchestration(agentOrchestration);
@@ -1803,7 +1901,11 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
   appContext = {
     container,
     settings,
+    platform,
     workspaces,
+    workspaceV2,
+    deviceTrust,
+    aiJobQueue,
     files,
     credentials,
     protection,

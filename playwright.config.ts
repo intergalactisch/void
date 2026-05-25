@@ -22,6 +22,22 @@ export default defineConfig({
         viewport: { width: 1200, height: 800 },
       },
     },
+    {
+      name: 'tablet',
+      testMatch: /.*responsive.*\.spec\.ts/,
+      use: {
+        ...devices['iPad Pro 11'],
+        browserName: 'chromium',
+      },
+    },
+    {
+      name: 'phone',
+      testMatch: /.*responsive.*\.spec\.ts/,
+      use: {
+        ...devices['iPhone 15'],
+        browserName: 'chromium',
+      },
+    },
   ],
 
   webServer: {

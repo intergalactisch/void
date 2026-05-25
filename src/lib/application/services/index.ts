@@ -10,6 +10,9 @@
 
 export { SettingsServiceImpl } from './SettingsServiceImpl';
 export { WorkspaceServiceImpl } from './WorkspaceServiceImpl';
+export { WorkspaceV2ServiceImpl } from './WorkspaceV2ServiceImpl';
+export { DeviceTrustServiceImpl } from './DeviceTrustServiceImpl';
+export { AIJobQueueServiceImpl } from './AIJobQueueServiceImpl';
 export { FileServiceImpl } from './FileServiceImpl';
 export { CredentialServiceImpl } from './CredentialServiceImpl';
 export { ProtectionRuntime } from './ProtectionRuntime';

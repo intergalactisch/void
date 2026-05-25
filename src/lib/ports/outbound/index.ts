@@ -17,6 +17,20 @@ export type {
 export type { SettingsStoragePort } from './SettingsStoragePort';
 export type { CredentialPort } from './CredentialPort';
 export type { UpdaterPort } from './UpdaterPort';
+export type { PlatformCapabilitiesPort } from './PlatformCapabilitiesPort';
+export type {
+  LocalNotification,
+  NotificationPermissionState,
+  NotificationPort,
+} from './NotificationPort';
+export type { ShareIntentPayload, ShareIntentPort } from './ShareIntentPort';
+export type { PeerAdvertisement, PeerDiscoveryPort } from './PeerDiscoveryPort';
+export type { PeerSyncBundle, PeerTransportPort } from './PeerTransportPort';
+export type { DeviceTrustPort } from './DeviceTrustPort';
+export type {
+  AIExecutorCapabilities,
+  AIJobExecutorPort,
+} from './AIJobExecutorPort';
 
 // Editor ports
 export type {

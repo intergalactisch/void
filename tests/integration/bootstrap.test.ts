@@ -62,11 +62,15 @@ describe('Bootstrap', () => {
       expect(container.has(TOKENS.FileSystem)).toBe(true);
       expect(container.has(TOKENS.SettingsStorage)).toBe(true);
       expect(container.has(TOKENS.CredentialStorage)).toBe(true);
+      expect(container.has(TOKENS.PlatformCapabilities)).toBe(true);
+      expect(container.has(TOKENS.DeviceTrust)).toBe(true);
 
       // Inbound services
       expect(container.has(TOKENS.SettingsService)).toBe(true);
       expect(container.has(TOKENS.FileService)).toBe(true);
       expect(container.has(TOKENS.CredentialService)).toBe(true);
+      expect(container.has(TOKENS.WorkspaceV2Service)).toBe(true);
+      expect(container.has(TOKENS.AIJobQueueService)).toBe(true);
     });
 
     it('returns same context on subsequent calls', async () => {
@@ -305,6 +309,10 @@ describe('Bootstrap', () => {
       expect(typeof ctx.operationService.queue).toBe('function');
       expect(typeof ctx.agentOrchestration.startRun).toBe('function');
       expect(typeof ctx.agentIntake.decide).toBe('function');
+      expect(typeof ctx.platform.current).toBe('function');
+      expect(typeof ctx.workspaceV2.getStatus).toBe('function');
+      expect(typeof ctx.deviceTrust.list).toBe('function');
+      expect(typeof ctx.aiJobQueue.queue).toBe('function');
     });
 
     it('round-2 peers wire through their host services', async () => {

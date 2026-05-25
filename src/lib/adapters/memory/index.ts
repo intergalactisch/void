@@ -20,6 +20,13 @@
 
 export { MemoryFileSystemAdapter } from './MemoryFileSystemAdapter';
 export { MemoryFolderAccessAdapter } from './MemoryFolderAccessAdapter';
+export { MemoryPlatformCapabilitiesAdapter } from './MemoryPlatformCapabilitiesAdapter';
+export { MemoryNotificationAdapter } from './MemoryNotificationAdapter';
+export { MemoryShareIntentAdapter } from './MemoryShareIntentAdapter';
+export { MemoryPeerDiscoveryAdapter } from './MemoryPeerDiscoveryAdapter';
+export { MemoryPeerTransportAdapter } from './MemoryPeerTransportAdapter';
+export { MemoryDeviceTrustAdapter } from './MemoryDeviceTrustAdapter';
+export { MemoryAIJobExecutorAdapter } from './MemoryAIJobExecutorAdapter';
 export { MemorySettingsAdapter } from './MemorySettingsAdapter';
 export { MemoryCredentialAdapter } from './MemoryCredentialAdapter';
 export { MemoryCryptoAdapter } from './MemoryCryptoAdapter';

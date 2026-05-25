@@ -29,7 +29,7 @@
     resolveMarkdownImportTargetFolder,
     summarizeMarkdownDropPaths,
   } from '$lib/desktop/markdownImportFlow';
-  import { DEFAULT_TODO_VIEW, type TodoView } from '$lib/domain/values/TodoView';
+  import { DEFAULT_TODO_VIEW, TODO_VIEWS, type TodoView } from '$lib/domain/values/TodoView';
   import { events } from '$lib/events';
   import type { EventMap } from '$lib/events/types';
   import { isActiveAgentRun } from '$lib/domain/entities/AgentRun';
@@ -946,6 +946,21 @@
     };
     window.addEventListener('keydown', escapeHandler);
 
+    // Chromium reserves Cmd+number on macOS for browser tab switching during
+    // e2e runs, while Tauri can still own that chord. Keep Ctrl+number as a
+    // task-view fallback when the Tasks workspace is active.
+    const taskViewShortcutHandler = (e: KeyboardEvent) => {
+      if (!uiStore.tasksWorkspaceOpen) return;
+      if (!e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+      if (!/^[1-9]$/.test(e.key)) return;
+      const view = TODO_VIEWS[Number(e.key) - 1];
+      if (!view) return;
+      e.preventDefault();
+      e.stopPropagation();
+      todoStore.setView(view);
+    };
+    window.addEventListener('keydown', taskViewShortcutHandler);
+
     const paneCycleHandler = (e: KeyboardEvent) => {
       if (e.key !== 'F6') return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -1114,6 +1129,7 @@
       unlistenMenuBar?.();
       unlistenDragDrop?.();
       window.removeEventListener('keydown', escapeHandler);
+      window.removeEventListener('keydown', taskViewShortcutHandler);
       window.removeEventListener('keydown', paneCycleHandler);
       window.removeEventListener('resize', handleViewportResize);
       keymapBinder?.dispose();

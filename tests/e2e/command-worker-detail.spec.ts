@@ -114,14 +114,9 @@ test('opens worker detail with prompt traces and interaction targets', async ({ 
       error: null,
     };
     (window as unknown as { __workerFollowup?: unknown }).__workerFollowup = null;
-    aiStore.startAgentRun = async (prompt: string, options: Record<string, unknown>) => {
-      (window as unknown as { __workerFollowup?: unknown }).__workerFollowup = { prompt, options };
-      return createAgentRun({
-        id: 'run-worker-followup',
-        prompt,
-        conversationId: conversation.id,
-        approvalRequired: false,
-      });
+    aiStore.continueWorker = async (options: Record<string, unknown>) => {
+      (window as unknown as { __workerFollowup?: unknown }).__workerFollowup = { options };
+      return run;
     };
     commandCenterStore.selectRun(run.id);
   });
@@ -129,22 +124,23 @@ test('opens worker detail with prompt traces and interaction targets', async ({ 
   await page.getByRole('tab', { name: /now/i }).click();
   await expect(page.getByRole('button', { name: /source scout/i })).toBeVisible();
   await page.getByRole('button', { name: /source scout/i }).click();
-  await expect(page.getByText('Prompts')).toBeVisible();
-  await expect(page.getByText('Responses')).toBeVisible();
+  await expect(page.getByText(/Worker found the source context/)).toBeVisible();
+  await page.getByLabel('Show prompt traces').check();
+  await page.getByText('Prompt trace', { exact: true }).click();
   await expect(page.getByText('Parent user request: Research transparent workers')).toBeVisible();
-  await expect(page.getByPlaceholder(/Ask this worker a follow-up/i)).toBeVisible();
-  await page.getByRole('button', { name: /orchestrator/i }).click();
-  await expect(page.getByPlaceholder(/Ask the orchestrator/i)).toBeVisible();
-  await page.getByRole('button', { name: /^worker$/i }).click();
-  await page.getByPlaceholder(/Ask this worker a follow-up/i).fill('What evidence did you use?');
-  await page.getByRole('button', { name: /send follow-up/i }).click();
+  await expect(page.getByRole('textbox', { name: /message worker/i })).toBeVisible();
+  await page.getByRole('button', { name: /@orchestrator/i }).click();
+  await expect(page.getByRole('textbox', { name: /message orchestrator/i })).toBeVisible();
+  await page.getByRole('button', { name: /@worker/i }).click();
+  await page.getByRole('textbox', { name: /message worker/i }).fill('What evidence did you use?');
+  await page.getByRole('button', { name: /send message/i }).click();
   const followup = await page.evaluate(() => (window as unknown as {
-    __workerFollowup?: { prompt: string; options: Record<string, unknown> };
+    __workerFollowup?: { options: Record<string, unknown> };
   }).__workerFollowup);
-  expect(followup?.prompt).toContain('Continue as the worker lane "Source scout"');
-  expect(followup?.prompt).toContain('User follow-up:\nWhat evidence did you use?');
   expect(followup?.options).toMatchObject({
-    appendUserMessage: false,
-    orchestrationMode: 'single',
+    runId: 'run-worker-detail-smoke',
+    workerId: 'worker-source',
+    message: 'What evidence did you use?',
+    target: 'worker',
   });
 });

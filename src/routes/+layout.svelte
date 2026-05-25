@@ -2,8 +2,8 @@
   import { onMount, onDestroy } from 'svelte';
   import '../app.css';
   import { bootstrap, getAppContext, isBootstrapped } from '$lib';
-  import { operationsStore, settingsStore, uiStore } from '$lib/stores';
-  import { AppTitlebar, ShortcutSheet } from '$lib/components/shared';
+  import { operationsStore, platformStore, settingsStore, uiStore } from '$lib/stores';
+  import { AppTitlebar, MobileTabBar, ShortcutSheet } from '$lib/components/shared';
 
   let { children } = $props();
 
@@ -143,8 +143,14 @@
 {#if isCaptureRoute}
   {@render children()}
 {:else}
-<div class="app-layout-shell">
-  <AppTitlebar onOpenHelp={() => uiStore.openShortcutSheet()} />
+<div
+  class="app-layout-shell"
+  class:has-mobile-tabs={platformStore.capabilities.preferredShell === 'mobile'}
+  data-shell={platformStore.capabilities.preferredShell}
+>
+  <div class="desktop-titlebar">
+    <AppTitlebar onOpenHelp={() => uiStore.openShortcutSheet()} />
+  </div>
 
   <div class="app-route-frame">
     {#if error}
@@ -178,6 +184,7 @@
       {@render children()}
     {/if}
   </div>
+  <MobileTabBar />
 </div>
 
 <ShortcutSheet isOpen={uiStore.shortcutSheetOpen} onClose={() => uiStore.closeShortcutSheet()} />
@@ -193,10 +200,24 @@
     color: var(--text-primary, #1c1b1a);
   }
 
+  .desktop-titlebar {
+    flex: 0 0 auto;
+  }
+
   .app-route-frame {
     flex: 1;
     min-height: 0;
     overflow: hidden;
+  }
+
+  .app-layout-shell.has-mobile-tabs .app-route-frame {
+    padding-bottom: calc(62px + env(safe-area-inset-bottom));
+  }
+
+  @media (max-width: 639px) {
+    .desktop-titlebar {
+      display: none;
+    }
   }
 
   .boot-loading,

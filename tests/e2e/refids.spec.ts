@@ -52,7 +52,7 @@ test.describe('Copy Ref', () => {
     await createQuickNote(page, 'First tab');
     await createQuickNote(page, 'Second tab');
 
-    const activeTab = page.locator('.editor-tab.active').first();
+    const activeTab = page.locator('.workspace-tab.active').first();
     await expect(activeTab).toBeVisible();
     await activeTab.click({ button: 'right' });
     await page.getByRole('menuitem', { name: 'Copy Ref' }).click();
@@ -87,7 +87,7 @@ test.describe('Copy Ref', () => {
 
     const inspector = page.locator('.inspector');
     await expect(inspector).toBeVisible();
-    await inspector.getByRole('button', { name: 'Copy Ref' }).click();
+    await inspector.getByRole('button', { name: /copy.*ref/i }).click();
 
     await expect.poll(() => copiedRef(page)).toMatch(/^void:\/\/todo\/.+/);
   });

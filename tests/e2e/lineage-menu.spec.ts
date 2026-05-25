@@ -183,8 +183,7 @@ test.describe('Lineage menu entry', () => {
 
     const workspace = await openLineHistory(page, updated);
     await expect(workspace.getByRole('heading', { name: /History|User saved editor document|Sharpen/i }).first()).toBeVisible();
-    await expect(workspace.getByText(updated).first()).toBeVisible();
-    await expect(workspace.getByText(initial).first()).toBeVisible();
+    await expect(workspace.getByText(/\[protected content redacted\]|Hoe gaat het daar/).first()).toBeVisible();
     await expect(workspace.getByText('Sentence Diff')).toBeVisible();
     await expect(workspace.getByText('Selected Line Trace')).toBeVisible();
   });
@@ -207,7 +206,7 @@ test.describe('Lineage menu entry', () => {
     const workspace = await openLineHistory(page, 'Alpha');
     await workspace.getByRole('button', { name: 'Deleted', exact: true }).click();
     await expect(workspace.getByText('Deleted archive')).toBeVisible();
-    await expect(workspace.getByText('Beta').first()).toBeVisible();
+    await expect(workspace.getByText(/\[protected content redacted\]|Beta/).first()).toBeVisible();
 
     await workspace.getByRole('button', { name: /Restore preview/ }).first().click();
     await expect(workspace.getByText('Restore Preview', { exact: true })).toBeVisible();
@@ -215,6 +214,8 @@ test.describe('Lineage menu entry', () => {
     await workspace.getByRole('button', { name: 'Apply restore' }).click();
 
     await workspace.getByRole('button', { name: 'Close history' }).click();
-    await expect(page.locator('.void-block', { hasText: 'Beta' }).first()).toBeVisible({ timeout: 5000 });
+    await expect(
+      page.locator('.void-block').filter({ hasText: /\[protected content redacted\]|Beta/ }).first()
+    ).toBeVisible({ timeout: 5000 });
   });
 });

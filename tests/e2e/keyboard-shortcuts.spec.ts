@@ -123,7 +123,8 @@ test.describe('Keyboard Shortcuts', () => {
     await page.locator('.task-row').filter({ hasText: title }).locator('label.check-wrap').click();
     await expect(page.getByText(title)).not.toBeVisible();
 
-    await page.locator('input[name="task-show-completed"]').check();
+    await page.getByRole('button', { name: 'Close details' }).click();
+    await page.getByRole('tab', { name: /Completed/ }).click();
     await expect(page.getByText(title)).toBeVisible();
   });
 

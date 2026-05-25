@@ -13,7 +13,7 @@
 
   import { ArrowLeft, FolderOpen, Layers, Plus } from '@lucide/svelte';
   import WorkspaceCard from '$lib/components/shared/WorkspaceCard.svelte';
-  import { InfoPopover } from '$lib/components/shared';
+  import { InfoPopover, UnifiedSyncCenter } from '$lib/components/shared';
   import { settingsStore, workspaceStore } from '$lib/stores';
   import {
     MANAGED_DEFAULT_WORKSPACE_PATH,
@@ -187,6 +187,8 @@
 
   <section class="workspaces-content" aria-label="Workspaces">
     <div class="workspaces-inner">
+      <UnifiedSyncCenter />
+
       {#if workspaceStore.loading && workspaceStore.workspaces.length === 0}
         <div class="loading-state" role="status" aria-live="polite">
           <div class="spinner"></div>

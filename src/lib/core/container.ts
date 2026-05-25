@@ -170,6 +170,13 @@ export const TOKENS = {
   // This prevents issues with dynamic imports or bundler chunking creating different symbols
   FileSystem: Symbol.for('void:FileSystem'),
   FolderAccess: Symbol.for('void:FolderAccess'),
+  PlatformCapabilities: Symbol.for('void:PlatformCapabilities'),
+  Notification: Symbol.for('void:Notification'),
+  ShareIntent: Symbol.for('void:ShareIntent'),
+  PeerDiscovery: Symbol.for('void:PeerDiscovery'),
+  PeerTransport: Symbol.for('void:PeerTransport'),
+  DeviceTrust: Symbol.for('void:DeviceTrust'),
+  AIJobExecutor: Symbol.for('void:AIJobExecutor'),
   SettingsStorage: Symbol.for('void:SettingsStorage'),
   CredentialStorage: Symbol.for('void:CredentialStorage'),
   Crypto: Symbol.for('void:Crypto'),
@@ -207,6 +214,9 @@ export const TOKENS = {
   // Inbound ports (application services)
   SettingsService: Symbol.for('void:SettingsService'),
   WorkspaceService: Symbol.for('void:WorkspaceService'),
+  WorkspaceV2Service: Symbol.for('void:WorkspaceV2Service'),
+  DeviceTrustService: Symbol.for('void:DeviceTrustService'),
+  AIJobQueueService: Symbol.for('void:AIJobQueueService'),
   FileService: Symbol.for('void:FileService'),
   CredentialService: Symbol.for('void:CredentialService'),
   ProtectionService: Symbol.for('void:ProtectionService'),
