@@ -683,6 +683,10 @@ class EditorStore {
     return this.#service.getTextBetween(from, to);
   }
 
+  rangeIntersectsProtectedBlock(from: number, to: number): boolean {
+    return this.#service?.rangeIntersectsProtectedBlock(from, to) ?? false;
+  }
+
   getMarkdown() {
     if (!this.#service) throw new Error('EditorStore not initialized');
     return this.#service.getMarkdown();

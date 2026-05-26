@@ -21,11 +21,19 @@
   interface Props {
     /** Tag name (without the leading `#`). */
     tag: string;
+    onNoteContextMenu?: (path: string, title: string, position: { x: number; y: number }, isFolder?: boolean) => void;
   }
 
   type SortKey = 'modified' | 'title';
 
-  let { tag }: Props = $props();
+  let { tag, onNoteContextMenu }: Props = $props();
+
+  function handleContextMenu(event: MouseEvent, path: string, title: string) {
+    if (!onNoteContextMenu) return;
+    event.preventDefault();
+    event.stopPropagation();
+    onNoteContextMenu(path, title, { x: event.clientX, y: event.clientY }, false);
+  }
 
   let group = $derived<TagGroup | null>(
     notesStore.tagGroups.find((entry) => entry.tag === tag) ?? null,
@@ -183,6 +191,7 @@
             role="button"
             tabindex="0"
             onclick={() => openNote(note.path)}
+            oncontextmenu={(event) => handleContextMenu(event, note.path, note.title)}
             onkeydown={(event) => handleRowKeydown(note.path, event)}
           >
             <span class="note-icon" aria-hidden="true">

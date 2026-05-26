@@ -11,11 +11,12 @@
    * - Focus trap (WCAG 2.1 compliant)
    */
 
-  import { notesStore } from '$lib/stores';
+  import { noteWorkspaceStore, notesStore } from '$lib/stores';
   import type { NotesListItem, TagGroup } from '$lib/ports/inbound';
   import { createFocusTrap } from '$lib/utils/focusTrap';
   import { formatRelativeDate } from '$lib/utils/relativeDate';
   import { events } from '$lib/events';
+  import OpenNoteIndicator from '$lib/components/shared/OpenNoteIndicator.svelte';
   import { FileText, Lock, Unlock } from '@lucide/svelte';
 
   /** A command entry for the palette */
@@ -35,9 +36,11 @@
     onClose?: () => void;
     /** Available commands for > prefix mode */
     commands?: PaletteCommand[];
+    /** Right-click on a note row opens the shared note context menu */
+    onNoteContextMenu?: (path: string, title: string, position: { x: number; y: number }, isFolder?: boolean) => void;
   }
 
-  let { isOpen = false, onSelect, onClose, commands = [] }: Props = $props();
+  let { isOpen = false, onSelect, onClose, commands = [], onNoteContextMenu }: Props = $props();
 
   /** Search query */
   let query = $state('');
@@ -431,6 +434,14 @@
                 tabindex={index === selectedIndex ? 0 : -1}
                 aria-selected={index === selectedIndex}
                 onclick={() => handleSelect(note)}
+                oncontextmenu={(event) => {
+                  if (!onNoteContextMenu) return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  const pos = { x: event.clientX, y: event.clientY };
+                  handleClose();
+                  onNoteContextMenu(note.path, note.title, pos, false);
+                }}
                 onkeydown={(e) => e.key === 'Enter' && handleSelect(note)}
                 onmouseenter={() => { selectedIndex = index; }}
               >
@@ -452,6 +463,7 @@
                     <span class="note-date">{formatRelativeDate(note.modifiedAt)}</span>
                   </div>
                 </div>
+                <OpenNoteIndicator state={noteWorkspaceStore.openStateForPath(note.path)} showLabel />
               </div>
             {/each}
           {/if}

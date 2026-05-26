@@ -26,6 +26,7 @@
     onReorderFolder?: (path: string, targetPath: string, position: FolderDropPosition) => boolean | Promise<boolean>;
     onSearch: () => void;
     onSummarize: () => void;
+    onNoteContextMenu?: (path: string, title: string, position: { x: number; y: number }, isFolder?: boolean) => void;
   }
 
   let {
@@ -36,7 +37,15 @@
     onReorderFolder,
     onSearch,
     onSummarize,
+    onNoteContextMenu,
   }: Props = $props();
+
+  function handleItemContextMenu(event: MouseEvent, path: string, title: string, isFolder = false) {
+    if (!onNoteContextMenu) return;
+    event.preventDefault();
+    event.stopPropagation();
+    onNoteContextMenu(path, title, { x: event.clientX, y: event.clientY }, isFolder);
+  }
 
   let folderDndState = $state<SortableState>(createSortableState());
   const folderDnd = createFolderReorderDnd({
@@ -187,6 +196,7 @@
                     type="button"
                     class="folder-open-button"
                     onclick={() => onOpenFolder(folder.path)}
+                    oncontextmenu={(event) => handleItemContextMenu(event, folder.path, folder.title, true)}
                   >
                     <Folder size={15} strokeWidth={1.7} aria-hidden="true" />
                     <span class="row-title">{folder.title}</span>
@@ -208,7 +218,12 @@
           {#if overview.directNotes.length > 0}
             <div class="row-list">
               {#each overview.directNotes as note (note.path)}
-                <button type="button" class="list-row" onclick={() => onOpenNote(note.path)}>
+                <button
+                  type="button"
+                  class="list-row"
+                  onclick={() => onOpenNote(note.path)}
+                  oncontextmenu={(event) => handleItemContextMenu(event, note.path, note.title)}
+                >
                   <FileText size={15} strokeWidth={1.7} aria-hidden="true" />
                   <span class="row-title">{note.title}</span>
                   <span class="row-meta">{formatModified(note.modifiedAt)}</span>
@@ -229,7 +244,12 @@
           </div>
           <div class="nested-list">
             {#each nestedNotes.slice(0, 12) as note (note.path)}
-              <button type="button" class="nested-row" onclick={() => onOpenNote(note.path)}>
+              <button
+                type="button"
+                class="nested-row"
+                onclick={() => onOpenNote(note.path)}
+                oncontextmenu={(event) => handleItemContextMenu(event, note.path, note.title)}
+              >
                 <FileText size={14} strokeWidth={1.7} aria-hidden="true" />
                 <span>{relativeNestedPath(note.path)}</span>
               </button>

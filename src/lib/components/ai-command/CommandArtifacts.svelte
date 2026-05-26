@@ -2,6 +2,7 @@
   import { ExternalLink, FileText, Folder, Globe2, Image, Newspaper, PackageCheck, Video } from '@lucide/svelte';
   import type { AgentArtifact } from '$lib/domain/entities/AgentRun';
   import { notesStore } from '$lib/stores';
+  import { events } from '$lib/events';
 
   interface Props {
     artifacts: AgentArtifact[];
@@ -10,6 +11,18 @@
   }
 
   let { artifacts, limit = 8, compact = false }: Props = $props();
+
+  function handleContextMenu(event: MouseEvent, artifact: AgentArtifact) {
+    if (artifact.type !== 'note' || !artifact.path) return;
+    event.preventDefault();
+    event.stopPropagation();
+    events.emit('app:note-context-menu', {
+      path: artifact.path,
+      title: artifact.title,
+      position: { x: event.clientX, y: event.clientY },
+      isFolder: false,
+    });
+  }
   let visibleArtifacts = $derived(artifacts.slice(0, limit));
   let hiddenCount = $derived(Math.max(artifacts.length - visibleArtifacts.length, 0));
 
@@ -57,6 +70,7 @@
       class="artifact-row"
       disabled={!artifact.path && !artifact.url}
       onclick={() => openArtifact(artifact)}
+      oncontextmenu={(event) => handleContextMenu(event, artifact)}
     >
       <span class="artifact-icon" data-type={artifact.type} aria-hidden="true">
         {#if artifact.type === 'note'}

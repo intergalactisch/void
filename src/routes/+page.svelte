@@ -6,7 +6,7 @@
    * block-based editing, and a persistent status bar.
    */
 
-  import { onMount, onDestroy, untrack } from 'svelte';
+  import { onMount, onDestroy, tick, untrack } from 'svelte';
   import { notesStore, toastStore, settingsStore, aiStore, operationsStore, filesStore, editorStore, todoStore, uiStore, lineageStore, updaterStore, noteWorkspaceStore, protectionStore } from '$lib/stores';
   import { Sidebar, Breadcrumbs, QuickSwitcher, TagDetailView, FolderOverview, SearchPanel, GraphView } from '$lib/components/navigation';
   import NoteContextMenu from '$lib/components/navigation/NoteContextMenu.svelte';
@@ -42,7 +42,7 @@
     type GlobalKeymapBinder,
   } from '$lib/keymap';
   import { formatChord, type KeyChord } from '$lib/domain/values/KeyChord';
-  import { AI_UNAVAILABLE_MESSAGE, buildRefId, deriveTextNoteTitle, type NotePaneDirection } from '$lib/domain/values';
+  import { AI_UNAVAILABLE_MESSAGE, buildRefId, deriveTextNoteTitle, type NotePaneDirection, type NoteWorkspaceTab } from '$lib/domain/values';
   import { copyTextToClipboard } from '$lib/utils/clipboard';
   import type { CommandService } from '$lib/ports/inbound/CommandService';
   import type { DocumentService } from '$lib/ports/inbound/DocumentService';
@@ -785,28 +785,239 @@
   }
 
   function openFolderNote(path: string) {
-    notesStore.selectNote(path);
+    openNoteInNewTab(path);
   }
 
-  function openNoteAsSplit(path: string, direction: NotePaneDirection) {
+  function prepareNoteWorkspace() {
     uiStore.closeTasksWorkspace();
     todoStore.closeWorkspace();
     notesStore.showSidebar();
+  }
 
-    const activeTab = noteWorkspaceStore.activeTab;
-    if (!activeTab || !noteWorkspaceStore.activeNotePath) {
-      noteWorkspaceStore.openNoteTab(path);
-      notesStore.selectNote(path);
+  let noteActivationRun = 0;
+
+  function activateNoteDocument(path: string | null, paneId: string | null = null) {
+    const runId = ++noteActivationRun;
+    if (!path) {
+      notesStore.selectNote(null);
       return;
     }
 
-    const intent = direction === 'horizontal' ? 'right' : 'bottom';
-    const result = noteWorkspaceStore.splitPaneWithNote(activeTab.id, activeTab.activePaneId, intent, path);
-    if (result.notePath) notesStore.selectNote(result.notePath);
-    else {
-      noteWorkspaceStore.openNoteTab(path);
-      notesStore.selectNote(path);
+    notesStore.selectNote(path);
+    void tick().then(() => loadSelectedDocument(path)).then(() => {
+      if (runId !== noteActivationRun) return;
+      return tick();
+    }).then(() => {
+      if (runId !== noteActivationRun) return;
+      const targetPaneId = paneId ?? noteWorkspaceStore.activePaneId;
+      if (targetPaneId) editorStore.focusPane(targetPaneId);
+      else editorStore.focus();
+    });
+    requestAnimationFrame(() => {
+      if (runId !== noteActivationRun) return;
+      const targetPaneId = paneId ?? noteWorkspaceStore.activePaneId;
+      if (targetPaneId) editorStore.focusPane(targetPaneId);
+    });
+  }
+
+  function focusOpenNote(path: string) {
+    prepareNoteWorkspace();
+    const location = noteWorkspaceStore.focusOpenNote(path);
+    if (location) {
+      activateNoteDocument(location.notePath, location.paneId);
+      return;
     }
+    openNoteInNewTab(path);
+  }
+
+  function openNoteInNewTab(path: string) {
+    prepareNoteWorkspace();
+    noteWorkspaceStore.openNoteTab(path);
+    const location = noteWorkspaceStore.findOpenNote(path);
+    activateNoteDocument(path, location?.paneId ?? noteWorkspaceStore.activePaneId);
+  }
+
+  function openNoteAsSplit(path: string, direction: NotePaneDirection) {
+    openNoteInSplit(path, direction);
+  }
+
+  function openNoteInSplit(path: string, direction: NotePaneDirection) {
+    prepareNoteWorkspace();
+
+    const activeTab = noteWorkspaceStore.activeTab;
+    if (!activeTab || noteWorkspaceStore.getNotePaths(activeTab).length === 0) {
+      openNoteInNewTab(path);
+      return;
+    }
+
+    const result = noteWorkspaceStore.addNoteToLayoutEdge(activeTab.id, path, direction);
+    if (result.notePath) activateNoteDocument(result.notePath, result.paneId);
+    else {
+      openNoteInNewTab(path);
+    }
+  }
+
+  function remainingWorkspacePaths(): Set<string> {
+    return new Set(noteWorkspaceStore.tabs.flatMap((tab) => noteWorkspaceStore.getNotePaths(tab)));
+  }
+
+  async function closeEditorSessionIfWorkspaceUnused(path: string | null): Promise<void> {
+    if (!path) return;
+    if (remainingWorkspacePaths().has(path)) return;
+    if (!editorStore.tabs.some((tab) => tab.path === path)) return;
+    await editorStore.closeTab(path);
+  }
+
+  async function closeActiveWorkspaceNote() {
+    const result = noteWorkspaceStore.closeActivePane();
+    if (result.action === 'ignored') return;
+
+    await closeEditorSessionIfWorkspaceUnused(result.closedPath);
+    if (result.nextPath) {
+      activateNoteDocument(result.nextPath, result.nextPaneId);
+      return;
+    }
+
+    notesStore.selectNote(null);
+  }
+
+  function openNoteInExistingLayout(path: string, targetTabId: string) {
+    prepareNoteWorkspace();
+    const tab = noteWorkspaceStore.tabs.find((item) => item.id === targetTabId);
+    if (!tab) {
+      openNoteInNewTab(path);
+      return;
+    }
+
+    const result = noteWorkspaceStore.addNoteToLayout(tab.id, path);
+    if (result.notePath) {
+      activateNoteDocument(result.notePath, result.paneId);
+      return;
+    }
+    openNoteInNewTab(path);
+  }
+
+  function openNoteInNewLayout(path: string) {
+    prepareNoteWorkspace();
+    const existing = noteWorkspaceStore.findOpenNote(path);
+    if (existing) {
+      focusOpenNote(path);
+      return;
+    }
+
+    const activePath = noteWorkspaceStore.activeNotePath;
+    if (!activePath || activePath === path) {
+      openNoteInNewTab(path);
+      return;
+    }
+    const uniquePaths = Array.from(new Set([path, activePath]));
+    if (uniquePaths.length !== 2) {
+      openNoteInNewTab(path);
+      return;
+    }
+
+    const clickedTitle = noteTitleForPath(path).title;
+    const activeTitle = noteTitleForPath(activePath).title;
+    const selectedPath = noteWorkspaceStore.openNotesLayout(uniquePaths, `${clickedTitle} + ${activeTitle}`);
+    activateNoteDocument(selectedPath, noteWorkspaceStore.activePaneId);
+  }
+
+  function noteTitleForPath(notePath: string | null): { title: string; isEmpty: boolean } {
+    if (!notePath) return { title: '(empty pane)', isEmpty: true };
+    const note = notesStore.allNotes.find((n) => n.path === notePath);
+    if (note?.title) return { title: note.title, isEmpty: false };
+    const basename = notePath.split('/').pop() ?? notePath;
+    return { title: basename.replace(/\.md$/i, '') || notePath, isEmpty: false };
+  }
+
+  function workspaceTabTitle(tab: NoteWorkspaceTab): string {
+    if (tab.title) return tab.title;
+    const activePane = noteWorkspaceStore.getActivePane(tab);
+    return noteTitleForPath(activePane.notePath).title;
+  }
+
+  let workspaceLayoutsForMenu = $derived.by(() => (
+    noteWorkspaceStore.tabs
+      .filter((tab) => noteWorkspaceStore.getPaneCount(tab) > 1)
+      .map((tab) => {
+        const tabTitle = workspaceTabTitle(tab);
+        return {
+          tabId: tab.id,
+          title: tabTitle,
+          isActive: tab.id === noteWorkspaceStore.activeTabId,
+          paneCount: noteWorkspaceStore.getNotePaths(tab).length,
+        };
+      })
+  ));
+
+  let noteMenuOpenState = $derived.by(() => {
+    const target = noteContextMenu;
+    if (!target) {
+      return {
+        isOpen: false,
+        canOpenInSplit: false,
+        canOpenInNewLayout: false,
+        canOpenFolderAsLayout: false,
+        folderLayoutNoteCount: 0,
+      };
+    }
+
+    if (target.isFolder) {
+      const noteCount = folderLayoutNotePaths(target.path).length;
+      return {
+        isOpen: false,
+        canOpenInSplit: false,
+        canOpenInNewLayout: false,
+        canOpenFolderAsLayout: noteCount > 0,
+        folderLayoutNoteCount: noteCount,
+      };
+    }
+
+    const openLocation = noteWorkspaceStore.findOpenNote(target.path);
+    const activePath = noteWorkspaceStore.activeNotePath;
+    return {
+      isOpen: !!openLocation,
+      canOpenInSplit: !!noteWorkspaceStore.activeTab && !!activePath && !openLocation,
+      canOpenInNewLayout: !!activePath && activePath !== target.path && !openLocation,
+      canOpenFolderAsLayout: false,
+      folderLayoutNoteCount: 0,
+    };
+  });
+
+  let layoutTargetsForMenu = $derived.by(() => {
+    const target = noteContextMenu;
+    if (!target || target.isFolder || noteMenuOpenState.isOpen) return [];
+    return workspaceLayoutsForMenu
+      .filter((layout) => {
+        const tab = noteWorkspaceStore.tabs.find((item) => item.id === layout.tabId);
+        return !!tab && !noteWorkspaceStore.getNotePaths(tab).includes(target.path);
+      });
+  });
+
+  function folderLayoutNotePaths(folderPath: string): string[] {
+    const overview = notesStore.getFolderOverview(folderPath);
+    if (!overview) return [];
+    return [...overview.allNotes]
+      .sort((a, b) => {
+        const byModified = b.modifiedAt.getTime() - a.modifiedAt.getTime();
+        if (byModified !== 0) return byModified;
+        return a.title.localeCompare(b.title);
+      })
+      .slice(0, 6)
+      .map((note) => note.path);
+  }
+
+  function openFolderAsLayout(path: string) {
+    prepareNoteWorkspace();
+    const notePaths = folderLayoutNotePaths(path);
+    if (notePaths.length === 0) {
+      toastStore.info('No notes in this folder');
+      return;
+    }
+    const folderTitle = noteTitleForPath(path).title;
+    const selectedPath = noteWorkspaceStore.openNotesLayout(notePaths, `${folderTitle} Layout`);
+    activateNoteDocument(selectedPath, noteWorkspaceStore.activePaneId);
+    toastStore.info(`Opened ${notePaths.length} notes as layout`);
   }
 
   function openFolderOverview(path: string) {
@@ -1039,12 +1250,29 @@
     };
     events.on('app:navigate', handleAppNavigate);
 
+    const handleNoteContextMenuEvent = (payload: {
+      path: string;
+      title: string;
+      position: { x: number; y: number };
+      isFolder?: boolean;
+    }) => {
+      noteContextMenu = {
+        path: payload.path,
+        title: payload.title,
+        isFolder: payload.isFolder ?? false,
+        position: payload.position,
+      };
+    };
+    events.on('app:note-context-menu', handleNoteContextMenuEvent);
+
     // Bridge command requests that need DOM-level orchestration this route
     // owns (file dialogs, focusing the tasks capture input).
     const handleOpenMarkdownRequest = () => { void openExternalMarkdownDialog(); };
     events.on('app:request-open-markdown-file', handleOpenMarkdownRequest);
     const handleExportRequest = () => { void exportAsMarkdown(); };
     events.on('app:request-export-markdown', handleExportRequest);
+    const handleCloseActiveNoteRequest = () => { void closeActiveWorkspaceNote(); };
+    events.on('app:request-close-active-note', handleCloseActiveNoteRequest);
 
     let dragDropDisposed = false;
     let unlistenDragDrop: (() => void) | null = null;
@@ -1119,8 +1347,10 @@
       keymapBinder?.dispose();
       keymapBinder = null;
       events.off('app:navigate', handleAppNavigate);
+      events.off('app:note-context-menu', handleNoteContextMenuEvent);
       events.off('app:request-open-markdown-file', handleOpenMarkdownRequest);
       events.off('app:request-export-markdown', handleExportRequest);
+      events.off('app:request-close-active-note', handleCloseActiveNoteRequest);
       events.off('tasks:request-new', handleTasksNewRequest);
       events.off('tasks:request-search', handleTasksSearchRequest);
       events.off('tasks:request-edit-selected', handleTasksEditSelectedRequest);
@@ -1491,7 +1721,12 @@
       {#if tasksWorkspaceOpen}
         <TodoWorkspace bind:this={todoWorkspace} onClose={closeTasksWorkspace} onNavigateToFile={navigateToTodoSource} />
       {:else if activeTagView}
-        <TagDetailView tag={activeTagView} />
+        <TagDetailView
+          tag={activeTagView}
+          onNoteContextMenu={(path, title, position, isFolder = false) => {
+            noteContextMenu = { path, title, isFolder, position };
+          }}
+        />
       {:else if activeFolderOverview}
         <FolderOverview
           overview={activeFolderOverview}
@@ -1501,6 +1736,9 @@
           onReorderFolder={reorderFolderFromOverview}
           onSearch={searchActiveFolder}
           onSummarize={summarizeActiveFolder}
+          onNoteContextMenu={(path, title, position, isFolder = false) => {
+            noteContextMenu = { path, title, isFolder, position };
+          }}
         />
       {:else if error}
         <!-- Error state -->
@@ -1562,7 +1800,7 @@
           </div>
         </div>
       {:else}
-        <WorkspaceTabs />
+        <WorkspaceTabs onActivatePath={(path, paneId) => activateNoteDocument(path, paneId)} />
         <NotePaneWorkspace
           document={currentDocument}
           onSaveStatusChange={(status) => { saveStatus = status; }}
@@ -1596,12 +1834,18 @@
     isOpen={quickSwitcherOpen}
     onClose={() => uiStore.closeQuickSwitcher()}
     commands={paletteCommands}
+    onNoteContextMenu={(path, title, position, isFolder = false) => {
+      noteContextMenu = { path, title, isFolder, position };
+    }}
   />
 
   <!-- Find in Files (Cmd+Shift+F) -->
   <SearchPanel
     isOpen={uiStore.searchPanelOpen}
     onClose={() => uiStore.closeSearchPanel()}
+    onNoteContextMenu={(path, title, position, isFolder = false) => {
+      noteContextMenu = { path, title, isFolder, position };
+    }}
   />
 
   <!-- Local Graph (Cmd+Shift+G) -->
@@ -1686,6 +1930,32 @@
       title={noteContextMenu.title}
       isFolder={noteContextMenu.isFolder}
       position={noteContextMenu.position}
+      openState={noteMenuOpenState}
+      layoutTargets={layoutTargetsForMenu}
+      onFocusOpenNote={(path) => {
+        noteContextMenu = null;
+        focusOpenNote(path);
+      }}
+      onOpenInNewTab={(path) => {
+        noteContextMenu = null;
+        openNoteInNewTab(path);
+      }}
+      onOpenInSplit={(path, direction) => {
+        noteContextMenu = null;
+        openNoteInSplit(path, direction === 'right' ? 'horizontal' : 'vertical');
+      }}
+      onOpenInExistingLayout={(path, targetTabId) => {
+        noteContextMenu = null;
+        openNoteInExistingLayout(path, targetTabId);
+      }}
+      onOpenInNewLayout={(path) => {
+        noteContextMenu = null;
+        openNoteInNewLayout(path);
+      }}
+      onOpenFolderAsLayout={(path) => {
+        noteContextMenu = null;
+        openFolderAsLayout(path);
+      }}
       onRequestDeleteNote={requestNoteDelete}
       onRequestCreateFolder={(parentPath) => {
         noteContextMenu = null;

@@ -1,7 +1,9 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import { Bot, Send, Sparkles } from '@lucide/svelte';
   import type { AgentWorker } from '$lib/domain/entities/AgentRun';
   import { aiStore } from '$lib/stores';
+  import { createTextareaAutosizer } from '$lib/utils/textareaAutosize';
 
   type Target = 'worker' | 'orchestrator';
 
@@ -12,17 +14,18 @@
 
   let { worker, onSend }: Props = $props();
 
-  let draft = $state('');
+  let hasDraft = $state(false);
   let target = $state<Target>('worker');
   let sending = $state(false);
   let error = $state<string | null>(null);
   let textareaRef: HTMLTextAreaElement | null = $state(null);
+  const autosizer = createTextareaAutosizer(280);
 
   let workerRunning = $derived(worker.status === 'running' || worker.status === 'pending');
   let aiUnavailable = $derived(!aiStore.canStartAIWork);
 
   let sendDisabled = $derived(
-    aiUnavailable || !draft.trim() || sending || (target === 'worker' && workerRunning)
+    aiUnavailable || !hasDraft || sending || (target === 'worker' && workerRunning)
   );
 
   let placeholder = $derived.by(() => {
@@ -40,14 +43,15 @@
     return 'Add context for this worker...';
   });
 
-  function resize() {
-    if (!textareaRef) return;
-    textareaRef.style.height = 'auto';
-    textareaRef.style.height = Math.min(textareaRef.scrollHeight, 280) + 'px';
+  function setHasDraft(value: string) {
+    const next = value.trim().length > 0;
+    if (next !== hasDraft) hasDraft = next;
   }
 
-  function handleInput() {
-    resize();
+  function handleInput(event: Event) {
+    const target = event.currentTarget as HTMLTextAreaElement;
+    setHasDraft(target.value);
+    autosizer.schedule(target);
   }
 
   function handleKeydown(event: KeyboardEvent) {
@@ -58,7 +62,7 @@
   }
 
   async function send() {
-    const text = draft.trim();
+    const text = textareaRef?.value.trim() ?? '';
     if (!text || sendDisabled) return;
     if (!aiStore.ensureAIAvailable()) return;
 
@@ -66,10 +70,9 @@
     error = null;
     try {
       await onSend(text, target);
-      draft = '';
-      if (textareaRef) {
-        textareaRef.style.height = 'auto';
-      }
+      if (textareaRef) textareaRef.value = '';
+      setHasDraft('');
+      autosizer.reset(textareaRef);
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -77,9 +80,8 @@
     }
   }
 
-  $effect(() => {
-    void draft;
-    resize();
+  onDestroy(() => {
+    autosizer.cancel();
   });
 </script>
 
@@ -121,7 +123,6 @@
   <div class="composer-row">
     <textarea
       bind:this={textareaRef}
-      bind:value={draft}
       name="worker-command"
       aria-label={`Message ${target === 'worker' ? 'worker' : 'orchestrator'}`}
       aria-keyshortcuts="Enter Control+Enter Meta+Enter Shift+Enter"

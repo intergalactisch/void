@@ -1101,6 +1101,10 @@ export class EditorServiceImpl implements EditorService {
     return this.editorPort?.getTextBetween(from, to) ?? '';
   }
 
+  rangeIntersectsProtectedBlock(from: number, to: number): boolean {
+    return this.editorPort?.rangeIntersectsProtectedBlock(from, to) ?? false;
+  }
+
   resolveInlineAIRangeAnchor(input: EditorInlineAIRangeAnchorInput): EditorInlineAIRangeAnchorResult | null {
     return this.editorPort?.resolveInlineAIRangeAnchor(input) ?? null;
   }

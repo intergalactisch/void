@@ -317,6 +317,11 @@ export interface AgentRunPlan {
   summary: string;
   steps: string[];
   suggestedFolder?: string;
+  researchTarget?: {
+    folder: string;
+    mode: 'reuse' | 'new';
+    previousRunId?: string;
+  };
   suggestedNotes: string[];
   existingNotes: AgentExistingNoteEvidence[];
   citations: ResearchCitation[];

@@ -528,18 +528,10 @@ export function createGlobalCommands(): RegisteredCommand[] {
       description: 'Close the active tab',
       defaultKeybinding: 'mod+w',
       scope: ['global'],
-      execute: async () => {
-        const active = editorStore.activePath;
-        if (!active) return;
-        await editorStore.closeTab(active);
-        const next = editorStore.activePath;
-        if (next && notesStore.selectedPath !== next) {
-          notesStore.selectNote(next);
-        } else if (!next) {
-          notesStore.selectNote(null);
-        }
+      execute: () => {
+        events.emit('app:request-close-active-note', {});
       },
-      runWhen: () => editorStore.activePath !== null,
+      runWhen: () => editorStore.activePath !== null || notesStore.selectedPath !== null,
     },
     {
       id: 'note.exportMarkdown',

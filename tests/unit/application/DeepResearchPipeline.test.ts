@@ -162,7 +162,13 @@ describe('DeepResearchPipeline', () => {
       return current;
     };
 
-    const result = await pipeline.run({ run: current, prompt: 'Research topic X', webAccess: 'native', mutateRun });
+    const result = await pipeline.run({
+      run: current,
+      prompt: 'Research topic X',
+      targetFolder: 'Research/existing-topic-folder',
+      webAccess: 'native',
+      mutateRun,
+    });
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -173,6 +179,7 @@ describe('DeepResearchPipeline', () => {
     expect(titles.some((title) => /Themes and Scope/.test(title))).toBe(true);
     expect(titles.some((title) => /Overview/.test(title))).toBe(true);
     expect(titles.some((title) => /Sources/.test(title))).toBe(true);
+    expect(new Set(collaboration.calls.map((call) => call.folder))).toEqual(new Set(['Research/existing-topic-folder']));
 
     for (const call of collaboration.calls) {
       expect(call.content).not.toMatch(/\b(?:I|We) (?:searched|found|investigated|gathered|looked)\b/);

@@ -13,6 +13,8 @@
     type PaneMovePoint,
     type PaneMovePreview,
     type PaneMoveRect,
+    type PaneMoveReflowSlot,
+    type PaneMoveReflowSlots,
     type PaneMoveSession,
     type PaneMoveTarget,
   } from './paneMove';
@@ -164,10 +166,46 @@
       paneId: paneElement.dataset.paneId,
       notePath: paneElement.dataset.notePath || null,
       rect: rectFromDOMRect(paneElement.getBoundingClientRect()),
+      layoutRect: rectFromDOMRect(
+        paneElement.closest<HTMLElement>('.note-pane-workspace')?.getBoundingClientRect()
+          ?? paneElement.getBoundingClientRect(),
+      ),
     };
 
     if (target.tabId === source.tabId && target.paneId === source.paneId) return target;
     return target;
+  }
+
+  function reflowSlotForIntent(
+    source: NotePaneDragPayload,
+    target: PaneMoveTarget,
+    intent: 'left' | 'right' | 'top' | 'bottom',
+  ): PaneMoveReflowSlot | null {
+    const tab = noteWorkspaceStore.tabs.find((item) => item.id === target.tabId);
+    if (!tab) return null;
+    const targetLeaves = noteWorkspaceStore.getPanes(tab)
+      .filter((pane) => !!pane.notePath && !(pane.paneId === source.paneId && source.tabId === target.tabId));
+    const targetIndex = targetLeaves.findIndex((pane) => pane.paneId === target.paneId);
+    if (targetIndex < 0) return null;
+    const insertIndex = intent === 'left' || intent === 'top' ? targetIndex : targetIndex + 1;
+    return {
+      index: insertIndex,
+      count: targetLeaves.length + 1,
+      layoutRect: target.layoutRect,
+    };
+  }
+
+  function reflowSlotsForTarget(source: NotePaneDragPayload, target: PaneMoveTarget): PaneMoveReflowSlots {
+    const slots: PaneMoveReflowSlots = {};
+    const left = reflowSlotForIntent(source, target, 'left');
+    const right = reflowSlotForIntent(source, target, 'right');
+    const top = reflowSlotForIntent(source, target, 'top');
+    const bottom = reflowSlotForIntent(source, target, 'bottom');
+    if (left) slots.left = left;
+    if (right) slots.right = right;
+    if (top) slots.top = top;
+    if (bottom) slots.bottom = bottom;
+    return slots;
   }
 
   function previewForTarget(
@@ -178,7 +216,7 @@
     if (!target) return null;
     if (target.tabId === source.tabId && target.paneId === source.paneId) return null;
     if (!target.notePath) return null;
-    return resolvePaneMovePreview(point, target.rect);
+    return resolvePaneMovePreview(point, target.rect, reflowSlotsForTarget(source, target));
   }
 
   function updatePaneMoveSession(point: PaneMovePoint): void {
@@ -318,6 +356,7 @@
       {#if activeTab.root.type === 'leaf'}
         <section
           class="note-pane-leaf note-pane-single-target"
+          class:active={noteWorkspaceStore.activePaneId === activeTab.root.paneId}
           class:pane-moving-target={paneMoveTargetId === activeTab.root.paneId}
           data-pane-id={activeTab.root.paneId}
           data-tab-id={activeTab.id}

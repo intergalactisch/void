@@ -915,6 +915,66 @@ describe('ProseMirrorAdapter', () => {
       expect(adapter.getMarkdown()).not.toContain('API_KEY=secret');
     });
 
+    it('detects selections that overlap protected-line blocks', async () => {
+      const doc = createTestDocument({
+        blocks: [
+          {
+            id: 'p1',
+            type: 'paragraph',
+            content: 'Public intro',
+            marks: [],
+            children: [],
+            attrs: { type: 'paragraph' },
+          },
+          {
+            id: 'protected-1',
+            type: 'protectedBlock',
+            content: '',
+            marks: [],
+            children: [
+              {
+                id: 'protected-child-1',
+                type: 'paragraph',
+                content: 'secret line',
+                marks: [],
+                children: [],
+                attrs: { type: 'paragraph' },
+              },
+            ],
+            attrs: {
+              type: 'protectedBlock',
+              protectionId: 'pblk_test',
+              keyId: 'pkey_test',
+              algorithm: 'AES-256-GCM',
+              envelopeVersion: 1,
+              protectedAt: '2026-05-24T00:00:00.000Z',
+              titleVisible: true,
+              lineCount: 1,
+              lockState: 'unlocked',
+              envelope: '{}',
+            },
+          },
+          {
+            id: 'p2',
+            type: 'paragraph',
+            content: 'Public outro',
+            marks: [],
+            children: [],
+            attrs: { type: 'paragraph' },
+          },
+        ],
+      });
+
+      await adapter.mount(container, doc);
+      const view = getMountedView(adapter);
+      const publicFrom = positionInText(view, 'Public intro');
+      const secretFrom = positionInText(view, 'secret line');
+
+      expect(adapter.rangeIntersectsProtectedBlock(publicFrom, publicFrom + 'Public'.length)).toBe(false);
+      expect(adapter.rangeIntersectsProtectedBlock(secretFrom, secretFrom + 'secret'.length)).toBe(true);
+      expect(adapter.rangeIntersectsProtectedBlock(publicFrom, secretFrom + 'secret'.length)).toBe(true);
+    });
+
     it('replaces a multi-block partial range while preserving outside text', async () => {
       const doc = createTestDocument({
         blocks: [

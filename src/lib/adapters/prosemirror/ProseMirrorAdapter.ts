@@ -735,6 +735,28 @@ export class ProseMirrorAdapter implements EditorPort {
     return this.view.state.doc.textBetween(safeFrom, safeTo, '\n');
   }
 
+  rangeIntersectsProtectedBlock(from: number, to: number): boolean {
+    if (!this.view) return false;
+    if (!Number.isFinite(from) || !Number.isFinite(to) || from === to) return false;
+
+    const docSize = this.view.state.doc.content.size;
+    const safeFrom = Math.max(0, Math.min(Math.min(from, to), docSize));
+    const safeTo = Math.max(0, Math.min(Math.max(from, to), docSize));
+    if (safeFrom === safeTo) return false;
+
+    let intersects = false;
+    this.view.state.doc.descendants((node, pos) => {
+      if (intersects) return false;
+      if (node.type.name !== 'protectedBlock') return true;
+
+      const blockFrom = pos;
+      const blockTo = pos + node.nodeSize;
+      intersects = safeFrom < blockTo && safeTo > blockFrom;
+      return false;
+    });
+    return intersects;
+  }
+
   resolveInlineAIRangeAnchor(input: EditorInlineAIRangeAnchorInput): EditorInlineAIRangeAnchorResult | null {
     if (!this.view) return null;
     const originalText = input.originalText;

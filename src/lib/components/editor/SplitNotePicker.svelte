@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { noteWorkspaceStore, notesStore } from '$lib/stores';
+  import OpenNoteIndicator from '$lib/components/shared/OpenNoteIndicator.svelte';
   import { FileSearch, X } from '@lucide/svelte';
 
   interface Props {
@@ -16,13 +17,9 @@
   let selectedIndex = $state(0);
   let inputElement: HTMLInputElement | null = $state(null);
 
-  const openNotePaths = $derived.by(() =>
-    new Set(noteWorkspaceStore.tabs.flatMap((tab) => noteWorkspaceStore.getNotePaths(tab)))
-  );
-
   const filteredNotes = $derived.by(() => {
     const needle = query.trim().toLowerCase();
-    const notes = notesStore.allNotes.filter((note) => !note.isFolder && !openNotePaths.has(note.path));
+    const notes = notesStore.allNotes.filter((note) => !note.isFolder);
     if (!needle) return notes.slice(0, 40);
     return notes
       .filter((note) => {
@@ -38,7 +35,26 @@
     }
   });
 
+  function isEmptyPlaceholderPane(): boolean {
+    const tab = noteWorkspaceStore.tabs.find((item) => item.id === tabId);
+    const pane = tab ? noteWorkspaceStore.getPanes(tab).find((candidate) => candidate.paneId === paneId) : null;
+    return pane?.notePath === null;
+  }
+
   function pick(path: string): void {
+    const existing = noteWorkspaceStore.findOpenNote(path);
+    if (existing) {
+      if (isEmptyPlaceholderPane()) {
+        noteWorkspaceStore.closePane(tabId, paneId);
+      }
+      const focused = noteWorkspaceStore.focusOpenNote(path);
+      if (focused?.notePath) {
+        notesStore.selectNote(focused.notePath);
+        onPick?.(focused.notePath);
+      }
+      return;
+    }
+
     const selectedPath = noteWorkspaceStore.setPaneNote(tabId, paneId, path);
     if (selectedPath) {
       notesStore.selectNote(selectedPath);
@@ -114,6 +130,7 @@
         {#if folderCrumb(note.path)}
           <span class="split-note-crumb">{folderCrumb(note.path)}</span>
         {/if}
+        <OpenNoteIndicator state={noteWorkspaceStore.openStateForPath(note.path)} />
       </button>
     {:else}
       <div class="split-note-empty">No matching notes</div>

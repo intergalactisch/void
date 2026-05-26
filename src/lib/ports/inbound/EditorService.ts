@@ -306,6 +306,11 @@ export interface EditorService {
   getTextBetween(from: number, to: number): string;
 
   /**
+   * Return true when the editor range overlaps an existing protected-lines block.
+   */
+  rangeIntersectsProtectedBlock(from: number, to: number): boolean;
+
+  /**
    * Re-resolve an inline AI text anchor against the mounted editor.
    */
   resolveInlineAIRangeAnchor(input: EditorInlineAIRangeAnchorInput): EditorInlineAIRangeAnchorResult | null;

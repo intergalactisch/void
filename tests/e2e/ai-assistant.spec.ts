@@ -95,6 +95,57 @@ test.describe('AI Assistant', () => {
     await expect(page.locator('.void-ai-prompt-widget')).toHaveCount(0);
   });
 
+  test('inline Ask typing does not dispatch editor draft transactions', async ({ page }) => {
+    await page.keyboard.press('Meta+n');
+    const editor = page.locator('.ProseMirror');
+    await expect(editor).toBeVisible();
+    await editor.click();
+    await page.keyboard.type('Inline ask source text');
+
+    await page.evaluate(async () => {
+      const { aiStore, editorStore } = await import('/src/lib/stores/index.ts');
+      aiStore.availabilityStatus = 'available';
+      aiStore.isAIAvailable = true;
+      aiStore.availabilityMessage = null;
+
+      const win = window as typeof window & {
+        __inlineDraftUpdates: number;
+        __inlineSubmittedPrompt?: string;
+      };
+      win.__inlineDraftUpdates = 0;
+      const originalUpdateDraft = editorStore.updateAIInlineComposerDraft.bind(editorStore);
+      editorStore.updateAIInlineComposerDraft = (id: string, prompt: string) => {
+        win.__inlineDraftUpdates += 1;
+        originalUpdateDraft(id, prompt);
+      };
+      editorStore.submitAIInlineComposer = (_id: string, prompt: string) => {
+        win.__inlineSubmittedPrompt = prompt;
+      };
+    });
+
+    await page.evaluate(async () => {
+      const { editorStore } = await import('/src/lib/stores/index.ts');
+      const editor = document.querySelector('.ProseMirror');
+      if (!editor) return;
+      const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+      const node = walker.nextNode();
+      if (!node?.textContent) return;
+      editorStore.aiPromptSelectionAt(1, 1 + node.textContent.length, node.textContent);
+    });
+
+    const inlineComposer = page.getByRole('textbox', {
+      name: /describe what ai should do with this text/i,
+    });
+    await expect(inlineComposer).toBeVisible();
+    await inlineComposer.click();
+    await page.keyboard.type('Make this crisp and direct');
+
+    expect(await page.evaluate(() => (window as typeof window & { __inlineDraftUpdates: number }).__inlineDraftUpdates)).toBe(0);
+
+    await inlineComposer.press('Enter');
+    expect(await page.evaluate(() => (window as typeof window & { __inlineSubmittedPrompt?: string }).__inlineSubmittedPrompt)).toBe('Make this crisp and direct');
+  });
+
   test('closes AI prompt on Escape', async ({ page }) => {
     // Open with Cmd+K
     await page.keyboard.press('Meta+k');

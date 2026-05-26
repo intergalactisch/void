@@ -15,7 +15,7 @@
   import type { OperationSummary } from '$lib/ports/inbound/OperationService';
   import type { CommandWorkDatePreset } from '$lib/stores/commandCenter.svelte';
   import { aiStore, commandCenterStore, operationsStore } from '$lib/stores';
-  import { VirtualList } from '$lib/components/shared';
+  import { SelectShell, VirtualList } from '$lib/components/shared';
 
   type WorkItem =
     | { kind: 'thread'; summary: ConversationSummary }
@@ -286,30 +286,34 @@
   <div class="filter-row">
     <label>
       <span>Status</span>
-      <select
-        name="command-center-status"
-        aria-label="Filter work by status"
-        value={filters.status}
-        onchange={(event) => commandCenterStore.setWorkIndexStatus(event.currentTarget.value)}
-      >
-        {#each statusOptions as option}
-          <option value={option.value}>{option.label}</option>
-        {/each}
-      </select>
+      <SelectShell class="command-history-select-shell">
+        <select
+          name="command-center-status"
+          aria-label="Filter work by status"
+          value={filters.status}
+          onchange={(event) => commandCenterStore.setWorkIndexStatus(event.currentTarget.value)}
+        >
+          {#each statusOptions as option}
+            <option value={option.value}>{option.label}</option>
+          {/each}
+        </select>
+      </SelectShell>
     </label>
 
     <label>
       <span>Date</span>
-      <select
-        name="command-center-date-preset"
-        aria-label="Filter work by date"
-        value={filters.datePreset}
-        onchange={(event) => commandCenterStore.setWorkIndexDatePreset(event.currentTarget.value as CommandWorkDatePreset)}
-      >
-        {#each presetOptions as option}
-          <option value={option.value}>{option.label}</option>
-        {/each}
-      </select>
+      <SelectShell class="command-history-select-shell">
+        <select
+          name="command-center-date-preset"
+          aria-label="Filter work by date"
+          value={filters.datePreset}
+          onchange={(event) => commandCenterStore.setWorkIndexDatePreset(event.currentTarget.value as CommandWorkDatePreset)}
+        >
+          {#each presetOptions as option}
+            <option value={option.value}>{option.label}</option>
+          {/each}
+        </select>
+      </SelectShell>
     </label>
   </div>
 
@@ -560,7 +564,6 @@
     font-weight: 650;
   }
 
-  select,
   input[type='date'] {
     width: 100%;
     min-width: 0;
@@ -570,6 +573,15 @@
     background: var(--bg-card);
     color: var(--text-secondary);
     font: inherit;
+    font-size: 11px;
+  }
+
+  :global(.command-history-select-shell) {
+    --select-min-height: 28px;
+    --select-padding-x: 8px;
+    --select-padding-y: 4px;
+    --select-radius: var(--radius-sm);
+    width: 100%;
     font-size: 11px;
   }
 

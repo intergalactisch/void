@@ -8,6 +8,8 @@
 
   import type { NotesListItem } from '$lib/ports/inbound';
   import type { FolderDropPosition } from '$lib/ports/inbound';
+  import { noteWorkspaceStore } from '$lib/stores';
+  import OpenNoteIndicator from '$lib/components/shared/OpenNoteIndicator.svelte';
   import { ChevronRight, FileText, Folder, FolderOpen, FolderPlus, GripVertical, Lock, MoreHorizontal, Unlock } from '@lucide/svelte';
   import type { FolderReorderDnd } from './folderReorderDnd';
 
@@ -48,6 +50,7 @@
   }: Props = $props();
 
   let sortableItemAction = $derived(folderDnd?.itemAction ?? noopAction);
+  let openState = $derived(item.isFolder ? null : noteWorkspaceStore.openStateForPath(item.path));
 
   function handleClick(event: MouseEvent) {
     event.stopPropagation();
@@ -154,6 +157,7 @@
 
   <!-- Title -->
   <span class="flex-1 truncate">{item.title}</span>
+  <OpenNoteIndicator state={openState} />
 
   {#if item.isFolder}
     <!-- Drag handle (on hover) — moved to the right so the row's left edge

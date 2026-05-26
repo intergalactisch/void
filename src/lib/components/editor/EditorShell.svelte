@@ -33,10 +33,11 @@
   import type { SlashMenuState } from '$lib/adapters/prosemirror/plugins/slashMenu';
   import type { PageLinkNote, PageLinkState } from '$lib/adapters/prosemirror/plugins/pageLink';
   import { SlashMenu, BlockMenu, EditorToolbar, PageLinkPopup, FindReplaceBar, RelationsPanel, LineageHistoryWorkspace, BranchPicker, SessionRibbon } from '$lib/components/editor';
+  import InlineAIComposer from './InlineAIComposer.svelte';
   import type { BlockMenuAction } from '$lib/components/editor/BlockMenu.svelte';
   import type { EditorInlineAIComposerView, RegisteredCommand } from '$lib/ports/outbound';
   import type { BlockType } from '$lib/domain/values/BlockType';
-  import { CheckCircle2, KeyRound, LocateFixed, Lock, MessageSquare, Plus, Send, Shield, ShieldOff, Sparkles, Unlock, X } from '@lucide/svelte';
+  import { CheckCircle2, KeyRound, LocateFixed, Lock, MessageSquare, Plus, Shield, ShieldOff, Sparkles, Unlock, X } from '@lucide/svelte';
 
   const LEGACY_EDITOR_PANE_ID = '__legacy__';
 
@@ -112,6 +113,7 @@
   let grantingAIApproval = $state(false);
   let pendingInlineApprovalComposerId: string | null = $state(null);
   let grantingInlineAIApproval = $state(false);
+  const inlineAIComposerDrafts = new Map<string, string>();
 
   const slashMenuState = $derived.by(() =>
     (editorStore.slashMenuState as SlashMenuState | null) ?? DEFAULT_SLASH_MENU_STATE
@@ -158,6 +160,14 @@
   const hasTextSelection = $derived(
     activeSelection.from !== activeSelection.to
       && activeSelection.text.trim().length > 0,
+  );
+  const selectionOverlapsProtectedLines = $derived(
+    shellIsActive
+      && activeSelection.from !== activeSelection.to
+      && editorStore.rangeIntersectsProtectedBlock(activeSelection.from, activeSelection.to),
+  );
+  const canProtectTextSelection = $derived(
+    hasTextSelection && !selectionOverlapsProtectedLines,
   );
   const noteLevelAIAuthorization = $derived.by(() => {
     if (!protection || protection.level !== 'protected') return null;
@@ -207,6 +217,12 @@
 
   function mountIsCurrent(runId: number): boolean {
     return !destroyed && runId === mountRunId;
+  }
+
+  function mountKeyFor(document: Document): string {
+    const documentId = document.meta.id || document.path;
+    const lockState = document.meta.protection?.lockState ?? 'normal';
+    return `${paneId ?? LEGACY_EDITOR_PANE_ID}:${document.path}:${documentId}:${lockState}`;
   }
 
   async function waitForEditorContainer(runId: number): Promise<HTMLDivElement | null> {
@@ -393,22 +409,34 @@
     input?.focus({ preventScroll: true });
   }
 
-  function handleComposerInput(composer: EditorInlineAIComposerView, event: Event) {
-    const target = event.target as HTMLInputElement | null;
-    editorStore.updateAIInlineComposerDraft(composer.id, target?.value ?? '');
+  function getInlineAIComposerDraft(composer: EditorInlineAIComposerView): string {
+    return inlineAIComposerDrafts.get(composer.id) ?? composer.draftPrompt;
   }
 
-  async function submitComposer(composer: EditorInlineAIComposerView) {
-    const prompt = composer.draftPrompt.trim();
+  function rememberInlineAIComposerDraft(composerId: string, value: string) {
+    inlineAIComposerDrafts.set(composerId, value);
+  }
+
+  function pruneInlineAIComposerDrafts(composers: EditorInlineAIComposerView[]) {
+    const activeIds = new Set(composers.map((composer) => composer.id));
+    for (const composerId of inlineAIComposerDrafts.keys()) {
+      if (!activeIds.has(composerId)) inlineAIComposerDrafts.delete(composerId);
+    }
+  }
+
+  async function submitComposer(composer: EditorInlineAIComposerView, draftPrompt = getInlineAIComposerDraft(composer)) {
+    const prompt = draftPrompt.trim();
     if (!prompt) return;
     if (!(await ensureInlineAIApproval(composer))) return;
     focusedComposerInputId = null;
+    inlineAIComposerDrafts.delete(composer.id);
     editorStore.submitAIInlineComposer(composer.id, prompt);
     requestAnimationFrame(refreshInlineAIComposerPositions);
   }
 
   function cancelComposer(composerId: string) {
     focusedComposerInputId = null;
+    inlineAIComposerDrafts.delete(composerId);
     editorStore.cancelAIInlineComposer(composerId);
     requestAnimationFrame(refreshInlineAIComposerPositions);
   }
@@ -418,22 +446,6 @@
     if (composer && !(await ensureInlineAIApproval(composer))) return;
     editorStore.focusAIInlineComposer(composerId);
     void focusInlineAIComposerInput(composerId);
-  }
-
-  function handleComposerKeyDown(
-    event: KeyboardEvent,
-    composer: EditorInlineAIComposerView,
-  ) {
-    event.stopPropagation();
-    if (event.key === 'Enter') {
-      event.preventDefault();
-      void submitComposer(composer);
-      return;
-    }
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      cancelComposer(composer.id);
-    }
   }
 
   function stopComposerEvent(event: Event) {
@@ -513,6 +525,10 @@
     const selectedText = text.trim() ? text : editorStore.getTextBetween(from, to);
     if (!selectedText.trim() || from === to) {
       toastStore.info('Highlight one or more lines first');
+      return;
+    }
+    if (editorStore.rangeIntersectsProtectedBlock(from, to)) {
+      toastStore.info('Selected lines are already protected');
       return;
     }
     let capsule = await protectionStore.protectBlock(
@@ -1113,14 +1129,14 @@
   }
 
   $effect(() => {
-    const docKey = doc?.meta?.id ? `${doc.meta.id}:${doc.meta.protection?.lockState ?? 'normal'}` : null;
+    const docKey = mountKeyFor(doc);
     if (doc.meta.protection?.lockState === 'locked') {
       mountRunId += 1;
       previousDocId = docKey;
       onCountsChange?.(0, 0);
       return;
     }
-    if (docKey && docKey !== previousDocId && editorContainer) {
+    if (docKey !== previousDocId && editorContainer?.isConnected) {
       previousDocId = docKey;
       recoveredEmptyHost = false;
       mountEditor(doc);
@@ -1185,6 +1201,7 @@
       return;
     }
 
+    pruneInlineAIComposerDrafts(composers);
     void tick().then(() => {
       refreshInlineAIComposerPositions();
       if (activeComposerId && activeComposerId !== focusedComposerInputId) {
@@ -1220,6 +1237,14 @@
     mountedPaneId = paneId ?? LEGACY_EDITOR_PANE_ID;
     window.addEventListener('resize', refreshInlineAIComposerPositions);
     window.addEventListener('void:inline-ai-thread-action', handleInlineAIAction);
+    void tick().then(() => {
+      if (destroyed || doc.meta.protection?.lockState === 'locked' || !editorContainer?.isConnected) return;
+      const docKey = mountKeyFor(doc);
+      if (docKey === previousDocId) return;
+      previousDocId = docKey;
+      recoveredEmptyHost = false;
+      void mountEditor(doc);
+    });
     return () => {
       window.removeEventListener('resize', refreshInlineAIComposerPositions);
       window.removeEventListener('void:inline-ai-thread-action', handleInlineAIAction);
@@ -1331,7 +1356,7 @@
                   </div>
                 {/if}
               </div>
-              {#if hasTextSelection}
+              {#if canProtectTextSelection}
                 <button type="button" class="protection-action subtle" onclick={handleProtectSelectedLines}>
                   <Lock size={14} strokeWidth={2} aria-hidden="true" />
                   <span>Protect selected lines</span>
@@ -1351,7 +1376,7 @@
               <Shield size={14} strokeWidth={2} aria-hidden="true" />
               <span>Protect note</span>
             </button>
-            {#if hasTextSelection}
+            {#if canProtectTextSelection}
               <button type="button" class="protection-action subtle" onclick={handleProtectSelectedLines}>
                 <Lock size={14} strokeWidth={2} aria-hidden="true" />
                 <span>Protect selected lines</span>
@@ -1545,43 +1570,13 @@
             </div>
           </div>
         {:else if composer.isActive}
-          <div class="floating-inline-ai-composer-shell">
-            <Sparkles size={15} strokeWidth={2} aria-hidden="true" />
-            <input
-              name={`inline-ai-composer-${composer.id}`}
-              type="text"
-              aria-label="Describe what AI should do with this text"
-              placeholder="Describe what to do with this text..."
-              autocomplete="off"
-              spellcheck="false"
-              value={composer.draftPrompt}
-              oninput={(event) => handleComposerInput(composer, event)}
-              onkeydown={(event) => handleComposerKeyDown(event, composer)}
-              oncopy={stopComposerEvent}
-              oncut={stopComposerEvent}
-              onpaste={stopComposerEvent}
-            />
-            <button
-              type="button"
-              class="floating-inline-ai-send"
-              disabled={!composer.draftPrompt.trim()}
-              onclick={() => submitComposer(composer)}
-              title="Send"
-              aria-label="Send inline AI request"
-            >
-              <Send size={14} strokeWidth={2} aria-hidden="true" />
-              <span>Send</span>
-            </button>
-            <button
-              type="button"
-              class="floating-inline-ai-close"
-              onclick={() => cancelComposer(composer.id)}
-              title="Close"
-              aria-label="Close inline AI composer"
-            >
-              <X size={14} strokeWidth={2} aria-hidden="true" />
-            </button>
-          </div>
+          <InlineAIComposer
+            composerId={composer.id}
+            initialDraft={getInlineAIComposerDraft(composer)}
+            onDraftChange={rememberInlineAIComposerDraft}
+            onSubmit={(prompt) => submitComposer(composer, prompt)}
+            onCancel={() => cancelComposer(composer.id)}
+          />
         {:else}
           <button
             type="button"
@@ -2114,21 +2109,6 @@
     pointer-events: auto;
   }
 
-  .floating-inline-ai-composer-shell {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    width: min(520px, calc(100vw - 32px));
-    max-width: inherit;
-    min-height: 38px;
-    padding: 4px 5px 4px 10px;
-    border: 1px solid color-mix(in srgb, var(--accent-primary) 32%, var(--border-light));
-    border-radius: var(--radius-md);
-    background: var(--bg-card);
-    color: var(--accent-primary);
-    box-shadow: 0 10px 28px rgba(15, 23, 42, 0.12);
-  }
-
   .floating-inline-ai-approval {
     display: grid;
     gap: 9px;
@@ -2175,23 +2155,6 @@
     align-items: center;
     gap: 6px;
     justify-content: flex-end;
-  }
-
-  .floating-inline-ai-composer-shell input {
-    flex: 1;
-    min-width: 0;
-    height: 30px;
-    padding: 0 4px;
-    border: 0;
-    background: transparent;
-    color: var(--text-primary);
-    font: inherit;
-    font-size: var(--text-small);
-    outline: none;
-  }
-
-  .floating-inline-ai-composer-shell input::placeholder {
-    color: var(--text-tertiary);
   }
 
   .floating-inline-ai-send,

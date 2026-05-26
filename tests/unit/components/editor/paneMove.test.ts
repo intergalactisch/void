@@ -27,6 +27,24 @@ describe('pane move preview resolver', () => {
     expect(right.previewRect).toEqual({ left: 300, top: 80, width: 200, height: 300 });
   });
 
+  it('uses final equalized layout slots when reflow slot metadata is provided', () => {
+    const preview = resolvePaneMovePreview({ x: 375, y: 230 }, targetRect, {
+      right: {
+        index: 2,
+        count: 3,
+        layoutRect: { left: 20, top: 40, width: 900, height: 500 },
+      },
+    });
+
+    expect(preview.intent).toBe('right');
+    expect(preview.previewRect).toEqual({
+      left: 620,
+      top: 40,
+      width: 300,
+      height: 500,
+    });
+  });
+
   it('resolves top and bottom thirds to half-height rectangles', () => {
     const top = resolvePaneMovePreview({ x: 300, y: 175 }, targetRect);
     const bottom = resolvePaneMovePreview({ x: 300, y: 285 }, targetRect);

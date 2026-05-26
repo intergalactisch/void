@@ -24,3 +24,4 @@ export { default as ClipboardHistoryPicker } from './ClipboardHistoryPicker.svel
 export { default as VirtualList } from './VirtualList.svelte';
 export { default as ProtectionUnlockSheet } from './ProtectionUnlockSheet.svelte';
 export { default as FolderReconnectSheet } from './FolderReconnectSheet.svelte';
+export { default as OpenNoteIndicator } from './OpenNoteIndicator.svelte';

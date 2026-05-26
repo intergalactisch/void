@@ -428,4 +428,159 @@ describe('AgentOrchestrationServiceImpl', () => {
     expect(service.getState().currentRun?.id).toBe('run-waiting');
     expect(service.getState().isRunning).toBe(true);
   });
+
+  it('resolves a new research folder when the conversation has no prior research', async () => {
+    const { service } = createServiceFixture();
+
+    const target = await service.resolveResearchTarget('Do research on OpenAI', {
+      conversationId: 'conv-empty',
+    });
+
+    expect(target.ok).toBe(true);
+    if (!target.ok) return;
+    expect(target.value.action).toBe('use');
+    if (target.value.action !== 'use') return;
+    expect(target.value.target.mode).toBe('new');
+    expect(target.value.target.folder).toMatch(/^Research\/openai /);
+  });
+
+  it('reuses the previous deep research folder for a same-conversation follow-up', async () => {
+    const { service, storage } = createServiceFixture();
+    const prior = createAgentRun({
+      id: 'run-openai',
+      prompt: 'Do research on OpenAI',
+      conversationId: 'conv-research',
+      approvalRequired: false,
+      orchestrationMode: 'swarm',
+    });
+    prior.deepResearch = {
+      topic: 'OpenAI',
+      topicSlug: 'openai',
+      folder: 'Research/openai 2026-05-26',
+      phase: 'sources',
+      aspects: [],
+      evidence: [],
+      startedAt: '2026-05-26T10:00:00.000Z',
+    };
+    await storage.save(prior);
+
+    const target = await service.resolveResearchTarget('Add more about model releases', {
+      conversationId: 'conv-research',
+    });
+
+    expect(target.ok).toBe(true);
+    if (!target.ok || target.value.action !== 'use') return;
+    expect(target.value.target).toEqual({
+      folder: 'Research/openai 2026-05-26',
+      mode: 'reuse',
+      previousRunId: 'run-openai',
+    });
+  });
+
+  it('finds prior research folders from plan and note artifacts', async () => {
+    const { service, storage } = createServiceFixture();
+    const planned = createAgentRun({
+      id: 'run-planned',
+      prompt: 'Do research on OpenAI',
+      conversationId: 'conv-plan',
+      approvalRequired: false,
+    });
+    planned.plan = {
+      summary: 'Research OpenAI',
+      steps: [],
+      suggestedFolder: 'Research/openai-from-plan',
+      suggestedNotes: [],
+      existingNotes: [],
+      citations: [],
+    };
+    await storage.save(planned);
+
+    const fromPlan = await service.resolveResearchTarget('More details about leadership', {
+      conversationId: 'conv-plan',
+    });
+    expect(fromPlan.ok && fromPlan.value.action === 'use' && fromPlan.value.target.folder).toBe('Research/openai-from-plan');
+
+    const artifactRun = createAgentRun({
+      id: 'run-artifact',
+      prompt: 'Do research on Anthropic',
+      conversationId: 'conv-artifact',
+      approvalRequired: false,
+    });
+    artifactRun.artifacts.push({
+      id: 'artifact-note',
+      type: 'note',
+      title: 'Anthropic Overview',
+      path: 'Research/anthropic-existing/Overview.md',
+      createdAt: '2026-05-26T10:00:00.000Z',
+    });
+    await storage.save(artifactRun);
+
+    const fromArtifact = await service.resolveResearchTarget('Also add funding history', {
+      conversationId: 'conv-artifact',
+    });
+    expect(fromArtifact.ok && fromArtifact.value.action === 'use' && fromArtifact.value.target.folder).toBe('Research/anthropic-existing');
+  });
+
+  it('asks for confirmation when a same-conversation research prompt is clearly a different topic', async () => {
+    const { service, storage } = createServiceFixture();
+    const prior = createAgentRun({
+      id: 'run-openai',
+      prompt: 'Do research on OpenAI',
+      conversationId: 'conv-research',
+      approvalRequired: false,
+    });
+    prior.plan = {
+      summary: 'Research OpenAI',
+      steps: [],
+      suggestedFolder: 'Research/openai 2026-05-26',
+      suggestedNotes: [],
+      existingNotes: [],
+      citations: [],
+    };
+    await storage.save(prior);
+
+    const target = await service.resolveResearchTarget('Do research on Anthropic', {
+      conversationId: 'conv-research',
+    });
+
+    expect(target.ok).toBe(true);
+    if (!target.ok) return;
+    expect(target.value).toEqual(expect.objectContaining({
+      action: 'needs_confirmation',
+      previousFolder: 'Research/openai 2026-05-26',
+      previousRunId: 'run-openai',
+    }));
+  });
+
+  it('asks for confirmation for another research prompt with a different explicit topic', async () => {
+    const { service, storage } = createServiceFixture();
+    const prior = createAgentRun({
+      id: 'run-openai',
+      prompt: 'Do research on OpenAI',
+      conversationId: 'conv-another-topic',
+      approvalRequired: false,
+    });
+    prior.deepResearch = {
+      topic: 'OpenAI',
+      topicSlug: 'openai',
+      folder: 'Research/openai 2026-05-26',
+      phase: 'sources',
+      aspects: [],
+      evidence: [],
+      startedAt: '2026-05-26T10:00:00.000Z',
+    };
+    await storage.save(prior);
+
+    const target = await service.resolveResearchTarget('Do another research on Anthropic', {
+      conversationId: 'conv-another-topic',
+    });
+
+    expect(target.ok).toBe(true);
+    if (!target.ok) return;
+    expect(target.value).toEqual(expect.objectContaining({
+      action: 'needs_confirmation',
+      previousFolder: 'Research/openai 2026-05-26',
+      previousRunId: 'run-openai',
+    }));
+  });
 });

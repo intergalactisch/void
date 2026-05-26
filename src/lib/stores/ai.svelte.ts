@@ -29,6 +29,7 @@ import type {
   ContinueWorkerOptions,
   AgentIntakeService,
   AgentIntakeDecision,
+  ResearchRunTarget,
 } from '$lib/ports/inbound';
 import type { ContextProviderPort } from '$lib/ports/outbound/ContextProviderPort';
 import type { Conversation } from '$lib/domain/entities/Conversation';
@@ -56,6 +57,17 @@ export interface SubmitPromptOptions {
   clientTurnId?: string;
 }
 
+interface PendingResearchTargetConfirmation {
+  conversationId: string;
+  originalPrompt: string;
+  originalClientTurnId?: string;
+  previousFolder: string;
+  proposedFolder: string;
+  previousRunId: string;
+  useSwarm: boolean;
+  webAccess?: StartAgentRunOptions['webAccess'];
+}
+
 /**
  * AI Assistant Store class with reactive state using Svelte 5 runes.
  *
@@ -72,6 +84,7 @@ class AIStore {
   #unsubscribe: (() => void) | null = null;
   #agentUnsubscribe: (() => void) | null = null;
   #agentRunUnsubscribe: (() => void) | null = null;
+  #pendingResearchTargetConfirmation: PendingResearchTargetConfirmation | null = null;
 
   // Reactive state from AIInteractionState
   isProcessing = $state(false);
@@ -148,6 +161,7 @@ class AIStore {
     this.#cleanup();
 
     this.#service = service;
+    this.#pendingResearchTargetConfirmation = null;
     this.availabilityStatus = 'unknown';
     this.isAIAvailable = true;
     this.availabilityMessage = null;
@@ -452,6 +466,50 @@ class AIStore {
     if (conversationId) promptOptions.conversationId = conversationId;
     if (options?.clientTurnId !== undefined) promptOptions.clientTurnId = options.clientTurnId;
 
+    const pendingConfirmation = conversationId && this.#pendingResearchTargetConfirmation?.conversationId === conversationId
+      ? this.#pendingResearchTargetConfirmation
+      : null;
+    if (pendingConfirmation) {
+      const confirmation = classifyResearchTargetConfirmation(message);
+      if (confirmation !== 'unknown') {
+        if (!this.#service) throw new Error('AIStore not initialized');
+        const appended = await this.#service.appendUserMessage(message, conversationId, {
+          ...(options?.clientTurnId !== undefined ? { clientTurnId: options.clientTurnId } : {}),
+        });
+        if (!appended.ok) {
+          this.error = appended.error;
+          return null;
+        }
+
+        const researchTarget: ResearchRunTarget = confirmation === 'reuse'
+          ? {
+              folder: pendingConfirmation.previousFolder,
+              mode: 'reuse',
+              previousRunId: pendingConfirmation.previousRunId,
+            }
+          : {
+              folder: pendingConfirmation.proposedFolder,
+              mode: 'new',
+              previousRunId: pendingConfirmation.previousRunId,
+            };
+        const runOptions: StartAgentRunOptions = {
+          requireApproval: false,
+          orchestrationMode: pendingConfirmation.useSwarm ? 'swarm' : 'single',
+          appendUserMessage: false,
+          conversationId: appended.value.id,
+          researchTarget,
+        };
+        if (pendingConfirmation.useSwarm) runOptions.maxWorkers = 4;
+        if (pendingConfirmation.webAccess) runOptions.webAccess = pendingConfirmation.webAccess;
+
+        this.#pendingResearchTargetConfirmation = null;
+        await this.startAgentRun(pendingConfirmation.originalPrompt, runOptions);
+        return null;
+      }
+
+      this.#pendingResearchTargetConfirmation = null;
+    }
+
     if (!this.#agentIntakeService) {
       return this.streamPrompt(message, promptOptions);
     }
@@ -481,15 +539,62 @@ class AIStore {
     if (decision.value.kind === 'agent_run') {
       const suggested = decision.value.suggestedMode;
       const useSwarm = suggested === 'research' || suggested === 'multi_step';
-      const options: StartAgentRunOptions = {
+      const runOptions: StartAgentRunOptions = {
         requireApproval: false,
         orchestrationMode: useSwarm ? 'swarm' : 'single',
       };
-      if (useSwarm) options.maxWorkers = 4;
-      if (conversationId) options.conversationId = conversationId;
-      if (promptOptions.clientTurnId !== undefined) options.clientTurnId = promptOptions.clientTurnId;
-      if (useNativeWeb) options.webAccess = 'native';
-      await this.startAgentRun(message, options);
+      if (useSwarm) runOptions.maxWorkers = 4;
+      if (conversationId) runOptions.conversationId = conversationId;
+      if (promptOptions.clientTurnId !== undefined) runOptions.clientTurnId = promptOptions.clientTurnId;
+      if (useNativeWeb) runOptions.webAccess = 'native';
+
+      if (suggested === 'research' && this.#agentOrchestrationService) {
+        const target = await this.#agentOrchestrationService.resolveResearchTarget(
+          message,
+          conversationId ? { conversationId } : undefined
+        );
+        if (!target.ok) {
+          this.error = target.error;
+          return null;
+        }
+
+        if (target.value.action === 'needs_confirmation') {
+          if (!this.#service) throw new Error('AIStore not initialized');
+          const appended = await this.#service.appendUserMessage(message, conversationId ?? undefined, {
+            ...(promptOptions.clientTurnId !== undefined ? { clientTurnId: promptOptions.clientTurnId } : {}),
+          });
+          if (!appended.ok) {
+            this.error = appended.error;
+            return null;
+          }
+
+          const question = formatResearchTargetConfirmation(
+            target.value.previousFolder,
+            target.value.proposedFolder
+          );
+          const assistant = await this.#service.appendAssistantMessage(question, appended.value.id);
+          if (!assistant.ok) {
+            this.error = assistant.error;
+            return null;
+          }
+
+          this.#pendingResearchTargetConfirmation = {
+            conversationId: appended.value.id,
+            originalPrompt: message,
+            ...(promptOptions.clientTurnId !== undefined ? { originalClientTurnId: promptOptions.clientTurnId } : {}),
+            previousFolder: target.value.previousFolder,
+            proposedFolder: target.value.proposedFolder,
+            previousRunId: target.value.previousRunId,
+            useSwarm,
+            ...(runOptions.webAccess ? { webAccess: runOptions.webAccess } : {}),
+          };
+          return null;
+        }
+
+        runOptions.researchTarget = target.value.target;
+      }
+
+      await this.startAgentRun(message, runOptions);
       return null;
     }
 
@@ -862,6 +967,7 @@ class AIStore {
     this.#agentOrchestrationService = null;
     this.#agentIntakeService = null;
     this.#operationService = null;
+    this.#pendingResearchTargetConfirmation = null;
     this.isProcessing = false;
     this.isStreaming = false;
     this.isRouting = false;
@@ -900,4 +1006,37 @@ function shouldUseNativeWebAccess(message: string, decision: AgentIntakeDecision
   const normalized = message.toLowerCase();
   return /\b(latest|today|current|recent|newest|up-to-date|web|internet)\b/.test(normalized) ||
     /\b(vandaag|laatste|recent|actueel|internet)\b/.test(normalized);
+}
+
+function formatResearchTargetConfirmation(previousFolder: string, proposedFolder: string): string {
+  return [
+    `This conversation already has research in \`${previousFolder}\`.`,
+    '',
+    `Should I add this to that folder, or start a new research folder at \`${proposedFolder}\`?`,
+    '',
+    'Reply with “add to existing” or “start new”.',
+  ].join('\n');
+}
+
+function classifyResearchTargetConfirmation(message: string): 'reuse' | 'new' | 'unknown' {
+  const normalized = message.trim().toLowerCase().replace(/\s+/g, ' ');
+  if (!normalized) return 'unknown';
+
+  if (
+    /\b(?:start|create|make|use)\s+(?:a\s+)?(?:new|fresh|separate)\b/.test(normalized) ||
+    /\b(?:new|fresh|separate|different)\s+(?:one|folder|research|dossier)\b/.test(normalized) ||
+    /\b(?:nieuw|nieuwe|aparte|losse)\s+(?:map|onderzoek|research|dossier)\b/.test(normalized) ||
+    /\b(?:start|maak|gebruik)\s+(?:een\s+)?(?:nieuwe|aparte|losse)\b/.test(normalized)
+  ) {
+    return 'new';
+  }
+
+  if (
+    /\b(?:yes|yep|yeah|ok|okay|sure|add|reuse|use|continue|existing|current|same|previous|that folder|there)\b/.test(normalized) ||
+    /\b(?:ja|oke|oké|goed|voeg|toevoegen|gebruik|zelfde|bestaande|huidige|vorige|daar|erin)\b/.test(normalized)
+  ) {
+    return 'reuse';
+  }
+
+  return 'unknown';
 }

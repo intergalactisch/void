@@ -9,12 +9,8 @@
    */
   import { editorStore } from '$lib/stores/editor.svelte';
   import { notesStore } from '$lib/stores/notes.svelte';
-  import { toastStore } from '$lib/stores';
-  import { buildRefId } from '$lib/domain/values';
-  import { copyTextToClipboard } from '$lib/utils/clipboard';
+  import { events } from '$lib/events';
   import { X } from '@lucide/svelte';
-
-  let contextMenu = $state<{ path: string; x: number; y: number } | null>(null);
 
   function basename(path: string): string {
     const last = path.split('/').pop() ?? path;
@@ -41,34 +37,15 @@
     }
   }
 
-  function handleContextMenu(event: MouseEvent, path: string) {
+  function handleContextMenu(event: MouseEvent, path: string, displayTitle: string) {
     event.preventDefault();
     event.stopPropagation();
-    contextMenu = { path, x: event.clientX, y: event.clientY };
-  }
-
-  async function copyRef(path: string) {
-    const success = await copyTextToClipboard(buildRefId({ kind: 'note', notePath: path }));
-    if (success) toastStore.info('Ref copied');
-    else toastStore.error('Failed to copy ref');
-    contextMenu = null;
-  }
-
-  async function copyPath(path: string) {
-    const success = await copyTextToClipboard(path);
-    if (success) toastStore.info('Path copied');
-    else toastStore.error('Failed to copy path');
-    contextMenu = null;
-  }
-
-  function copyContextMenuRef() {
-    const menu = contextMenu;
-    if (menu) void copyRef(menu.path);
-  }
-
-  function copyContextMenuPath() {
-    const menu = contextMenu;
-    if (menu) void copyPath(menu.path);
+    events.emit('app:note-context-menu', {
+      path,
+      title: displayTitle,
+      position: { x: event.clientX, y: event.clientY },
+      isFolder: false,
+    });
   }
 
   function handleKeydown(event: KeyboardEvent, path: string) {
@@ -83,6 +60,7 @@
   <div class="editor-tabs" role="tablist" aria-label="Open documents">
     {#each editorStore.tabs as tab (tab.path)}
       {@const active = tab.path === editorStore.activePath}
+      {@const displayTitle = notesStore.titleForPath(tab.path, tab.title || basename(tab.path))}
       <div
         class="editor-tab"
         class:active
@@ -92,10 +70,10 @@
         tabindex={active ? 0 : -1}
         title={tab.path}
         onclick={() => handleSwitch(tab.path)}
-        oncontextmenu={(e) => handleContextMenu(e, tab.path)}
+        oncontextmenu={(e) => handleContextMenu(e, tab.path, displayTitle)}
         onkeydown={(e) => handleKeydown(e, tab.path)}
       >
-        <span class="editor-tab-label">{notesStore.titleForPath(tab.path, tab.title || basename(tab.path))}</span>
+        <span class="editor-tab-label">{displayTitle}</span>
         {#if tab.isDirty}
           <span class="editor-tab-dot" aria-label="Unsaved changes"></span>
         {/if}
@@ -109,24 +87,6 @@
       </div>
     {/each}
   </div>
-
-  {#if contextMenu}
-    <button
-      type="button"
-      class="editor-tab-menu-backdrop"
-      aria-label="Close tab menu"
-      onclick={() => { contextMenu = null; }}
-    ></button>
-    <div
-      class="editor-tab-menu"
-      style="left: {contextMenu.x}px; top: {contextMenu.y}px;"
-      role="menu"
-      aria-label="Tab options"
-    >
-      <button type="button" role="menuitem" onclick={copyContextMenuRef}>Copy Ref</button>
-      <button type="button" role="menuitem" onclick={copyContextMenuPath}>Copy Path</button>
-    </div>
-  {/if}
 {/if}
 
 <style>
@@ -210,44 +170,5 @@
   .editor-tab.dirty .editor-tab-close {
     /* Keep close button visible even when dirty dot is shown. */
     margin-left: 0;
-  }
-
-  .editor-tab-menu-backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: var(--z-popover);
-    border: 0;
-    background: transparent;
-  }
-
-  .editor-tab-menu {
-    position: fixed;
-    z-index: calc(var(--z-popover) + 1);
-    min-width: 148px;
-    padding: 5px;
-    border: 1px solid var(--border-light);
-    border-radius: var(--radius-lg);
-    background: var(--bg-card);
-    box-shadow: var(--shadow-popover);
-  }
-
-  .editor-tab-menu button {
-    display: flex;
-    width: 100%;
-    align-items: center;
-    min-height: 28px;
-    padding: 0 8px;
-    border: 0;
-    border-radius: var(--radius-sm);
-    background: transparent;
-    color: var(--text-primary);
-    font: inherit;
-    font-size: var(--text-small);
-    text-align: left;
-    cursor: pointer;
-  }
-
-  .editor-tab-menu button:hover {
-    background: var(--bg-hover);
   }
 </style>

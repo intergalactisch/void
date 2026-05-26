@@ -14,11 +14,51 @@ import {
 import { events } from '$lib/events';
 
 const STORAGE_KEY = 'void:note-workspace-layout:v1';
+const MAX_OPEN_LAYOUT_NOTES = 6;
 
 export interface NotePaneDropResult {
   action: 'focused-existing' | 'replaced' | 'split' | 'ignored';
   paneId: string | null;
   notePath: string | null;
+}
+
+export interface NotePaneCloseResult {
+  action: 'closed-pane' | 'closed-tab' | 'ignored';
+  closedPath: string | null;
+  nextPath: string | null;
+  nextPaneId: string | null;
+  closedTabId: string | null;
+  activeTabId: string | null;
+}
+
+export interface NoteLayoutAddResult {
+  action: 'appended' | 'focused-existing' | 'ignored';
+  tabId: string | null;
+  paneId: string | null;
+  notePath: string | null;
+}
+
+export interface OpenNoteLocation {
+  tabId: string;
+  paneId: string;
+  notePath: string;
+  tabTitle: string | null;
+  paneIndex: number;
+  paneCount: number;
+  isActiveTab: boolean;
+  isActivePane: boolean;
+}
+
+export interface OpenNoteDisplayState {
+  isOpen: boolean;
+  isFocused: boolean;
+  tabId: string | null;
+  paneId: string | null;
+  paneIndex: number | null;
+  paneCount: number;
+  tabTitle: string | null;
+  label: string;
+  tooltip: string;
 }
 
 function createId(prefix: string): string {
@@ -42,6 +82,11 @@ function createTab(notePath: string): NoteWorkspaceTab {
     activePaneId: leaf.paneId,
     title: null,
   };
+}
+
+function createBalancedLayout(notePaths: string[], depth = 0): NotePaneNode {
+  const leaves = notePaths.map((notePath) => createLeaf(notePath));
+  return buildBalancedFromLeaves(leaves, { mode: 'mixed', rootDirection: 'horizontal' }, depth);
 }
 
 function firstLeaf(node: NotePaneNode): NotePaneLeaf {
@@ -68,6 +113,114 @@ function collectNotePaths(node: NotePaneNode): string[] {
   return collectLeaves(node)
     .map((leaf) => leaf.notePath)
     .filter((path): path is string => !!path);
+}
+
+function collectSplitDirections(node: NotePaneNode, directions: NotePaneDirection[] = []): NotePaneDirection[] {
+  if (node.type === 'leaf') return directions;
+  directions.push(node.direction);
+  collectSplitDirections(node.children[0], directions);
+  collectSplitDirections(node.children[1], directions);
+  return directions;
+}
+
+function oppositeDirection(direction: NotePaneDirection): NotePaneDirection {
+  return direction === 'horizontal' ? 'vertical' : 'horizontal';
+}
+
+type LayoutRebalanceMode = 'single-axis' | 'mixed';
+
+interface LayoutRebalanceOptions {
+  mode: LayoutRebalanceMode;
+  rootDirection: NotePaneDirection;
+}
+
+function rebalanceOptionsFromNode(node: NotePaneNode): LayoutRebalanceOptions {
+  if (node.type === 'leaf') return { mode: 'single-axis', rootDirection: 'horizontal' };
+  const directions = collectSplitDirections(node);
+  const uniqueDirections = new Set(directions);
+  return {
+    mode: uniqueDirections.size <= 1 ? 'single-axis' : 'mixed',
+    rootDirection: node.direction,
+  };
+}
+
+function buildBalancedFromLeaves(
+  leaves: NotePaneLeaf[],
+  options: LayoutRebalanceOptions,
+  depth = 0,
+): NotePaneNode {
+  if (leaves.length <= 1) return leaves[0] ?? createLeaf(null);
+
+  const midpoint = Math.ceil(leaves.length / 2);
+  const leftLeaves = leaves.slice(0, midpoint);
+  const rightLeaves = leaves.slice(midpoint);
+  const direction = options.mode === 'single-axis' || depth % 2 === 0
+    ? options.rootDirection
+    : oppositeDirection(options.rootDirection);
+  const leftSize = (leftLeaves.length / leaves.length) * 100;
+
+  return {
+    type: 'split',
+    splitId: createId('split'),
+    direction,
+    sizes: [leftSize, 100 - leftSize],
+    children: [
+      buildBalancedFromLeaves(leftLeaves, options, depth + 1),
+      buildBalancedFromLeaves(rightLeaves, options, depth + 1),
+    ],
+  };
+}
+
+function noteLeavesInVisualOrder(node: NotePaneNode): NotePaneLeaf[] {
+  return collectLeaves(node).filter((leaf) => !!leaf.notePath);
+}
+
+function rebalanceNodeFromLeaves(
+  leaves: NotePaneLeaf[],
+  options: LayoutRebalanceOptions,
+): NotePaneNode | null {
+  const noteLeaves = leaves.filter((leaf) => !!leaf.notePath);
+  if (noteLeaves.length === 0) return null;
+  return buildBalancedFromLeaves(noteLeaves, options);
+}
+
+function isSingleAxisLayout(node: NotePaneNode, direction: NotePaneDirection): boolean {
+  if (node.type === 'leaf') return true;
+  const directions = collectSplitDirections(node);
+  return directions.length > 0 && directions.every((candidate) => candidate === direction);
+}
+
+function appendLeafToLayoutEdge(
+  root: NotePaneNode,
+  leaf: NotePaneLeaf,
+  direction: NotePaneDirection,
+): NotePaneNode {
+  if (root.type === 'leaf') {
+    return {
+      type: 'split',
+      splitId: createId('split'),
+      direction,
+      sizes: [50, 50],
+      children: [root, leaf],
+    };
+  }
+
+  if (isSingleAxisLayout(root, direction)) {
+    return buildBalancedFromLeaves([...noteLeavesInVisualOrder(root), leaf], {
+      mode: 'single-axis',
+      rootDirection: direction,
+    });
+  }
+
+  const existingCount = Math.max(1, noteLeavesInVisualOrder(root).length);
+  const existingSize = (existingCount / (existingCount + 1)) * 100;
+  return {
+    type: 'split',
+    splitId: createId('split'),
+    direction,
+    sizes: [existingSize, 100 - existingSize],
+    children: [root, leaf],
+  };
 }
 
 function findNextLeaf(node: NotePaneNode, paneId: string, direction: 1 | -1): NotePaneLeaf | null {
@@ -100,8 +253,96 @@ function findOpenPaneByPath(
   return null;
 }
 
+function openNoteLocation(
+  tab: NoteWorkspaceTab,
+  leaf: NotePaneLeaf,
+  activeTabId: string | null,
+): OpenNoteLocation {
+  const panes = collectLeaves(tab.root);
+  const paneIndex = panes.findIndex((pane) => pane.paneId === leaf.paneId);
+  return {
+    tabId: tab.id,
+    paneId: leaf.paneId,
+    notePath: leaf.notePath ?? '',
+    tabTitle: tab.title,
+    paneIndex: Math.max(0, paneIndex),
+    paneCount: panes.length,
+    isActiveTab: tab.id === activeTabId,
+    isActivePane: tab.id === activeTabId && tab.activePaneId === leaf.paneId,
+  };
+}
+
+function closedNoteDisplayState(): OpenNoteDisplayState {
+  return {
+    isOpen: false,
+    isFocused: false,
+    tabId: null,
+    paneId: null,
+    paneIndex: null,
+    paneCount: 0,
+    tabTitle: null,
+    label: '',
+    tooltip: '',
+  };
+}
+
+function openNoteDisplayState(location: OpenNoteLocation): OpenNoteDisplayState {
+  const label = location.isActivePane ? 'Focused' : 'Open';
+  const displayIndex = location.paneIndex + 1;
+  const workspaceName = location.tabTitle?.trim() || (location.paneCount > 1 ? 'layout' : 'editor tab');
+  const tooltip = location.paneCount > 1
+    ? `${label} in ${workspaceName}, pane ${displayIndex} of ${location.paneCount}`
+    : `${label} in ${workspaceName}`;
+
+  return {
+    isOpen: true,
+    isFocused: location.isActivePane,
+    tabId: location.tabId,
+    paneId: location.paneId,
+    paneIndex: location.paneIndex,
+    paneCount: location.paneCount,
+    tabTitle: location.tabTitle,
+    label,
+    tooltip,
+  };
+}
+
 function isSingleNoteTab(tab: NoteWorkspaceTab, notePath: string): boolean {
   return tab.root.type === 'leaf' && tab.root.notePath === notePath;
+}
+
+function directionForEdgeIntent(intent: Exclude<NotePaneMoveIntent, 'swap'>): NotePaneDirection {
+  return intent === 'left' || intent === 'right' ? 'horizontal' : 'vertical';
+}
+
+function isBeforeEdgeIntent(intent: Exclude<NotePaneMoveIntent, 'swap'>): boolean {
+  return intent === 'left' || intent === 'top';
+}
+
+function insertLeafRelativeToTarget(
+  leaves: NotePaneLeaf[],
+  targetPaneId: string,
+  intent: Exclude<NotePaneMoveIntent, 'swap'>,
+  leaf: NotePaneLeaf,
+): NotePaneLeaf[] | null {
+  const targetIndex = leaves.findIndex((candidate) => candidate.paneId === targetPaneId);
+  if (targetIndex < 0) return null;
+  const insertIndex = isBeforeEdgeIntent(intent) ? targetIndex : targetIndex + 1;
+  const next = [...leaves];
+  next.splice(insertIndex, 0, leaf);
+  return next;
+}
+
+function rebuildSingleAxisLayout(
+  leaves: NotePaneLeaf[],
+  direction: NotePaneDirection,
+): NotePaneNode | null {
+  const noteLeaves = leaves.filter((leaf) => !!leaf.notePath);
+  if (noteLeaves.length === 0) return null;
+  return buildBalancedFromLeaves(noteLeaves, {
+    mode: 'single-axis',
+    rootDirection: direction,
+  });
 }
 
 function splitLeaf(
@@ -143,53 +384,6 @@ function splitLeaf(
   return { node, placeholder: null };
 }
 
-function splitLeafWithNote(
-  node: NotePaneNode,
-  paneId: string,
-  intent: Exclude<NotePaneDropIntent, 'replace'>,
-  notePath: string,
-): { node: NotePaneNode; created: NotePaneLeaf | null } {
-  if (node.type === 'leaf') {
-    if (node.paneId !== paneId) return { node, created: null };
-    const created = createLeaf(notePath);
-    const direction: NotePaneDirection = intent === 'left' || intent === 'right'
-      ? 'horizontal'
-      : 'vertical';
-    const children: [NotePaneNode, NotePaneNode] =
-      intent === 'left' || intent === 'top'
-        ? [created, node]
-        : [node, created];
-    return {
-      node: {
-        type: 'split',
-        splitId: createId('split'),
-        direction,
-        sizes: [50, 50],
-        children,
-      },
-      created,
-    };
-  }
-
-  const first = splitLeafWithNote(node.children[0], paneId, intent, notePath);
-  if (first.created) {
-    return {
-      node: { ...node, children: [first.node, node.children[1]] },
-      created: first.created,
-    };
-  }
-
-  const second = splitLeafWithNote(node.children[1], paneId, intent, notePath);
-  if (second.created) {
-    return {
-      node: { ...node, children: [node.children[0], second.node] },
-      created: second.created,
-    };
-  }
-
-  return { node, created: null };
-}
-
 function detachLeaf(
   node: NotePaneNode,
   paneId: string,
@@ -219,52 +413,6 @@ function detachLeaf(
   }
 
   return { node, detached: null };
-}
-
-function insertLeafAt(
-  node: NotePaneNode,
-  targetPaneId: string,
-  intent: Exclude<NotePaneMoveIntent, 'swap'>,
-  leaf: NotePaneLeaf,
-): { node: NotePaneNode; inserted: boolean } {
-  if (node.type === 'leaf') {
-    if (node.paneId !== targetPaneId) return { node, inserted: false };
-    const direction: NotePaneDirection = intent === 'left' || intent === 'right'
-      ? 'horizontal'
-      : 'vertical';
-    const children: [NotePaneNode, NotePaneNode] =
-      intent === 'left' || intent === 'top'
-        ? [leaf, node]
-        : [node, leaf];
-    return {
-      node: {
-        type: 'split',
-        splitId: createId('split'),
-        direction,
-        sizes: [50, 50],
-        children,
-      },
-      inserted: true,
-    };
-  }
-
-  const first = insertLeafAt(node.children[0], targetPaneId, intent, leaf);
-  if (first.inserted) {
-    return {
-      node: { ...node, children: [first.node, node.children[1]] },
-      inserted: true,
-    };
-  }
-
-  const second = insertLeafAt(node.children[1], targetPaneId, intent, leaf);
-  if (second.inserted) {
-    return {
-      node: { ...node, children: [node.children[0], second.node] },
-      inserted: true,
-    };
-  }
-
-  return { node, inserted: false };
 }
 
 function replaceLeafNote(node: NotePaneNode, paneId: string, notePath: string): NotePaneNode {
@@ -462,6 +610,33 @@ class NoteWorkspaceStore {
     return this.activeTab?.root.type === 'split';
   }
 
+  findOpenNote(notePath: string): OpenNoteLocation | null {
+    this.init();
+    const existing = findOpenPaneByPath(this.tabs, notePath);
+    if (!existing || !existing.leaf.notePath) return null;
+    return openNoteLocation(existing.tab, existing.leaf, this.activeTabId);
+  }
+
+  openStateForPath(notePath: string): OpenNoteDisplayState {
+    const location = this.findOpenNote(notePath);
+    return location ? openNoteDisplayState(location) : closedNoteDisplayState();
+  }
+
+  focusOpenNote(notePath: string): OpenNoteLocation | null {
+    this.init();
+    const existing = findOpenPaneByPath(this.tabs, notePath);
+    if (!existing || !existing.leaf.notePath) return null;
+
+    this.activeTabId = existing.tab.id;
+    existing.tab.activePaneId = existing.leaf.paneId;
+    this.maximizedPaneId = null;
+    this.tabs = [...this.tabs];
+    this.persist();
+    this.highlightPane(existing.leaf.paneId);
+
+    return openNoteLocation(existing.tab, existing.leaf, this.activeTabId);
+  }
+
   renameTab(tabId: string, title: string | null): void {
     this.init();
     const tab = this.tabs.find((item) => item.id === tabId);
@@ -493,14 +668,59 @@ class NoteWorkspaceStore {
     return tab.id;
   }
 
+  openNotesLayout(notePaths: string[], title: string | null = null): string | null {
+    this.init();
+    const uniquePaths = Array.from(new Set(notePaths.filter(Boolean))).slice(0, MAX_OPEN_LAYOUT_NOTES);
+    if (uniquePaths.length === 0) return this.activeNotePath;
+    if (uniquePaths.length === 1) {
+      this.openNoteTab(uniquePaths[0]!);
+      return this.activeNotePath;
+    }
+
+    const pathsToMove = new Set(uniquePaths);
+    const remainingTabs: NoteWorkspaceTab[] = [];
+
+    for (const tab of this.tabs) {
+      const remainingLeaves = noteLeavesInVisualOrder(tab.root)
+        .filter((leaf) => !leaf.notePath || !pathsToMove.has(leaf.notePath));
+      const root = rebalanceNodeFromLeaves(remainingLeaves, rebalanceOptionsFromNode(tab.root));
+      if (!root) continue;
+      const active = findLeaf(root, tab.activePaneId) ?? firstLeaf(root);
+      remainingTabs.push({ ...tab, root, activePaneId: active.paneId });
+    }
+
+    const root = createBalancedLayout(uniquePaths);
+    const active = firstLeaf(root);
+    const tab: NoteWorkspaceTab = {
+      id: createId('tab'),
+      root,
+      activePaneId: active.paneId,
+      title: title?.trim() || null,
+    };
+
+    this.tabs = [...remainingTabs, tab];
+    this.activeTabId = tab.id;
+    this.maximizedPaneId = null;
+    this.tabs = [...this.tabs];
+    this.persist();
+    this.highlightPane(active.paneId);
+    return active.notePath;
+  }
+
   focusTab(tabId: string): string | null {
     this.init();
     const tab = this.tabs.find((item) => item.id === tabId);
     if (!tab) return null;
+    const activeLeaf = findLeaf(tab.root, tab.activePaneId);
+    const targetLeaf = activeLeaf?.notePath
+      ? activeLeaf
+      : noteLeavesInVisualOrder(tab.root)[0] ?? activeLeaf ?? firstLeaf(tab.root);
+    tab.activePaneId = targetLeaf.paneId;
     this.activeTabId = tab.id;
     this.maximizedPaneId = null;
+    this.tabs = [...this.tabs];
     this.persist();
-    return findLeaf(tab.root, tab.activePaneId)?.notePath ?? firstLeaf(tab.root).notePath;
+    return targetLeaf.notePath;
   }
 
   focusPane(tabId: string, paneId: string, options: { preserveMaximized?: boolean } = {}): string | null {
@@ -613,7 +833,7 @@ class NoteWorkspaceStore {
     if (!tab) return { action: 'ignored', paneId: null, notePath: null };
 
     const duplicate = findOpenPaneByPath(this.tabs, notePath);
-    if (duplicate?.tab.id === tab.id) {
+    if (duplicate?.leaf.notePath) {
       duplicate.tab.activePaneId = duplicate.leaf.paneId;
       this.activeTabId = duplicate.tab.id;
       this.maximizedPaneId = null;
@@ -622,30 +842,118 @@ class NoteWorkspaceStore {
       this.highlightPane(duplicate.leaf.paneId);
       return { action: 'focused-existing', paneId: duplicate.leaf.paneId, notePath };
     }
-    if (duplicate && !isSingleNoteTab(duplicate.tab, notePath)) {
-      duplicate.tab.activePaneId = duplicate.leaf.paneId;
-      this.activeTabId = duplicate.tab.id;
-      this.maximizedPaneId = null;
-      this.tabs = [...this.tabs];
-      this.persist();
-      this.highlightPane(duplicate.leaf.paneId);
-      return { action: 'focused-existing', paneId: duplicate.leaf.paneId, notePath };
-    }
-    if (duplicate) {
-      this.tabs = this.tabs.filter((item) => item.id !== duplicate.tab.id);
+
+    const targetLeaf = findLeaf(tab.root, paneId);
+    if (!targetLeaf) return { action: 'ignored', paneId: null, notePath: null };
+    if (!targetLeaf.notePath) {
+      return this.replacePaneNote(tabId, paneId, notePath);
     }
 
-    const result = splitLeafWithNote(tab.root, paneId, intent, notePath);
-    if (!result.created) return { action: 'ignored', paneId: null, notePath: null };
+    const created = createLeaf(notePath);
+    const direction = directionForEdgeIntent(intent);
+    const orderedLeaves = insertLeafRelativeToTarget(
+      noteLeavesInVisualOrder(tab.root),
+      paneId,
+      intent,
+      created,
+    );
+    if (!orderedLeaves) return { action: 'ignored', paneId: null, notePath: null };
+    const root = rebuildSingleAxisLayout(orderedLeaves, direction);
+    if (!root) return { action: 'ignored', paneId: null, notePath: null };
 
-    tab.root = result.node;
-    tab.activePaneId = result.created.paneId;
+    tab.root = root;
+    tab.activePaneId = created.paneId;
     this.activeTabId = tab.id;
     this.maximizedPaneId = null;
     this.tabs = [...this.tabs];
     this.persist();
-    this.highlightPane(result.created.paneId);
-    return { action: 'split', paneId: result.created.paneId, notePath };
+    this.highlightPane(created.paneId);
+    return { action: 'split', paneId: created.paneId, notePath };
+  }
+
+  addNoteToLayout(tabId: string, notePath: string): NoteLayoutAddResult {
+    this.init();
+    const existing = findOpenPaneByPath(this.tabs, notePath);
+    if (existing?.leaf.notePath) {
+      this.activeTabId = existing.tab.id;
+      existing.tab.activePaneId = existing.leaf.paneId;
+      this.maximizedPaneId = null;
+      this.tabs = [...this.tabs];
+      this.persist();
+      this.highlightPane(existing.leaf.paneId);
+      return {
+        action: 'focused-existing',
+        tabId: existing.tab.id,
+        paneId: existing.leaf.paneId,
+        notePath,
+      };
+    }
+
+    const tab = this.tabs.find((item) => item.id === tabId);
+    if (!tab) return { action: 'ignored', tabId: null, paneId: null, notePath: null };
+
+    const created = createLeaf(notePath);
+    const leaves = [...noteLeavesInVisualOrder(tab.root), created];
+    const root = rebalanceNodeFromLeaves(leaves, rebalanceOptionsFromNode(tab.root));
+    if (!root) return { action: 'ignored', tabId: null, paneId: null, notePath: null };
+
+    tab.root = root;
+    tab.activePaneId = created.paneId;
+    this.activeTabId = tab.id;
+    this.maximizedPaneId = null;
+    this.tabs = [...this.tabs];
+    this.persist();
+    this.highlightPane(created.paneId);
+
+    return {
+      action: 'appended',
+      tabId: tab.id,
+      paneId: created.paneId,
+      notePath,
+    };
+  }
+
+  addNoteToLayoutEdge(tabId: string, notePath: string, direction: NotePaneDirection): NoteLayoutAddResult {
+    this.init();
+    const existing = findOpenPaneByPath(this.tabs, notePath);
+    if (existing?.leaf.notePath) {
+      this.activeTabId = existing.tab.id;
+      existing.tab.activePaneId = existing.leaf.paneId;
+      this.maximizedPaneId = null;
+      this.tabs = [...this.tabs];
+      this.persist();
+      this.highlightPane(existing.leaf.paneId);
+      return {
+        action: 'focused-existing',
+        tabId: existing.tab.id,
+        paneId: existing.leaf.paneId,
+        notePath,
+      };
+    }
+
+    const tab = this.tabs.find((item) => item.id === tabId);
+    if (!tab) return { action: 'ignored', tabId: null, paneId: null, notePath: null };
+
+    const compactRoot = removeEmptyLeaves(tab.root);
+    if (!compactRoot || collectNotePaths(compactRoot).length === 0) {
+      return { action: 'ignored', tabId: null, paneId: null, notePath: null };
+    }
+
+    const created = createLeaf(notePath);
+    tab.root = appendLeafToLayoutEdge(compactRoot, created, direction);
+    tab.activePaneId = created.paneId;
+    this.activeTabId = tab.id;
+    this.maximizedPaneId = null;
+    this.tabs = [...this.tabs];
+    this.persist();
+    this.highlightPane(created.paneId);
+
+    return {
+      action: 'appended',
+      tabId: tab.id,
+      paneId: created.paneId,
+      notePath,
+    };
   }
 
   dropNoteOnPane(
@@ -744,28 +1052,30 @@ class NoteWorkspaceStore {
 
     const sourceNotePath = sourceLeaf.notePath;
     const targetNotePath = targetLeaf.notePath;
+    const direction = directionForEdgeIntent(intent);
 
     if (sourceTab.id === targetTab.id) {
-      const detached = detachLeaf(sourceTab.root, sourcePaneId);
-      if (!detached.detached || !detached.node || !findLeaf(detached.node, targetPaneId)) {
+      const remainingLeaves = noteLeavesInVisualOrder(sourceTab.root)
+        .filter((leaf) => leaf.paneId !== sourcePaneId);
+      const orderedLeaves = insertLeafRelativeToTarget(remainingLeaves, targetPaneId, intent, sourceLeaf);
+      if (!orderedLeaves) {
         return ignoredMoveResult(sourceNotePath, targetNotePath);
       }
+      const root = rebuildSingleAxisLayout(orderedLeaves, direction);
+      if (!root) return ignoredMoveResult(sourceNotePath, targetNotePath);
 
-      const inserted = insertLeafAt(detached.node, targetPaneId, intent, detached.detached);
-      if (!inserted.inserted) return ignoredMoveResult(sourceNotePath, targetNotePath);
-
-      sourceTab.root = inserted.node;
-      sourceTab.activePaneId = detached.detached.paneId;
+      sourceTab.root = root;
+      sourceTab.activePaneId = sourceLeaf.paneId;
       this.activeTabId = sourceTab.id;
       this.maximizedPaneId = null;
       this.tabs = [...this.tabs];
       this.persist();
-      this.highlightPane(detached.detached.paneId);
+      this.highlightPane(sourceLeaf.paneId);
 
       return {
         action: 'moved',
         activeTabId: sourceTab.id,
-        activePaneId: detached.detached.paneId,
+        activePaneId: sourceLeaf.paneId,
         sourceNotePath,
         targetNotePath,
       };
@@ -774,11 +1084,13 @@ class NoteWorkspaceStore {
     const detached = detachLeaf(sourceTab.root, sourcePaneId);
     if (!detached.detached) return ignoredMoveResult(sourceNotePath, targetNotePath);
 
-    if (detached.node) {
-      sourceTab.root = detached.node;
-      if (!findLeaf(sourceTab.root, sourceTab.activePaneId)) {
-        sourceTab.activePaneId = firstLeaf(sourceTab.root).paneId;
-      }
+    const remainingSourceLeaves = noteLeavesInVisualOrder(sourceTab.root)
+      .filter((leaf) => leaf.paneId !== sourcePaneId);
+    const sourceRoot = rebalanceNodeFromLeaves(remainingSourceLeaves, rebalanceOptionsFromNode(sourceTab.root));
+    if (sourceRoot) {
+      sourceTab.root = sourceRoot;
+      const active = findLeaf(sourceTab.root, sourceTab.activePaneId) ?? firstLeaf(sourceTab.root);
+      sourceTab.activePaneId = active.paneId;
     } else {
       this.tabs = this.tabs.filter((item) => item.id !== sourceTab.id);
     }
@@ -788,10 +1100,17 @@ class NoteWorkspaceStore {
       return ignoredMoveResult(sourceNotePath, targetNotePath);
     }
 
-    const inserted = insertLeafAt(freshTargetTab.root, targetPaneId, intent, detached.detached);
-    if (!inserted.inserted) return ignoredMoveResult(sourceNotePath, targetNotePath);
+    const orderedLeaves = insertLeafRelativeToTarget(
+      noteLeavesInVisualOrder(freshTargetTab.root),
+      targetPaneId,
+      intent,
+      detached.detached,
+    );
+    if (!orderedLeaves) return ignoredMoveResult(sourceNotePath, targetNotePath);
+    const targetRoot = rebuildSingleAxisLayout(orderedLeaves, direction);
+    if (!targetRoot) return ignoredMoveResult(sourceNotePath, targetNotePath);
 
-    freshTargetTab.root = inserted.node;
+    freshTargetTab.root = targetRoot;
     freshTargetTab.activePaneId = detached.detached.paneId;
     this.activeTabId = freshTargetTab.id;
     this.maximizedPaneId = null;
@@ -808,7 +1127,7 @@ class NoteWorkspaceStore {
     };
   }
 
-  removePaneAndCollapse(tabId: string, paneId: string): string | null {
+  removePaneAndCollapse(tabId: string, paneId: string): NotePaneCloseResult {
     return this.closePane(tabId, paneId);
   }
 
@@ -818,25 +1137,82 @@ class NoteWorkspaceStore {
     return tab ? findLeafByPath(tab.root, notePath) : null;
   }
 
-  closePane(tabId: string, paneId: string): string | null {
+  closePane(tabId: string, paneId: string): NotePaneCloseResult {
     this.init();
     const tab = this.tabs.find((item) => item.id === tabId);
-    if (!tab) return this.activeNotePath;
-
-    const root = closeLeaf(tab.root, paneId);
-    if (!root) {
-      this.closeTab(tabId);
-      return this.activeNotePath;
+    if (!tab) {
+      return {
+        action: 'ignored',
+        closedPath: null,
+        nextPath: this.activeNotePath,
+        nextPaneId: this.activePaneId,
+        closedTabId: null,
+        activeTabId: this.activeTabId,
+      };
     }
 
+    const leaves = collectLeaves(tab.root);
+    const closedIndex = leaves.findIndex((leaf) => leaf.paneId === paneId);
+    const closedLeaf = closedIndex >= 0 ? leaves[closedIndex] ?? null : null;
+    if (!closedLeaf) {
+      return {
+        action: 'ignored',
+        closedPath: null,
+        nextPath: this.activeNotePath,
+        nextPaneId: this.activePaneId,
+        closedTabId: null,
+        activeTabId: this.activeTabId,
+      };
+    }
+
+    const closedPath = closedLeaf.notePath;
+    const remainingLeaves = leaves.filter((leaf) => leaf.paneId !== paneId && !!leaf.notePath);
+
+    if (remainingLeaves.length === 0) {
+      const nextPath = this.closeTab(tabId);
+      return {
+        action: 'closed-tab',
+        closedPath,
+        nextPath,
+        nextPaneId: this.activePaneId,
+        closedTabId: tabId,
+        activeTabId: this.activeTabId,
+      };
+    }
+
+    const root = buildBalancedFromLeaves(remainingLeaves, rebalanceOptionsFromNode(tab.root));
+    const nextLeaf = remainingLeaves[Math.min(closedIndex, remainingLeaves.length - 1)] ?? remainingLeaves[0]!;
     tab.root = root;
-    if (!findLeaf(root, tab.activePaneId)) {
-      tab.activePaneId = firstLeaf(root).paneId;
-    }
+    tab.activePaneId = nextLeaf.paneId;
+    this.activeTabId = tab.id;
     this.maximizedPaneId = this.maximizedPaneId === paneId ? null : this.maximizedPaneId;
     this.tabs = [...this.tabs];
     this.persist();
-    return findLeaf(tab.root, tab.activePaneId)?.notePath ?? null;
+    if (nextLeaf.notePath) this.highlightPane(nextLeaf.paneId);
+    return {
+      action: 'closed-pane',
+      closedPath,
+      nextPath: nextLeaf.notePath,
+      nextPaneId: nextLeaf.paneId,
+      closedTabId: null,
+      activeTabId: tab.id,
+    };
+  }
+
+  closeActivePane(): NotePaneCloseResult {
+    this.init();
+    const tab = this.activeTab;
+    if (!tab) {
+      return {
+        action: 'ignored',
+        closedPath: null,
+        nextPath: null,
+        nextPaneId: null,
+        closedTabId: null,
+        activeTabId: null,
+      };
+    }
+    return this.closePane(tab.id, tab.activePaneId);
   }
 
   closeTab(tabId: string): string | null {
@@ -922,17 +1298,9 @@ class NoteWorkspaceStore {
     const nextTabs: NoteWorkspaceTab[] = [];
 
     for (const tab of this.tabs) {
-      let root: NotePaneNode | null = tab.root;
-      for (const leaf of collectLeaves(root)) {
-        if (leaf.notePath === notePath) {
-          const closed = closeLeaf(root, leaf.paneId);
-          if (!closed) {
-            root = null;
-            break;
-          }
-          root = closed;
-        }
-      }
+      const remainingLeaves = noteLeavesInVisualOrder(tab.root)
+        .filter((leaf) => leaf.notePath !== notePath);
+      const root = rebalanceNodeFromLeaves(remainingLeaves, rebalanceOptionsFromNode(tab.root));
       if (!root) continue;
       const active = findLeaf(root, tab.activePaneId) ?? firstLeaf(root);
       nextTabs.push({ ...tab, root, activePaneId: active.paneId });

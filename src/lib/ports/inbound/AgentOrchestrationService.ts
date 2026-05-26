@@ -17,6 +17,33 @@ export interface AgentRunState {
   error: Error | null;
 }
 
+export interface ResearchRunTarget {
+  folder: string;
+  mode: 'reuse' | 'new';
+  previousRunId?: string;
+}
+
+export type ResearchTargetResolution =
+  | {
+      action: 'use';
+      target: ResearchRunTarget;
+      proposedFolder: string;
+      previousFolder?: string;
+      previousRunId?: string;
+      rationale: string;
+    }
+  | {
+      action: 'needs_confirmation';
+      previousFolder: string;
+      proposedFolder: string;
+      previousRunId: string;
+      rationale: string;
+    };
+
+export interface ResolveResearchTargetOptions {
+  conversationId?: string | null;
+}
+
 export interface StartAgentRunOptions {
   conversationId?: string;
   requireApproval?: boolean;
@@ -26,6 +53,7 @@ export interface StartAgentRunOptions {
   webAccess?: AIWebAccess;
   orchestrationMode?: 'auto' | 'single' | 'swarm';
   maxWorkers?: number;
+  researchTarget?: ResearchRunTarget;
 }
 
 export interface ContinueWorkerOptions {
@@ -37,6 +65,7 @@ export interface ContinueWorkerOptions {
 
 export interface AgentOrchestrationService {
   startRun(prompt: string, options?: StartAgentRunOptions): Promise<Result<AgentRun, Error>>;
+  resolveResearchTarget(prompt: string, options?: ResolveResearchTargetOptions): Promise<Result<ResearchTargetResolution, Error>>;
   approveRun(runId: string): Promise<Result<void, Error>>;
   cancelRun(runId: string): Promise<Result<void, Error>>;
   resumeRun(runId: string): Promise<Result<AgentRun, Error>>;

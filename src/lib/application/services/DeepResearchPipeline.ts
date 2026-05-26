@@ -67,6 +67,7 @@ const SYNTHESIS_CONCURRENCY = 3;
 export interface DeepResearchPipelineInput {
   run: AgentRun;
   prompt: string;
+  targetFolder?: string;
   webAccess?: AIWebAccess;
   signal?: AbortSignal;
   mutateRun: (mutator: (current: AgentRun) => Promise<AgentRun>) => Promise<AgentRun>;
@@ -115,7 +116,7 @@ export class DeepResearchPipeline {
   async run(input: DeepResearchPipelineInput): Promise<Result<DeepResearchPipelineResult, Error>> {
     const startedAt = new Date().toISOString();
     const topic = deriveResearchTopic(input.prompt);
-    const folder = `Research/${topic.slug} ${startedAt.slice(0, 10)}`;
+    const folder = input.targetFolder?.trim() || `Research/${topic.slug} ${startedAt.slice(0, 10)}`;
     const webAccess = input.webAccess ?? 'off';
     const hasWebAccess = webAccess === 'native';
     const createdNotePaths: string[] = [];

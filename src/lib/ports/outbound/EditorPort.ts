@@ -369,6 +369,11 @@ export interface EditorPort {
   getTextBetween(from: number, to: number): string;
 
   /**
+   * Check whether a document range overlaps an existing protected-lines block.
+   */
+  rangeIntersectsProtectedBlock(from: number, to: number): boolean;
+
+  /**
    * Re-resolve an inline AI text anchor against the current editor document.
    * Returns null when the original text is gone or the match is ambiguous.
    */

@@ -115,6 +115,30 @@ describe('AgentSwarmPlanner', () => {
     }
   });
 
+  it('assigns every research worker to the provided research folder', async () => {
+    const provider = providerWith([JSON.stringify({
+      summary: 'Plan',
+      rationale: 'Parallel work helps',
+      mergeCriteria: ['Use the target folder'],
+      workers: [
+        { title: 'Sources', role: 'researcher', objective: 'Find sources', deliverables: ['Sources'], writeScope: 'staged_draft', assignedNote: { title: 'Wrong Sources', folder: 'Research/wrong' } },
+        { title: 'Overview', role: 'drafter', objective: 'Write overview', deliverables: ['Overview'], writeScope: 'staged_draft', assignedNote: { title: 'Wrong Overview', folder: 'Research/also-wrong' } },
+      ],
+    })]);
+    const planner = new AgentSwarmPlanner(provider, contextProvider());
+
+    const plan = await planner.plan('Do research on OpenAI', {
+      maxWorkers: 4,
+      researchFolder: 'Research/openai-existing',
+    });
+
+    expect(plan.workers).toHaveLength(2);
+    for (const worker of plan.workers) {
+      expect(worker.assignedNote?.folder).toBe('Research/openai-existing');
+      expect(worker.targetResources.some((target) => target.id === 'Research/openai-existing')).toBe(true);
+    }
+  });
+
   it('gives every constellation worker note:create authorship via staged_draft scope', async () => {
     const planner = new AgentSwarmPlanner(unavailableProvider(), contextProvider());
     const plan = await planner.plan('Research the history of Magic the Gathering', { maxWorkers: 8 });

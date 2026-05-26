@@ -13,13 +13,14 @@
    * - Collapsible with smooth animation
    */
 
-  import { notesStore, todoStore, uiStore, workspaceStore } from '$lib/stores';
+  import { noteWorkspaceStore, notesStore, todoStore, uiStore, workspaceStore } from '$lib/stores';
   import type { NotePaneDirection } from '$lib/domain';
   import type { ProtectedNoteMeta } from '$lib/domain/values/Protection';
   import type { NotesListItem, TagGroup } from '$lib/ports/inbound';
   import { createSortableState, type SortableState } from '$lib/components/dnd/sortable';
   import FolderTree from './FolderTree.svelte';
   import { createFolderReorderDnd } from './folderReorderDnd';
+  import OpenNoteIndicator from '$lib/components/shared/OpenNoteIndicator.svelte';
   import SelectShell from '$lib/components/shared/SelectShell.svelte';
   import {
     SIDEBAR_DEFAULT_WIDTH,
@@ -597,6 +598,7 @@
                 <FileText class="item-icon-sm" size={14} strokeWidth={1.5} aria-hidden="true" />
               {/if}
               <span class="item-text">{recent.title}</span>
+              <OpenNoteIndicator state={noteWorkspaceStore.openStateForPath(recent.path)} />
               <button
                 type="button"
                 class="action-button recent-remove-button"
@@ -678,6 +680,9 @@
                 {/if}
               {/if}
               <span class="item-text">{note.title}</span>
+              {#if !note.isFolder}
+                <OpenNoteIndicator state={noteWorkspaceStore.openStateForPath(note.path)} />
+              {/if}
               <button
                 type="button"
                 class="action-button"
@@ -862,6 +867,7 @@
                     <FileText class="item-icon-sm" size={14} strokeWidth={1.5} aria-hidden="true" />
                   {/if}
                   <span class="item-text">{note.title}</span>
+                  <OpenNoteIndicator state={noteWorkspaceStore.openStateForPath(note.path)} />
                   <button
                     type="button"
                     class="action-button"

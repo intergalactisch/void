@@ -179,6 +179,9 @@ export type {
   AgentRunState,
   StartAgentRunOptions,
   ContinueWorkerOptions,
+  ResearchRunTarget,
+  ResearchTargetResolution,
+  ResolveResearchTargetOptions,
 } from './AgentOrchestrationService';
 export type {
   AgentIntakeDecision,

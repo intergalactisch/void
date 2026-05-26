@@ -45,6 +45,17 @@ export type EventMap = {
     | { view: 'back' }
     | { view: 'forward' };
 
+  // Note context menu — fired from any surface that displays note rows but
+  // does not already prop-thread an onNoteContextMenu callback (e.g. nested
+  // AI command center artifacts). The page-level handler opens the shared
+  // NoteContextMenu component.
+  'app:note-context-menu': {
+    path: string;
+    title: string;
+    position: { x: number; y: number };
+    isFolder?: boolean;
+  };
+
   // Settings events
   'settings:changed': { key: string; value: unknown };
   'workspace:changed': { workspaceId: string; activeWorkspaceId: string };
@@ -255,6 +266,7 @@ export type EventMap = {
   // the route component that owns the relevant DOM/dialog).
   'app:request-open-markdown-file': Record<string, never>;
   'app:request-export-markdown': Record<string, never>;
+  'app:request-close-active-note': Record<string, never>;
   'tasks:request-new': Record<string, never>;
   'tasks:request-search': Record<string, never>;
   'tasks:request-edit-selected': Record<string, never>;

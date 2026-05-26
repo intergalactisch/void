@@ -132,9 +132,12 @@
   }
 
   async function closePane(paneId: string, notePath: string | null): Promise<void> {
-    const nextPath = noteWorkspaceStore.closePane(tabId, paneId);
+    const result = noteWorkspaceStore.closePane(tabId, paneId);
     await closeEditorSessionIfUnused(notePath);
-    syncSelectedPath(nextPath);
+    syncSelectedPath(result.nextPath);
+    if (result.nextPaneId) {
+      requestAnimationFrame(() => editorStore.focusPane(result.nextPaneId!));
+    }
   }
 
   function handlePickerCancel(paneId: string): void {
@@ -142,8 +145,8 @@
       replacingPaneId = null;
       return;
     }
-    const nextPath = noteWorkspaceStore.closePane(tabId, paneId);
-    syncSelectedPath(nextPath);
+    const result = noteWorkspaceStore.closePane(tabId, paneId);
+    syncSelectedPath(result.nextPath);
   }
 
   function balanceSplit(splitId: string): void {

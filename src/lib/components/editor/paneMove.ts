@@ -1,4 +1,4 @@
-import type { NotePaneDragPayload, NotePaneMoveIntent } from '$lib/domain';
+import type { NotePaneDirection, NotePaneDragPayload, NotePaneMoveIntent } from '$lib/domain';
 
 export interface PaneMovePoint {
   x: number;
@@ -17,6 +17,7 @@ export interface PaneMoveTarget {
   paneId: string;
   notePath: string | null;
   rect: PaneMoveRect;
+  layoutRect: PaneMoveRect;
 }
 
 export interface PaneMovePreview {
@@ -25,6 +26,14 @@ export interface PaneMovePreview {
   targetRect: PaneMoveRect;
   previewRect: PaneMoveRect;
 }
+
+export interface PaneMoveReflowSlot {
+  index: number;
+  count: number;
+  layoutRect: PaneMoveRect;
+}
+
+export type PaneMoveReflowSlots = Partial<Record<Exclude<NotePaneMoveIntent, 'swap'>, PaneMoveReflowSlot>>;
 
 export interface PaneMoveSession {
   pointerId: number;
@@ -60,9 +69,39 @@ export function paneMoveLabel(intent: NotePaneMoveIntent): string {
   }
 }
 
+function directionForIntent(intent: Exclude<NotePaneMoveIntent, 'swap'>): NotePaneDirection {
+  return intent === 'left' || intent === 'right' ? 'horizontal' : 'vertical';
+}
+
+function reflowSlotRect(
+  intent: Exclude<NotePaneMoveIntent, 'swap'>,
+  slot: PaneMoveReflowSlot,
+): PaneMoveRect {
+  const count = Math.max(1, slot.count);
+  const index = Math.max(0, Math.min(count - 1, slot.index));
+  if (directionForIntent(intent) === 'horizontal') {
+    const width = slot.layoutRect.width / count;
+    return {
+      left: slot.layoutRect.left + width * index,
+      top: slot.layoutRect.top,
+      width,
+      height: slot.layoutRect.height,
+    };
+  }
+
+  const height = slot.layoutRect.height / count;
+  return {
+    left: slot.layoutRect.left,
+    top: slot.layoutRect.top + height * index,
+    width: slot.layoutRect.width,
+    height,
+  };
+}
+
 export function resolvePaneMovePreview(
   pointer: PaneMovePoint,
   targetRect: PaneMoveRect,
+  reflowSlots: PaneMoveReflowSlots = {},
 ): PaneMovePreview {
   const x = pointer.x - targetRect.left;
   const y = pointer.y - targetRect.top;
@@ -78,21 +117,29 @@ export function resolvePaneMovePreview(
 
   let previewRect = targetRect;
   if (intent === 'left') {
-    previewRect = { ...targetRect, width: targetRect.width / 2 };
+    previewRect = reflowSlots.left
+      ? reflowSlotRect('left', reflowSlots.left)
+      : { ...targetRect, width: targetRect.width / 2 };
   } else if (intent === 'right') {
-    previewRect = {
-      ...targetRect,
-      left: targetRect.left + targetRect.width / 2,
-      width: targetRect.width / 2,
-    };
+    previewRect = reflowSlots.right
+      ? reflowSlotRect('right', reflowSlots.right)
+      : {
+          ...targetRect,
+          left: targetRect.left + targetRect.width / 2,
+          width: targetRect.width / 2,
+        };
   } else if (intent === 'top') {
-    previewRect = { ...targetRect, height: targetRect.height / 2 };
+    previewRect = reflowSlots.top
+      ? reflowSlotRect('top', reflowSlots.top)
+      : { ...targetRect, height: targetRect.height / 2 };
   } else if (intent === 'bottom') {
-    previewRect = {
-      ...targetRect,
-      top: targetRect.top + targetRect.height / 2,
-      height: targetRect.height / 2,
-    };
+    previewRect = reflowSlots.bottom
+      ? reflowSlotRect('bottom', reflowSlots.bottom)
+      : {
+          ...targetRect,
+          top: targetRect.top + targetRect.height / 2,
+          height: targetRect.height / 2,
+        };
   }
 
   return {

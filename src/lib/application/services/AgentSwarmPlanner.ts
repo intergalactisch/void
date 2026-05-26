@@ -30,6 +30,7 @@ export interface AgentSwarmPlan {
 export interface AgentSwarmPlannerOptions {
   maxWorkers?: number;
   webAccess?: AIWebAccess;
+  researchFolder?: string;
 }
 
 interface ParsedWorker {
@@ -97,7 +98,10 @@ export class AgentSwarmPlanner {
     const isResearch = classifyDurableAgentPrompt(prompt)?.mode === 'research';
     const defaultMaxWorkers = isResearch ? 8 : 4;
     const maxWorkers = clampWorkerCount(options.maxWorkers ?? defaultMaxWorkers);
-    const fallback = fallbackPlan(prompt, maxWorkers);
+    const researchFolderHint = isResearch
+      ? options.researchFolder?.trim() || suggestConstellationFolder(prompt)
+      : '';
+    const fallback = fallbackPlan(prompt, maxWorkers, researchFolderHint);
 
     try {
       if (!(await this.provider.isAvailable())) {
@@ -105,7 +109,6 @@ export class AgentSwarmPlanner {
       }
 
       const context = await this.contextProvider.getContext();
-      const researchFolderHint = isResearch ? suggestConstellationFolder(prompt) : '';
       const constellationRules = isResearch
         ? [
             '',
@@ -168,7 +171,7 @@ export class AgentSwarmPlanner {
         return fallback;
       }
 
-      return normalizeParsedPlan(prompt, parsePlanJson(result.value.chat), maxWorkers) ?? fallback;
+      return normalizeParsedPlan(prompt, parsePlanJson(result.value.chat), maxWorkers, researchFolderHint) ?? fallback;
     } catch (error) {
       log.warn('Swarm planner fallback', {
         error: error instanceof Error ? error.message : String(error),
@@ -191,11 +194,12 @@ export function shouldUseSwarmForPrompt(prompt: string): boolean {
 function normalizeParsedPlan(
   prompt: string,
   parsed: ParsedPlan | null,
-  maxWorkers: number
+  maxWorkers: number,
+  researchFolderHint = ''
 ): AgentSwarmPlan | null {
   if (!parsed || !Array.isArray(parsed.workers)) return null;
   const isResearch = classifyDurableAgentPrompt(prompt)?.mode === 'research';
-  const constellationFolder = isResearch ? suggestConstellationFolder(prompt) : '';
+  const constellationFolder = isResearch ? researchFolderHint || suggestConstellationFolder(prompt) : '';
 
   const workers = parsed.workers
     .map((worker, index) => normalizeWorker(worker, index, prompt, isResearch, constellationFolder))
@@ -295,7 +299,11 @@ function normalizeAssignedNote(
     ? context.title
     : `${topic} — ${context.title}`;
   const noteTitle = (rawTitle || fallbackTitle).slice(0, 120);
-  const folder = (rawFolder || context.constellationFolder || suggestConstellationFolder(context.prompt)).slice(0, 240);
+  const folder = (
+    context.isResearch && context.constellationFolder
+      ? context.constellationFolder
+      : rawFolder || context.constellationFolder || suggestConstellationFolder(context.prompt)
+  ).slice(0, 240);
   const role: AgentAssignedNoteRole | undefined =
     rawRole === 'overview' ||
     rawRole === 'aspect' ||
@@ -343,9 +351,9 @@ function dedupeAssignedNoteTitles(workers: AgentWorkerSpec[]): AgentWorkerSpec[]
   });
 }
 
-function fallbackPlan(prompt: string, maxWorkers: number): AgentSwarmPlan {
+function fallbackPlan(prompt: string, maxWorkers: number, researchFolderHint = ''): AgentSwarmPlan {
   if (classifyDurableAgentPrompt(prompt)?.mode === 'research') {
-    return researchFallbackPlan(prompt, maxWorkers);
+    return researchFallbackPlan(prompt, maxWorkers, researchFolderHint);
   }
 
   const baseWorkers: AgentWorkerSpec[] = [
@@ -416,9 +424,9 @@ function fallbackPlan(prompt: string, maxWorkers: number): AgentSwarmPlan {
   };
 }
 
-function researchFallbackPlan(prompt: string, maxWorkers: number): AgentSwarmPlan {
+function researchFallbackPlan(prompt: string, maxWorkers: number, researchFolderHint = ''): AgentSwarmPlan {
   const topic = deriveResearchTopic(prompt).displayTitle;
-  const folder = suggestConstellationFolder(prompt);
+  const folder = researchFolderHint || suggestConstellationFolder(prompt);
   const aspectTemplates: Array<{
     suffix: string;
     role: AgentAssignedNoteRole;

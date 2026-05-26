@@ -23,8 +23,9 @@ import type {
 } from '$lib/ports/inbound';
 import { AI_UNAVAILABLE_MESSAGE } from '$lib/domain/values/AIAvailability';
 import type { Conversation } from '$lib/domain/entities/Conversation';
-import { createConversation } from '$lib/domain/entities/Conversation';
+import { addMessage, createConversation } from '$lib/domain/entities/Conversation';
 import { createAgentRun } from '$lib/domain/entities/AgentRun';
+import { createAssistantMessage, createUserMessage } from '$lib/domain/entities/Message';
 import type { ToolInvocation } from '$lib/domain/entities/ToolInvocation';
 import type { AIResponse, AIResponseChunk, ToolCall } from '$lib/domain/values/AIResponse';
 import { ok, err, type Result } from '$lib/core';
@@ -194,6 +195,44 @@ function createMockAIService(options?: {
       updateState({ currentConversation });
     }),
 
+    appendUserMessage: vi.fn().mockImplementation(async (
+      message: string,
+      conversationId?: string,
+      appendOptions?: { clientTurnId?: string }
+    ) => {
+      let conv = conversationId
+        ? conversations.find((c) => c.id === conversationId) ?? null
+        : currentConversation;
+      if (!conv) {
+        conv = createMockConversation();
+        conversations.push(conv);
+      }
+      conv = addMessage(conv, createUserMessage(message, appendOptions));
+      const index = conversations.findIndex((c) => c.id === conv!.id);
+      if (index >= 0) conversations[index] = conv;
+      currentConversation = conv;
+      updateState({ currentConversation });
+      return ok(conv);
+    }),
+
+    appendAssistantMessage: vi.fn().mockImplementation(async (message: string, conversationId?: string) => {
+      let conv = conversationId
+        ? conversations.find((c) => c.id === conversationId) ?? null
+        : currentConversation;
+      if (!conv) {
+        conv = createMockConversation();
+        conversations.push(conv);
+      }
+      conv = addMessage(conv, createAssistantMessage({ text: message }));
+      const index = conversations.findIndex((c) => c.id === conv!.id);
+      if (index >= 0) conversations[index] = conv;
+      currentConversation = conv;
+      updateState({ currentConversation });
+      return ok(conv);
+    }),
+
+    appendOrUpdateAssistantActivity: vi.fn().mockImplementation(async () => ok(currentConversation ?? currentConv)),
+
     executeToolCalls: vi.fn().mockImplementation(async (toolCalls: ToolCall[]) => {
       return toolCalls.map((tc) =>
         createMockToolInvocation({
@@ -271,6 +310,12 @@ function createMockAgentOrchestration(): AgentOrchestrationService {
       state.isRunning = false;
       return ok(next);
     }),
+    resolveResearchTarget: vi.fn(async (prompt: string) => ok({
+      action: 'use',
+      target: { folder: `Research/${prompt.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}`, mode: 'new' },
+      proposedFolder: `Research/${prompt.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}`,
+      rationale: 'Test target',
+    })),
     approveRun: vi.fn(async () => ok(undefined)),
     cancelRun: vi.fn(async () => ok(undefined)),
     resumeRun: vi.fn(async () => ok(run)),
@@ -662,6 +707,94 @@ describe('AI Store Integration', () => {
       );
       expect(mockService.streamPrompt).not.toHaveBeenCalled();
       expect(aiStore.sidebarView).toBe('chat');
+    });
+
+    it('asks in the transcript before starting a different-topic research folder', async () => {
+      const intake = createMockAgentIntake('agent_run');
+      const orchestration = createMockAgentOrchestration();
+      vi.mocked(orchestration.resolveResearchTarget).mockResolvedValueOnce(ok({
+        action: 'needs_confirmation',
+        previousFolder: 'Research/openai 2026-05-26',
+        proposedFolder: 'Research/anthropic 2026-05-26',
+        previousRunId: 'run-openai',
+        rationale: 'Different topic',
+      }));
+      aiStore.initAgentIntake(intake);
+      aiStore.initAgentOrchestration(orchestration);
+
+      await aiStore.submitPrompt('Do research on Anthropic', { clientTurnId: 'turn-research' });
+
+      expect(mockService.appendUserMessage).toHaveBeenCalledWith(
+        'Do research on Anthropic',
+        aiStore.currentConversation?.id,
+        { clientTurnId: 'turn-research' }
+      );
+      expect(mockService.appendAssistantMessage).toHaveBeenCalledWith(
+        expect.stringContaining('Research/openai 2026-05-26'),
+        aiStore.currentConversation?.id
+      );
+      expect(orchestration.startRun).not.toHaveBeenCalled();
+      expect(mockService.streamPrompt).not.toHaveBeenCalled();
+    });
+
+    it('starts the original research prompt in the prior folder after reuse confirmation', async () => {
+      const intake = createMockAgentIntake('agent_run');
+      const orchestration = createMockAgentOrchestration();
+      vi.mocked(orchestration.resolveResearchTarget).mockResolvedValueOnce(ok({
+        action: 'needs_confirmation',
+        previousFolder: 'Research/openai 2026-05-26',
+        proposedFolder: 'Research/anthropic 2026-05-26',
+        previousRunId: 'run-openai',
+        rationale: 'Different topic',
+      }));
+      aiStore.initAgentIntake(intake);
+      aiStore.initAgentOrchestration(orchestration);
+
+      await aiStore.submitPrompt('Do research on Anthropic', { clientTurnId: 'turn-original' });
+      await aiStore.submitPrompt('add to existing', { clientTurnId: 'turn-confirm' });
+
+      expect(intake.decide).toHaveBeenCalledTimes(1);
+      expect(orchestration.startRun).toHaveBeenCalledWith(
+        'Do research on Anthropic',
+        expect.objectContaining({
+          appendUserMessage: false,
+          researchTarget: {
+            folder: 'Research/openai 2026-05-26',
+            mode: 'reuse',
+            previousRunId: 'run-openai',
+          },
+        })
+      );
+    });
+
+    it('starts the original research prompt in the proposed folder after new-folder confirmation', async () => {
+      const intake = createMockAgentIntake('agent_run');
+      const orchestration = createMockAgentOrchestration();
+      vi.mocked(orchestration.resolveResearchTarget).mockResolvedValueOnce(ok({
+        action: 'needs_confirmation',
+        previousFolder: 'Research/openai 2026-05-26',
+        proposedFolder: 'Research/anthropic 2026-05-26',
+        previousRunId: 'run-openai',
+        rationale: 'Different topic',
+      }));
+      aiStore.initAgentIntake(intake);
+      aiStore.initAgentOrchestration(orchestration);
+
+      await aiStore.submitPrompt('Do research on Anthropic', { clientTurnId: 'turn-original' });
+      await aiStore.submitPrompt('start new', { clientTurnId: 'turn-confirm' });
+
+      expect(intake.decide).toHaveBeenCalledTimes(1);
+      expect(orchestration.startRun).toHaveBeenCalledWith(
+        'Do research on Anthropic',
+        expect.objectContaining({
+          appendUserMessage: false,
+          researchTarget: {
+            folder: 'Research/anthropic 2026-05-26',
+            mode: 'new',
+            previousRunId: 'run-openai',
+          },
+        })
+      );
     });
 
     it('exposes routing state while intake is unresolved', async () => {

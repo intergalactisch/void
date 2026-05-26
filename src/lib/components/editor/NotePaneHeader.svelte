@@ -155,7 +155,15 @@
     focusThisPane();
     onPaneMoveStart?.(event, { tabId, paneId, notePath });
   }
+
+  function handleWindowKeydown(event: KeyboardEvent): void {
+    if (!moreOpen || event.key !== 'Escape') return;
+    event.preventDefault();
+    moreOpen = false;
+  }
 </script>
+
+<svelte:window onkeydown={handleWindowKeydown} />
 
 <div
   class="note-pane-header"

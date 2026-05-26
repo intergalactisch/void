@@ -8,6 +8,9 @@ import type {
   AgentRunState,
   StartAgentRunOptions,
   ContinueWorkerOptions,
+  ResearchRunTarget,
+  ResearchTargetResolution,
+  ResolveResearchTargetOptions,
 } from '$lib/ports/inbound/AgentOrchestrationService';
 import type { AgentLoopService } from '$lib/ports/inbound/AgentLoopService';
 import type { AIAssistantService } from '$lib/ports/inbound/AIAssistantService';
@@ -285,7 +288,9 @@ export class AgentOrchestrationServiceImpl implements AgentOrchestrationService 
       }
       await this.commitRun(run);
 
-      const suggestedFolder = blueprint.suggestedFolder ?? this.suggestResearchFolder(trimmedPrompt);
+      const suggestedFolder = options?.researchTarget?.folder
+        ?? blueprint.suggestedFolder
+        ?? this.suggestResearchFolder(trimmedPrompt);
       const suggestedNotes = blueprint.starterNotes?.length
         ? blueprint.starterNotes
         : this.suggestStarterNotes(trimmedPrompt);
@@ -328,7 +333,14 @@ export class AgentOrchestrationServiceImpl implements AgentOrchestrationService 
       );
       if (await this.wasCancelled(run.id)) return ok(await this.latestRunOr(run));
 
-      run.plan = this.buildPlan(trimmedPrompt, suggestedFolder, suggestedNotes, existingNotes, citations);
+      run.plan = this.buildPlan(
+        trimmedPrompt,
+        suggestedFolder,
+        suggestedNotes,
+        existingNotes,
+        citations,
+        options?.researchTarget
+      );
       for (const citation of citations) {
         const artifact: AgentArtifact = {
           id: `source_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
@@ -780,6 +792,87 @@ export class AgentOrchestrationServiceImpl implements AgentOrchestrationService 
     return shouldUseSwarmForPrompt(prompt);
   }
 
+  async resolveResearchTarget(
+    prompt: string,
+    options?: ResolveResearchTargetOptions
+  ): Promise<Result<ResearchTargetResolution, Error>> {
+    const trimmedPrompt = prompt.trim();
+    if (!trimmedPrompt) {
+      return err(new Error('Research prompt cannot be empty'));
+    }
+
+    const proposedFolder = this.suggestResearchFolder(trimmedPrompt);
+    const conversationId = options?.conversationId ?? null;
+    const newTarget: ResearchRunTarget = { folder: proposedFolder, mode: 'new' };
+    if (!conversationId) {
+      return ok({
+        action: 'use',
+        target: newTarget,
+        proposedFolder,
+        rationale: 'No existing command conversation is open, so this starts a new research folder.',
+      });
+    }
+
+    const runs = await this.storage.list();
+    if (!runs.ok) return err(runs.error);
+
+    const previous = runs.value
+      .filter((run) => run.conversationId === conversationId)
+      .map((run) => ({ run, folder: extractResearchFolder(run) }))
+      .filter((entry): entry is { run: AgentRun; folder: string } => !!entry.folder)
+      .sort((a, b) => b.run.updatedAt.localeCompare(a.run.updatedAt))[0] ?? null;
+
+    if (!previous) {
+      return ok({
+        action: 'use',
+        target: newTarget,
+        proposedFolder,
+        rationale: 'No earlier research folder was found in this conversation.',
+      });
+    }
+
+    if (isExplicitNewResearchPrompt(trimmedPrompt)) {
+      return ok({
+        action: 'use',
+        target: { folder: proposedFolder, mode: 'new', previousRunId: previous.run.id },
+        proposedFolder,
+        previousFolder: previous.folder,
+        previousRunId: previous.run.id,
+        rationale: 'The prompt explicitly asks for a new or separate research pass.',
+      });
+    }
+
+    if (topicsClearlyDiffer(trimmedPrompt, previous.run, previous.folder)) {
+      return ok({
+        action: 'needs_confirmation',
+        previousFolder: previous.folder,
+        proposedFolder,
+        previousRunId: previous.run.id,
+        rationale: 'This conversation already has a research folder, but the new topic appears different.',
+      });
+    }
+
+    if (isResearchFollowUpPrompt(trimmedPrompt) || !promptIntroducesExplicitResearchSubject(trimmedPrompt)) {
+      return ok({
+        action: 'use',
+        target: { folder: previous.folder, mode: 'reuse', previousRunId: previous.run.id },
+        proposedFolder,
+        previousFolder: previous.folder,
+        previousRunId: previous.run.id,
+        rationale: 'This looks like a follow-up or ambiguous same-conversation research request, so it will use the existing research folder.',
+      });
+    }
+
+    return ok({
+      action: 'use',
+      target: { folder: previous.folder, mode: 'reuse', previousRunId: previous.run.id },
+      proposedFolder,
+      previousFolder: previous.folder,
+      previousRunId: previous.run.id,
+      rationale: 'This appears to continue the same research topic, so it will use the existing research folder.',
+    });
+  }
+
   private async startSwarmRun(
     initialRun: AgentRun,
     prompt: string,
@@ -804,8 +897,9 @@ export class AgentOrchestrationServiceImpl implements AgentOrchestrationService 
         detail: 'Decomposing the request into bounded worker agents...',
       });
 
-      const plannerOptions: { maxWorkers?: number; webAccess?: AIWebAccess } = { webAccess };
+      const plannerOptions: { maxWorkers?: number; webAccess?: AIWebAccess; researchFolder?: string } = { webAccess };
       if (options?.maxWorkers !== undefined) plannerOptions.maxWorkers = options.maxWorkers;
+      if (options?.researchTarget?.folder) plannerOptions.researchFolder = options.researchTarget.folder;
       const swarmPlan = await this.swarmPlanner.plan(prompt, plannerOptions);
       const researchContext = researchMode
         ? await this.prepareSwarmResearchContext(prompt, abortController.signal)
@@ -815,7 +909,7 @@ export class AgentOrchestrationServiceImpl implements AgentOrchestrationService 
         : swarmPlan.workers;
       workerSpecs = this.enrichWorkerResourceScopes(workerSpecs, prompt, run.id);
 
-      run.plan = this.buildSwarmRunPlan(prompt, workerSpecs, swarmPlan.summary, swarmPlan.mergeCriteria);
+      run.plan = this.buildSwarmRunPlan(prompt, workerSpecs, swarmPlan.summary, swarmPlan.mergeCriteria, options?.researchTarget);
       if (researchMode) {
         const researchEvidence = buildResearchEvidenceBundle(researchContext, 'preflight');
         run.plan = {
@@ -1080,13 +1174,34 @@ export class AgentOrchestrationServiceImpl implements AgentOrchestrationService 
     if (!this.deepResearchPipeline) {
       return err(new Error('Deep research pipeline is not configured'));
     }
-    void options;
 
     let run = initialRun;
+    const deepResearchTarget = options?.researchTarget ?? {
+      folder: this.suggestResearchFolder(prompt),
+      mode: 'new' as const,
+    };
     const abortController = new AbortController();
     this.swarmAbortControllers.set(run.id, abortController);
 
     try {
+      run.plan = {
+        summary: deepResearchTarget.mode === 'reuse'
+          ? `Add deep research for "${prompt}" to the existing research folder.`
+          : `Run deep research for "${prompt}".`,
+        steps: [
+          'Outline research aspects.',
+          'Discover and ingest sources when web access is available.',
+          'Write aspect notes, an overview note, and a sources note.',
+          deepResearchTarget.mode === 'reuse'
+            ? `Use existing research folder: ${deepResearchTarget.folder}.`
+            : `Create/use research folder: ${deepResearchTarget.folder}.`,
+        ],
+        suggestedFolder: deepResearchTarget.folder,
+        researchTarget: deepResearchTarget,
+        suggestedNotes: this.suggestStarterNotes(prompt),
+        existingNotes: [],
+        citations: [],
+      };
       run = await this.must(this.engine.setStatus(run, 'coordinating', 'Running deep research pipeline'));
       await this.commitRun(run);
 
@@ -1108,6 +1223,7 @@ export class AgentOrchestrationServiceImpl implements AgentOrchestrationService 
         webAccess,
         mutateRun,
       };
+      pipelineInput.targetFolder = deepResearchTarget.folder;
       if (abortController.signal) pipelineInput.signal = abortController.signal;
 
       const pipelineResult = await this.deepResearchPipeline.run(pipelineInput);
@@ -1715,9 +1831,10 @@ export class AgentOrchestrationServiceImpl implements AgentOrchestrationService 
     prompt: string,
     workers: AgentWorkerSpec[],
     summary: string,
-    mergeCriteria: string[]
+    mergeCriteria: string[],
+    researchTarget?: ResearchRunTarget
   ): AgentRunPlan {
-    const suggestedFolder = this.suggestResearchFolder(prompt);
+    const suggestedFolder = researchTarget?.folder ?? this.suggestResearchFolder(prompt);
     return {
       summary,
       steps: [
@@ -1728,6 +1845,7 @@ export class AgentOrchestrationServiceImpl implements AgentOrchestrationService 
         'Apply writes through resource-scoped collaboration/lock lanes, then record provenance and refresh the index.',
       ],
       suggestedFolder,
+      ...(researchTarget ? { researchTarget } : {}),
       suggestedNotes: this.suggestStarterNotes(prompt),
       existingNotes: [],
       citations: [],
@@ -2301,20 +2419,24 @@ export class AgentOrchestrationServiceImpl implements AgentOrchestrationService 
     suggestedFolder: string,
     starterNotes: string[],
     existingNotes: VaultMatch[],
-    citations: ResearchCitation[]
+    citations: ResearchCitation[],
+    researchTarget?: ResearchRunTarget
   ): AgentRunPlan {
     const sourceStep = citations.length > 0
       ? 'Collect current citeable sources and keep citations with fetched dates.'
       : 'No verified web citations were collected; create an uncited scaffold with a clear Sources Needed section.';
+    const folderStep = researchTarget?.mode === 'reuse'
+      ? `Use existing research folder: ${suggestedFolder}.`
+      : `Create/use research folder: ${suggestedFolder}.`;
 
-    return {
+    const plan: AgentRunPlan = {
       summary: citations.length > 0
         ? `Research "${prompt}" using existing notes and ${citations.length} verified source${citations.length === 1 ? '' : 's'}, then let the agent choose evidence-based note clusters.`
         : `Plan clustered research notes for "${prompt}" using existing notes only; no verified web citations are available yet.`,
       steps: [
         'Search the vault for relevant prior notes and concepts.',
         sourceStep,
-        `Create a dated research folder: ${suggestedFolder}.`,
+        folderStep,
         `Create starter structure: ${starterNotes.join(', ')}; add or skip cluster notes based on evidence.`,
         'Write cluster notes incrementally as themes become clear, with realtime artifacts.',
         'Cross-link new notes with each other and with clearly related existing notes.',
@@ -2325,6 +2447,10 @@ export class AgentOrchestrationServiceImpl implements AgentOrchestrationService 
       existingNotes,
       citations,
     };
+    if (researchTarget) {
+      plan.researchTarget = researchTarget;
+    }
+    return plan;
   }
 
   private buildExecutionPrompt(run: AgentRun): string {
@@ -2336,6 +2462,11 @@ export class AgentOrchestrationServiceImpl implements AgentOrchestrationService 
       .map((source) => `- ${source.title}: ${source.url} (${source.fetchedAt}) ${source.excerpt ?? ''}`)
       .join('\n') || '- No web sources were available from the source adapter.';
     const starterNotes = plan?.suggestedNotes ?? this.suggestStarterNotes(run.prompt);
+    const targetFolder = plan?.suggestedFolder ?? this.suggestResearchFolder(run.prompt);
+    const isFolderReuse = plan?.researchTarget?.mode === 'reuse';
+    const targetFolderLine = isFolderReuse
+      ? `Target research folder: ${targetFolder} (existing folder; add to it and do not create a separate research folder).`
+      : `Target research folder: ${targetFolder} (create or use this folder for the research run).`;
     const sourcePolicy = plan?.citations.length
       ? [
           'Use only the approved research sources listed above for web-backed claims.',
@@ -2350,7 +2481,7 @@ export class AgentOrchestrationServiceImpl implements AgentOrchestrationService 
       'Execute this approved Void research run using the available application tools.',
       '',
       `Original user request: ${run.prompt}`,
-      `Target research folder: ${plan?.suggestedFolder ?? this.suggestResearchFolder(run.prompt)}`,
+      targetFolderLine,
       `Starter notes that should usually exist: ${starterNotes.join(', ')}`,
       '',
       'Existing related notes:',
@@ -2363,7 +2494,9 @@ export class AgentOrchestrationServiceImpl implements AgentOrchestrationService 
       '',
       'Execution constraints:',
       '- Use your own reasoning to choose the best note clusters from the prompt, existing notes, and verified evidence.',
-      '- Create a dated folder first, then create notes incrementally as clusters become clear.',
+      isFolderReuse
+        ? '- Use the existing target research folder for every new research note; do not create another dated research folder.'
+        : '- Create or use the target folder first, then create notes incrementally as clusters become clear.',
       '- Default output should include an overview note, focused cluster notes, a sources note, and an open questions or follow-ups note when useful.',
       '- Use note:create with autoFocus false for background cluster notes; do not steal focus for every file.',
       '- Use todo:create only for real human follow-up work. Keep AI-only execution tasks inside this run, not in the user todo list.',
@@ -3144,6 +3277,98 @@ export class AgentOrchestrationServiceImpl implements AgentOrchestrationService 
       topic.openQuestionsTitle,
     ];
   }
+}
+
+function extractResearchFolder(run: AgentRun): string | null {
+  if (!isResearchRunPrompt(run.prompt) && !run.deepResearch && !run.plan?.researchTarget) {
+    return null;
+  }
+
+  const candidates: Array<string | undefined | null> = [
+    run.deepResearch?.folder,
+    run.plan?.researchTarget?.folder,
+    run.plan?.suggestedFolder,
+    ...run.artifacts.map((artifact) => {
+      if (artifact.type === 'folder') return artifact.path ?? artifact.title;
+      if (artifact.type === 'note' && artifact.path) return folderKeyForArtifactPath(artifact.path);
+      return null;
+    }),
+  ];
+
+  for (const candidate of candidates) {
+    const folder = normalizeResearchFolderCandidate(candidate);
+    if (folder) return folder;
+  }
+  return null;
+}
+
+function normalizeResearchFolderCandidate(value: string | null | undefined): string | null {
+  const folder = value
+    ?.trim()
+    .replace(/^["']|["']$/g, '')
+    .replace(/^file:\/\//, '')
+    .replace(/\\/g, '/')
+    .replace(/\/+$/, '')
+    .replace(/^\/+/, '');
+  return folder || null;
+}
+
+function isExplicitNewResearchPrompt(prompt: string): boolean {
+  const normalized = prompt.trim().toLowerCase().replace(/\s+/g, ' ');
+  return (
+    /\b(?:start|create|begin|make|open)\s+(?:a\s+)?(?:new|fresh|separate)\s+(?:research|dossier|folder|study|investigation)\b/.test(normalized) ||
+    /\b(?:new|fresh|separate)\s+(?:research|dossier|folder|study|investigation)\b/.test(normalized) ||
+    /\b(?:nieuwe?|aparte|losse)\s+(?:onderzoek|research|map|dossier)\b/.test(normalized) ||
+    /\b(?:start|maak|begin)\s+(?:een\s+)?(?:nieuwe?|aparte|losse)\s+(?:onderzoek|research|map|dossier)\b/.test(normalized)
+  );
+}
+
+function isResearchFollowUpPrompt(prompt: string): boolean {
+  const normalized = prompt.trim().toLowerCase().replace(/\s+/g, ' ');
+  return (
+    /\b(?:add|also|more|expand|extend|continue|follow[-\s]?up|include|append|update|extra|same|existing|previous)\b/.test(normalized) ||
+    /\b(?:voeg|toevoegen|ook|meer|verder|ga door|doorgaan|uitbreid(?:en)?|aanvul(?:len)?|extra|zelfde|bestaande|vorige)\b/.test(normalized)
+  );
+}
+
+function topicsClearlyDiffer(prompt: string, previousRun: AgentRun, previousFolder: string): boolean {
+  if (isResearchFollowUpPrompt(prompt) && !promptIntroducesExplicitResearchSubject(prompt)) return false;
+  const currentTerms = topicTerms(`${deriveResearchTopic(prompt).slug} ${prompt}`);
+  const previousTerms = topicTerms(`${deriveResearchTopic(previousRun.prompt).slug} ${previousRun.prompt} ${previousFolder}`);
+  if (currentTerms.size === 0 || previousTerms.size === 0) return false;
+  for (const term of currentTerms) {
+    if (previousTerms.has(term)) return false;
+  }
+  return true;
+}
+
+function promptIntroducesExplicitResearchSubject(prompt: string): boolean {
+  const normalized = prompt.trim().replace(/\s+/g, ' ');
+  const lower = normalized.toLowerCase();
+  if (/\b(?:research|onderzoek|study|investigation|dossier)\s+(?:on|about|into|for|naar|over|voor)?\s+\S+/.test(lower)) {
+    return true;
+  }
+  return /\b(?:about|on|over|naar|into)\s+["']?[A-Z][A-Za-z0-9&.-]*(?:\s+[A-Z][A-Za-z0-9&.-]*){0,4}\b/.test(normalized);
+}
+
+function topicTerms(value: string): Set<string> {
+  const stop = new Set([
+    'about', 'after', 'also', 'another', 'best', 'brief', 'can', 'could',
+    'create', 'current', 'do', 'does', 'doing', 'for',
+    'dossier', 'doing', 'folder', 'fresh', 'full', 'interesting', 'latest',
+    'make', 'more', 'new', 'note', 'notes', 'on', 'into', 'onderzoek', 'please', 'research',
+    'separate', 'study', 'the', 'their', 'there', 'these', 'thing', 'things',
+    'topic', 'topics', 'using', 'want', 'with', 'would', 'write', 'you', 'naar', 'over', 'voor',
+    'een', 'het', 'de', 'nieuwe', 'apart', 'aparte', 'zelfde', 'bestaande',
+  ]);
+  return new Set(value
+    .toLowerCase()
+    .replace(/\b\d{4}-\d{2}-\d{2}\b/g, ' ')
+    .replace(/[^a-z0-9\s-]/g, ' ')
+    .replace(/[-_]+/g, ' ')
+    .split(/\s+/)
+    .map((term) => term.trim())
+    .filter((term) => (term.length > 2 || term === 'ai') && !/^\d+$/.test(term) && !stop.has(term)));
 }
 
 function collectWorkerAuthoredNotes(run: AgentRun): AgentArtifactDraft[] {

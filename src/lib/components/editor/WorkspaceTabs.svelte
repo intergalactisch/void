@@ -10,6 +10,12 @@
     y: number;
   };
 
+  interface Props {
+    onActivatePath?: (path: string | null, paneId: string | null) => void;
+  }
+
+  let { onActivatePath }: Props = $props();
+
   let contextMenu = $state<ContextMenuState | null>(null);
 
   function basename(path: string): string {
@@ -68,7 +74,11 @@
 
   function handleSwitch(tab: NoteWorkspaceTab): void {
     const path = noteWorkspaceStore.focusTab(tab.id);
-    syncSelectedPath(path);
+    if (onActivatePath) {
+      onActivatePath(path, noteWorkspaceStore.activePaneId);
+    } else {
+      syncSelectedPath(path);
+    }
   }
 
   async function handleClose(event: MouseEvent, tab: NoteWorkspaceTab): Promise<void> {
@@ -130,7 +140,15 @@
     handleSwitch(tab);
   }
 
+  function handleWindowKeydown(event: KeyboardEvent): void {
+    if (!contextMenu || event.key !== 'Escape') return;
+    event.preventDefault();
+    contextMenu = null;
+  }
+
 </script>
+
+<svelte:window onkeydown={handleWindowKeydown} />
 
 {#if noteWorkspaceStore.tabs.length > 0}
   <div class="workspace-tabs" role="tablist" aria-label="Workspace tabs">

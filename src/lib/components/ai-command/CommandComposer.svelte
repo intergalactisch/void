@@ -3,6 +3,7 @@
   import { Send, Square } from '@lucide/svelte';
   import { aiStore, commandCenterStore } from '$lib/stores';
   import { events } from '$lib/events';
+  import { createTextareaAutosizer } from '$lib/utils/textareaAutosize';
 
   interface Props {
     visible?: boolean;
@@ -10,10 +11,11 @@
 
   let { visible = true }: Props = $props();
 
-  let input = $state('');
   let inputRef: HTMLTextAreaElement | null = $state(null);
+  let hasPrompt = $state(false);
   let focused = $state(false);
   let isCancelling = $state(false);
+  const autosizer = createTextareaAutosizer(180);
 
   let isCancellable = $derived(aiStore.isProcessing || aiStore.isStreaming || aiStore.agentRunState.isRunning);
   let isRouting = $derived(aiStore.isRouting || commandCenterStore.hasRoutingPendingTurn);
@@ -26,14 +28,8 @@
     }
   });
 
-  $effect(() => {
-    if (input === '' && inputRef) {
-      inputRef.style.height = 'auto';
-    }
-  });
-
   async function submit() {
-    const prompt = input.trim();
+    const prompt = inputRef?.value.trim() ?? '';
     if (!prompt) return;
     if (isUnavailable) return;
 
@@ -48,7 +44,7 @@
       prompt,
       aiStore.currentConversation?.id ?? null
     );
-    input = '';
+    clearInput();
     let result = null;
     try {
       result = await aiStore.submitPrompt(prompt, { clientTurnId: turn.id });
@@ -85,10 +81,25 @@
     }
   }
 
-  function resize(event: Event) {
-    const target = event.target as HTMLTextAreaElement;
-    target.style.height = 'auto';
-    target.style.height = Math.min(target.scrollHeight, 180) + 'px';
+  function setHasPrompt(value: string) {
+    const next = value.trim().length > 0;
+    if (next !== hasPrompt) hasPrompt = next;
+  }
+
+  function handleInput(event: Event) {
+    const target = event.currentTarget as HTMLTextAreaElement;
+    setHasPrompt(target.value);
+    autosizer.schedule(target);
+  }
+
+  function clearInput() {
+    if (!inputRef) {
+      hasPrompt = false;
+      return;
+    }
+    inputRef.value = '';
+    setHasPrompt('');
+    autosizer.reset(inputRef);
   }
 
   function focusComposer() {
@@ -102,13 +113,13 @@
 
   onDestroy(() => {
     events.off('ai-command:focus-composer', focusComposer);
+    autosizer.cancel();
   });
 </script>
 
 <div class="composer" class:focused>
   <textarea
     bind:this={inputRef}
-    bind:value={input}
     name="ai-command"
     aria-label="AI command"
     aria-keyshortcuts="Enter Control+Enter Meta+Enter Shift+Enter"
@@ -116,7 +127,7 @@
     rows="1"
     placeholder={isUnavailable ? (aiStore.availabilityMessage ?? 'Install a local AI to use this feature') : isCancelling ? 'Cancelling...' : isRouting ? 'Understanding request...' : isCancellable ? 'Type to interrupt the current work...' : 'Ask Void to create, research, edit, or organize...'}
     disabled={isUnavailable}
-    oninput={resize}
+    oninput={handleInput}
     onkeydown={onKeydown}
     onfocus={() => { focused = true; }}
     onblur={() => { focused = false; }}
@@ -128,7 +139,7 @@
         <Square size={14} strokeWidth={2} aria-hidden="true" />
       </button>
     {:else}
-      <button type="button" class="composer-button send" onclick={submit} disabled={isUnavailable || !input.trim() || isRouting} aria-label="Send command">
+      <button type="button" class="composer-button send" onclick={submit} disabled={isUnavailable || !hasPrompt || isRouting} aria-label="Send command">
         <Send size={14} strokeWidth={2} aria-hidden="true" />
       </button>
     {/if}

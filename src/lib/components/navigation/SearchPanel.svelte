@@ -8,18 +8,20 @@
    */
 
   import { onMount, onDestroy } from 'svelte';
-  import { notesStore, uiStore } from '$lib/stores';
+  import { noteWorkspaceStore, notesStore, uiStore } from '$lib/stores';
   import { events } from '$lib/events';
   import { getAppContext } from '$lib/bootstrap';
   import type { SearchService, SearchHit } from '$lib/ports/inbound/SearchService';
   import { createFocusTrap } from '$lib/utils/focusTrap';
+  import OpenNoteIndicator from '$lib/components/shared/OpenNoteIndicator.svelte';
 
   interface Props {
     isOpen: boolean;
     onClose: () => void;
+    onNoteContextMenu?: (path: string, title: string, position: { x: number; y: number }, isFolder?: boolean) => void;
   }
 
-  let { isOpen, onClose }: Props = $props();
+  let { isOpen, onClose, onNoteContextMenu }: Props = $props();
 
   let query = $state('');
   let regex = $state(false);
@@ -241,6 +243,7 @@
             <div class="result-file">
               <span class="result-title">{group.title}</span>
               <span class="result-path">{group.path}</span>
+              <OpenNoteIndicator state={noteWorkspaceStore.openStateForPath(group.path)} showLabel />
             </div>
             {#each group.hits as hit (hit.path + ':' + hit.line + ':' + hit.column)}
               {@const idx = hits.indexOf(hit)}
@@ -251,6 +254,14 @@
                 class:selected={idx === selectedIndex}
                 data-index={idx}
                 onclick={() => navigateToHit(hit)}
+                oncontextmenu={(event) => {
+                  if (!onNoteContextMenu) return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  const pos = { x: event.clientX, y: event.clientY };
+                  handleClose();
+                  onNoteContextMenu(hit.path, hit.title, pos, false);
+                }}
                 onmouseenter={() => (selectedIndex = idx)}
                 role="option"
                 tabindex="-1"
@@ -401,6 +412,8 @@
   }
 
   .result-path {
+    min-width: 0;
+    flex: 1 1 auto;
     font-size: 11px;
     color: var(--text-tertiary);
     overflow: hidden;

@@ -1,8 +1,80 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import type { NotePaneNode } from '$lib/domain';
 import { noteWorkspaceStore } from '$lib/stores/noteWorkspace.svelte';
+
+function installMemoryLocalStorage(): void {
+  const entries = new Map<string, string>();
+  const storage: Storage = {
+    get length() {
+      return entries.size;
+    },
+    clear() {
+      entries.clear();
+    },
+    getItem(key: string) {
+      return entries.get(key) ?? null;
+    },
+    key(index: number) {
+      return Array.from(entries.keys())[index] ?? null;
+    },
+    removeItem(key: string) {
+      entries.delete(key);
+    },
+    setItem(key: string, value: string) {
+      entries.set(key, String(value));
+    },
+  };
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: storage,
+  });
+}
+
+function collectEffectiveWidths(node: NotePaneNode, width = 100): number[] {
+  if (node.type === 'leaf') return [width];
+  const [firstSize = 50, secondSize = 50] = node.sizes;
+  if (node.direction === 'horizontal') {
+    return [
+      ...collectEffectiveWidths(node.children[0], width * (firstSize / 100)),
+      ...collectEffectiveWidths(node.children[1], width * (secondSize / 100)),
+    ];
+  }
+  return [
+    ...collectEffectiveWidths(node.children[0], width),
+    ...collectEffectiveWidths(node.children[1], width),
+  ];
+}
+
+function collectEffectiveHeights(node: NotePaneNode, height = 100): number[] {
+  if (node.type === 'leaf') return [height];
+  const [firstSize = 50, secondSize = 50] = node.sizes;
+  if (node.direction === 'vertical') {
+    return [
+      ...collectEffectiveHeights(node.children[0], height * (firstSize / 100)),
+      ...collectEffectiveHeights(node.children[1], height * (secondSize / 100)),
+    ];
+  }
+  return [
+    ...collectEffectiveHeights(node.children[0], height),
+    ...collectEffectiveHeights(node.children[1], height),
+  ];
+}
+
+function collectPathsFromNode(node: NotePaneNode): string[] {
+  if (node.type === 'leaf') return node.notePath ? [node.notePath] : [];
+  return [
+    ...collectPathsFromNode(node.children[0]),
+    ...collectPathsFromNode(node.children[1]),
+  ];
+}
+
+function allWorkspaceNotePaths(): string[] {
+  return noteWorkspaceStore.tabs.flatMap((tab) => noteWorkspaceStore.getNotePaths(tab));
+}
 
 describe('noteWorkspaceStore split pane operations', () => {
   beforeEach(() => {
+    installMemoryLocalStorage();
     localStorage.clear();
     noteWorkspaceStore.init();
     noteWorkspaceStore.reset();
@@ -100,19 +172,293 @@ describe('noteWorkspaceStore split pane operations', () => {
     expect(noteWorkspaceStore.activeTab?.root.type).toBe('split');
   });
 
-  it('split requests move an already-open standalone note into the target layout', () => {
+  it('focusOpenNote activates an existing pane without duplicating it', () => {
+    noteWorkspaceStore.openNoteTab('alpha.md');
+    let tab = noteWorkspaceStore.activeTab!;
+    noteWorkspaceStore.splitPaneWithNote(tab.id, tab.activePaneId, 'right', 'beta.md');
+    noteWorkspaceStore.openNoteTab('gamma.md');
+
+    const location = noteWorkspaceStore.focusOpenNote('beta.md');
+
+    expect(location?.notePath).toBe('beta.md');
+    expect(location?.paneCount).toBe(2);
+    expect(noteWorkspaceStore.tabs).toHaveLength(2);
+    expect(noteWorkspaceStore.activeNotePath).toBe('beta.md');
+    expect(noteWorkspaceStore.getNotePaths(noteWorkspaceStore.activeTab!)).toEqual(['alpha.md', 'beta.md']);
+  });
+
+  it('openStateForPath identifies standalone, layout, and focused open notes', () => {
+    noteWorkspaceStore.openNoteTab('alpha.md');
+
+    let alphaState = noteWorkspaceStore.openStateForPath('alpha.md');
+    expect(alphaState).toEqual(expect.objectContaining({
+      isOpen: true,
+      isFocused: true,
+      paneCount: 1,
+      label: 'Focused',
+    }));
+    expect(alphaState.tooltip).toContain('Focused in editor tab');
+
+    noteWorkspaceStore.openNoteTab('beta.md');
+    alphaState = noteWorkspaceStore.openStateForPath('alpha.md');
+    expect(alphaState.isOpen).toBe(true);
+    expect(alphaState.isFocused).toBe(false);
+    expect(alphaState.label).toBe('Open');
+
+    const tab = noteWorkspaceStore.activeTab!;
+    noteWorkspaceStore.splitPaneWithNote(tab.id, tab.activePaneId, 'right', 'gamma.md');
+
+    const gammaState = noteWorkspaceStore.openStateForPath('gamma.md');
+    expect(gammaState).toEqual(expect.objectContaining({
+      isOpen: true,
+      isFocused: true,
+      paneCount: 2,
+      paneIndex: 1,
+      label: 'Focused',
+    }));
+    expect(gammaState.tooltip).toContain('pane 2 of 2');
+
+    expect(noteWorkspaceStore.openStateForPath('missing.md').isOpen).toBe(false);
+  });
+
+  it('creates a balanced multi-note layout tab', () => {
+    const selected = noteWorkspaceStore.openNotesLayout(
+      ['alpha.md', 'beta.md', 'gamma.md', 'delta.md'],
+      'Research layout',
+    );
+
+    expect(selected).toBe('alpha.md');
+    expect(noteWorkspaceStore.tabs).toHaveLength(1);
+    expect(noteWorkspaceStore.activeTab?.title).toBe('Research layout');
+    expect(noteWorkspaceStore.activeTab?.root.type).toBe('split');
+    expect(noteWorkspaceStore.getNotePaths(noteWorkspaceStore.activeTab!)).toEqual([
+      'alpha.md',
+      'beta.md',
+      'gamma.md',
+      'delta.md',
+    ]);
+    expect(noteWorkspaceStore.getPanes(noteWorkspaceStore.activeTab!)).toHaveLength(4);
+  });
+
+  it('dedupes and caps layout note paths', () => {
+    noteWorkspaceStore.openNoteTab('alpha.md');
+    noteWorkspaceStore.openNoteTab('beta.md');
+
+    noteWorkspaceStore.openNotesLayout([
+      'alpha.md',
+      'beta.md',
+      'alpha.md',
+      'gamma.md',
+      'delta.md',
+      'epsilon.md',
+      'zeta.md',
+      'eta.md',
+    ]);
+
+    expect(noteWorkspaceStore.tabs).toHaveLength(1);
+    expect(noteWorkspaceStore.getNotePaths(noteWorkspaceStore.activeTab!)).toEqual([
+      'alpha.md',
+      'beta.md',
+      'gamma.md',
+      'delta.md',
+      'epsilon.md',
+      'zeta.md',
+    ]);
+    expect(new Set(allWorkspaceNotePaths()).size).toBe(allWorkspaceNotePaths().length);
+  });
+
+  it('openNotesLayout never creates duplicate note panes', () => {
+    noteWorkspaceStore.openNotesLayout(['alpha.md', 'alpha.md', 'beta.md', 'beta.md']);
+
+    expect(noteWorkspaceStore.getNotePaths(noteWorkspaceStore.activeTab!)).toEqual(['alpha.md', 'beta.md']);
+    expect(new Set(allWorkspaceNotePaths()).size).toBe(allWorkspaceNotePaths().length);
+  });
+
+  it('addNoteToLayout appends without replacing existing notes and rejects duplicates', () => {
+    noteWorkspaceStore.openNoteTab('alpha.md');
+    let tab = noteWorkspaceStore.activeTab!;
+    noteWorkspaceStore.splitPaneWithNote(tab.id, tab.activePaneId, 'right', 'beta.md');
+    tab = noteWorkspaceStore.activeTab!;
+
+    const appended = noteWorkspaceStore.addNoteToLayout(tab.id, 'gamma.md');
+
+    expect(appended.action).toBe('appended');
+    expect(appended.notePath).toBe('gamma.md');
+    expect(noteWorkspaceStore.activePaneId).toBe(appended.paneId);
+    expect(noteWorkspaceStore.getNotePaths(noteWorkspaceStore.activeTab!)).toEqual([
+      'alpha.md',
+      'beta.md',
+      'gamma.md',
+    ]);
+
+    const duplicate = noteWorkspaceStore.addNoteToLayout(tab.id, 'alpha.md');
+
+    expect(duplicate.action).toBe('focused-existing');
+    expect(noteWorkspaceStore.getNotePaths(noteWorkspaceStore.activeTab!)).toEqual([
+      'alpha.md',
+      'beta.md',
+      'gamma.md',
+    ]);
+    expect(new Set(allWorkspaceNotePaths()).size).toBe(allWorkspaceNotePaths().length);
+  });
+
+  it('adds a note to the right edge of a horizontal layout as equal columns', () => {
+    noteWorkspaceStore.openNoteTab('alpha.md');
+    let tab = noteWorkspaceStore.activeTab!;
+    noteWorkspaceStore.splitPaneWithNote(tab.id, tab.activePaneId, 'right', 'beta.md');
+    tab = noteWorkspaceStore.activeTab!;
+
+    const result = noteWorkspaceStore.addNoteToLayoutEdge(tab.id, 'gamma.md', 'horizontal');
+
+    expect(result.action).toBe('appended');
+    expect(result.notePath).toBe('gamma.md');
+    expect(noteWorkspaceStore.getNotePaths(noteWorkspaceStore.activeTab!)).toEqual([
+      'alpha.md',
+      'beta.md',
+      'gamma.md',
+    ]);
+    const widths = collectEffectiveWidths(noteWorkspaceStore.activeTab!.root);
+    expect(widths).toHaveLength(3);
+    for (const width of widths) {
+      expect(width).toBeCloseTo(100 / 3, 4);
+    }
+  });
+
+  it('adds a note to the bottom edge of a vertical layout as equal rows', () => {
+    noteWorkspaceStore.openNoteTab('alpha.md');
+    let tab = noteWorkspaceStore.activeTab!;
+    noteWorkspaceStore.splitPaneWithNote(tab.id, tab.activePaneId, 'bottom', 'beta.md');
+    tab = noteWorkspaceStore.activeTab!;
+
+    const result = noteWorkspaceStore.addNoteToLayoutEdge(tab.id, 'gamma.md', 'vertical');
+
+    expect(result.action).toBe('appended');
+    expect(noteWorkspaceStore.getNotePaths(noteWorkspaceStore.activeTab!)).toEqual([
+      'alpha.md',
+      'beta.md',
+      'gamma.md',
+    ]);
+    const heights = collectEffectiveHeights(noteWorkspaceStore.activeTab!.root);
+    expect(heights).toHaveLength(3);
+    for (const height of heights) {
+      expect(height).toBeCloseTo(100 / 3, 4);
+    }
+  });
+
+  it('wraps a mixed layout when adding to an outer edge', () => {
+    noteWorkspaceStore.openNoteTab('alpha.md');
+    let tab = noteWorkspaceStore.activeTab!;
+    noteWorkspaceStore.splitPaneWithNote(tab.id, tab.activePaneId, 'right', 'beta.md');
+    tab = noteWorkspaceStore.activeTab!;
+    noteWorkspaceStore.splitPaneWithNote(tab.id, tab.activePaneId, 'bottom', 'gamma.md');
+    tab = noteWorkspaceStore.activeTab!;
+
+    const result = noteWorkspaceStore.addNoteToLayoutEdge(tab.id, 'delta.md', 'horizontal');
+    const root = noteWorkspaceStore.activeTab!.root;
+
+    expect(result.action).toBe('appended');
+    expect(root.type).toBe('split');
+    if (root.type !== 'split') return;
+    expect(root.direction).toBe('horizontal');
+    expect(root.sizes[0]).toBeCloseTo(75, 4);
+    expect(root.sizes[1]).toBeCloseTo(25, 4);
+    expect(collectPathsFromNode(root.children[0])).toEqual(['alpha.md', 'beta.md', 'gamma.md']);
+    expect(collectPathsFromNode(root.children[1])).toEqual(['delta.md']);
+  });
+
+  it('focuses duplicates when edge-adding without mutating layout geometry', () => {
+    noteWorkspaceStore.openNoteTab('alpha.md');
+    let tab = noteWorkspaceStore.activeTab!;
+    noteWorkspaceStore.splitPaneWithNote(tab.id, tab.activePaneId, 'right', 'beta.md');
+    tab = noteWorkspaceStore.activeTab!;
+    const beforeRoot = JSON.stringify(tab.root);
+
+    const result = noteWorkspaceStore.addNoteToLayoutEdge(tab.id, 'alpha.md', 'horizontal');
+
+    expect(result.action).toBe('focused-existing');
+    expect(noteWorkspaceStore.activeNotePath).toBe('alpha.md');
+    expect(JSON.stringify(noteWorkspaceStore.activeTab!.root)).toBe(beforeRoot);
+    expect(noteWorkspaceStore.getNotePaths(noteWorkspaceStore.activeTab!)).toEqual(['alpha.md', 'beta.md']);
+  });
+
+  it('closing one pane from a four-column layout leaves equal effective widths', () => {
+    noteWorkspaceStore.openNoteTab('alpha.md');
+    let tab = noteWorkspaceStore.activeTab!;
+    noteWorkspaceStore.splitPaneWithNote(tab.id, tab.activePaneId, 'right', 'beta.md');
+    tab = noteWorkspaceStore.activeTab!;
+    noteWorkspaceStore.splitPaneWithNote(tab.id, tab.activePaneId, 'right', 'gamma.md');
+    tab = noteWorkspaceStore.activeTab!;
+    noteWorkspaceStore.splitPaneWithNote(tab.id, tab.activePaneId, 'right', 'delta.md');
+    tab = noteWorkspaceStore.activeTab!;
+    const betaPane = noteWorkspaceStore.getPanes(tab).find((pane) => pane.notePath === 'beta.md')!;
+
+    const result = noteWorkspaceStore.closePane(tab.id, betaPane.paneId);
+
+    expect(result).toEqual(expect.objectContaining({
+      action: 'closed-pane',
+      closedPath: 'beta.md',
+      nextPath: 'gamma.md',
+    }));
+    expect(noteWorkspaceStore.getNotePaths(noteWorkspaceStore.activeTab!)).toEqual([
+      'alpha.md',
+      'gamma.md',
+      'delta.md',
+    ]);
+    expect(noteWorkspaceStore.activeNotePath).toBe('gamma.md');
+    const widths = collectEffectiveWidths(noteWorkspaceStore.activeTab!.root);
+    expect(widths).toHaveLength(3);
+    for (const width of widths) {
+      expect(width).toBeCloseTo(100 / 3, 4);
+    }
+  });
+
+  it('closing a pane from a mixed layout rebuilds a balanced tree in visual order', () => {
+    noteWorkspaceStore.openNoteTab('alpha.md');
+    let tab = noteWorkspaceStore.activeTab!;
+    noteWorkspaceStore.splitPaneWithNote(tab.id, tab.activePaneId, 'right', 'beta.md');
+    tab = noteWorkspaceStore.activeTab!;
+    noteWorkspaceStore.splitPaneWithNote(tab.id, tab.activePaneId, 'bottom', 'gamma.md');
+    tab = noteWorkspaceStore.activeTab!;
+    const alphaPane = noteWorkspaceStore.getPanes(tab).find((pane) => pane.notePath === 'alpha.md')!;
+
+    const result = noteWorkspaceStore.closePane(tab.id, alphaPane.paneId);
+
+    expect(result.closedPath).toBe('alpha.md');
+    expect(noteWorkspaceStore.getNotePaths(noteWorkspaceStore.activeTab!)).toEqual(['beta.md', 'gamma.md']);
+    expect(noteWorkspaceStore.activeTab!.root.type).toBe('split');
+    if (noteWorkspaceStore.activeTab!.root.type === 'split') {
+      expect(noteWorkspaceStore.activeTab!.root.sizes[0]).toBeCloseTo(50, 4);
+      expect(noteWorkspaceStore.activeTab!.root.sizes[1]).toBeCloseTo(50, 4);
+    }
+  });
+
+  it('focusTab moves focus from an empty active pane to the fallback note pane', () => {
+    noteWorkspaceStore.openNoteTab('alpha.md');
+    const splitTab = noteWorkspaceStore.activeTab!;
+    const alphaPane = splitTab.activePaneId;
+    noteWorkspaceStore.splitActivePane('horizontal');
+    expect(noteWorkspaceStore.activeNotePath).toBeNull();
+
+    noteWorkspaceStore.openNoteTab('beta.md');
+    const focusedPath = noteWorkspaceStore.focusTab(splitTab.id);
+
+    expect(focusedPath).toBe('alpha.md');
+    expect(noteWorkspaceStore.activePaneId).toBe(alphaPane);
+    expect(noteWorkspaceStore.activeNotePath).toBe('alpha.md');
+  });
+
+  it('split requests focus an already-open standalone note without duplicating it', () => {
     noteWorkspaceStore.openNoteTab('alpha.md');
     noteWorkspaceStore.openNoteTab('beta.md');
 
     const alphaTab = noteWorkspaceStore.tabs.find((tab) => noteWorkspaceStore.getNotePaths(tab).includes('alpha.md'))!;
     const result = noteWorkspaceStore.splitPaneWithNote(alphaTab.id, alphaTab.activePaneId, 'right', 'beta.md');
 
-    expect(result.action).toBe('split');
+    expect(result.action).toBe('focused-existing');
     expect(result.notePath).toBe('beta.md');
-    expect(noteWorkspaceStore.activeTabId).toBe(alphaTab.id);
-    expect(noteWorkspaceStore.tabs).toHaveLength(1);
-    expect(noteWorkspaceStore.getPanes(noteWorkspaceStore.activeTab!)).toHaveLength(2);
-    expect(noteWorkspaceStore.getNotePaths(noteWorkspaceStore.activeTab!)).toEqual(['alpha.md', 'beta.md']);
+    expect(noteWorkspaceStore.activeTabId).not.toBe(alphaTab.id);
+    expect(noteWorkspaceStore.tabs).toHaveLength(2);
+    expect(new Set(allWorkspaceNotePaths()).size).toBe(allWorkspaceNotePaths().length);
   });
 
   it('resolves drop intents for replace and edge splits', () => {
@@ -184,6 +530,58 @@ describe('noteWorkspaceStore split pane operations', () => {
     }
   });
 
+  it('moving a pane from a mixed layout flattens the target axis into equal columns', () => {
+    noteWorkspaceStore.openNoteTab('alpha.md');
+    let tab = noteWorkspaceStore.activeTab!;
+    noteWorkspaceStore.splitPaneWithNote(tab.id, tab.activePaneId, 'right', 'beta.md');
+    tab = noteWorkspaceStore.activeTab!;
+    noteWorkspaceStore.splitPaneWithNote(tab.id, tab.activePaneId, 'bottom', 'gamma.md');
+    tab = noteWorkspaceStore.activeTab!;
+    const betaPane = noteWorkspaceStore.getPanes(tab).find((pane) => pane.notePath === 'beta.md')!;
+    const gammaPane = noteWorkspaceStore.getPanes(tab).find((pane) => pane.notePath === 'gamma.md')!;
+
+    const result = noteWorkspaceStore.movePane(tab.id, gammaPane.paneId, tab.id, betaPane.paneId, 'right');
+
+    expect(result.action).toBe('moved');
+    expect(noteWorkspaceStore.getNotePaths(noteWorkspaceStore.activeTab!)).toEqual([
+      'alpha.md',
+      'beta.md',
+      'gamma.md',
+    ]);
+    const root = noteWorkspaceStore.activeTab!.root;
+    expect(root.type).toBe('split');
+    if (root.type === 'split') expect(root.direction).toBe('horizontal');
+    for (const width of collectEffectiveWidths(root)) {
+      expect(width).toBeCloseTo(100 / 3, 4);
+    }
+  });
+
+  it('edge-dropping a sidebar note into a mixed layout flattens the target axis', () => {
+    noteWorkspaceStore.openNoteTab('alpha.md');
+    let tab = noteWorkspaceStore.activeTab!;
+    noteWorkspaceStore.splitPaneWithNote(tab.id, tab.activePaneId, 'right', 'beta.md');
+    tab = noteWorkspaceStore.activeTab!;
+    noteWorkspaceStore.splitPaneWithNote(tab.id, tab.activePaneId, 'bottom', 'gamma.md');
+    tab = noteWorkspaceStore.activeTab!;
+    const betaPane = noteWorkspaceStore.getPanes(tab).find((pane) => pane.notePath === 'beta.md')!;
+
+    const result = noteWorkspaceStore.dropNoteOnPane(tab.id, betaPane.paneId, 'delta.md', 'right');
+
+    expect(result.action).toBe('split');
+    expect(noteWorkspaceStore.getNotePaths(noteWorkspaceStore.activeTab!)).toEqual([
+      'alpha.md',
+      'beta.md',
+      'delta.md',
+      'gamma.md',
+    ]);
+    const root = noteWorkspaceStore.activeTab!.root;
+    expect(root.type).toBe('split');
+    if (root.type === 'split') expect(root.direction).toBe('horizontal');
+    for (const width of collectEffectiveWidths(root)) {
+      expect(width).toBeCloseTo(25, 4);
+    }
+  });
+
   it('moves a pane across tabs and closes an empty source tab', () => {
     noteWorkspaceStore.openNoteTab('alpha.md');
     noteWorkspaceStore.openNoteTab('beta.md');
@@ -219,6 +617,37 @@ describe('noteWorkspaceStore split pane operations', () => {
     expect(noteWorkspaceStore.getNotePaths(collapsedSource)).toEqual(['alpha.md']);
     expect(collapsedSource.root.type).toBe('leaf');
     expect(noteWorkspaceStore.getNotePaths(noteWorkspaceStore.activeTab!)).toEqual(['beta.md', 'gamma.md']);
+  });
+
+  it('cross-tab pane moves reflow the target layout and rebalance the source', () => {
+    noteWorkspaceStore.openNoteTab('alpha.md');
+    let sourceTab = noteWorkspaceStore.activeTab!;
+    noteWorkspaceStore.splitPaneWithNote(sourceTab.id, sourceTab.activePaneId, 'right', 'beta.md');
+    sourceTab = noteWorkspaceStore.activeTab!;
+    noteWorkspaceStore.splitPaneWithNote(sourceTab.id, sourceTab.activePaneId, 'right', 'gamma.md');
+    sourceTab = noteWorkspaceStore.activeTab!;
+
+    noteWorkspaceStore.openNoteTab('delta.md');
+    let targetTab = noteWorkspaceStore.activeTab!;
+    noteWorkspaceStore.splitPaneWithNote(targetTab.id, targetTab.activePaneId, 'right', 'epsilon.md');
+    targetTab = noteWorkspaceStore.activeTab!;
+
+    const betaPane = noteWorkspaceStore.getPanes(sourceTab).find((pane) => pane.notePath === 'beta.md')!;
+    const deltaPane = noteWorkspaceStore.getPanes(targetTab).find((pane) => pane.notePath === 'delta.md')!;
+
+    const result = noteWorkspaceStore.movePane(sourceTab.id, betaPane.paneId, targetTab.id, deltaPane.paneId, 'right');
+
+    expect(result.action).toBe('moved');
+    const source = noteWorkspaceStore.tabs.find((tab) => tab.id === sourceTab.id)!;
+    const target = noteWorkspaceStore.tabs.find((tab) => tab.id === targetTab.id)!;
+    expect(noteWorkspaceStore.getNotePaths(source)).toEqual(['alpha.md', 'gamma.md']);
+    expect(noteWorkspaceStore.getNotePaths(target)).toEqual(['delta.md', 'beta.md', 'epsilon.md']);
+    for (const width of collectEffectiveWidths(source.root)) {
+      expect(width).toBeCloseTo(50, 4);
+    }
+    for (const width of collectEffectiveWidths(target.root)) {
+      expect(width).toBeCloseTo(100 / 3, 4);
+    }
   });
 
   it('swaps panes within a tab without changing pane count', () => {
