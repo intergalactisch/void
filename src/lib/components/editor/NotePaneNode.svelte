@@ -1,12 +1,9 @@
 <script lang="ts">
   import { Pane, PaneGroup } from 'paneforge';
   import type { Document } from '$lib/domain/entities/Document';
-  import type {
-    NotePaneDragPayload,
-    NotePaneDropIntent,
-    NotePaneNode as NotePaneNodeValue,
-  } from '$lib/domain';
+  import type { NotePaneNode as NotePaneNodeValue } from '$lib/domain';
   import { editorStore, noteWorkspaceStore, notesStore } from '$lib/stores';
+  import { paneDrag } from '$lib/components/dnd/paneDnd.svelte';
   import ConflictBanner from './ConflictBanner.svelte';
   import EditorShell from './EditorShell.svelte';
   import NotePaneNodeComponent from './NotePaneNode.svelte';
@@ -22,9 +19,6 @@
     onCountsChange?: ((wordCount: number, charCount: number) => void) | undefined;
     onError?: ((error: string | null) => void) | undefined;
     onTitleRename?: ((newTitle: string, path?: string) => void) | undefined;
-    onPaneMoveStart?: ((event: PointerEvent, payload: NotePaneDragPayload) => void) | undefined;
-    paneMoveSourceId?: string | null;
-    paneMoveTargetId?: string | null;
     editorStyle?: string;
   }
 
@@ -36,9 +30,6 @@
     onCountsChange,
     onError,
     onTitleRename,
-    onPaneMoveStart,
-    paneMoveSourceId = null,
-    paneMoveTargetId = null,
     editorStyle = '',
   }: Props = $props();
 
@@ -46,8 +37,6 @@
   let replacingPaneId = $state<string | null>(null);
   let leafDocument = $state<Document | null>(null);
   let loadedLeafPath = $state<string | null>(null);
-  let dropIntent = $state<NotePaneDropIntent | null>(null);
-  let dragDepth = 0;
   const splitChildren = $derived(
     node?.type === 'split' && Array.isArray(node.children) && node.children.length === 2
       ? node.children
@@ -154,83 +143,6 @@
     noteWorkspaceStore.setSplitSizes(tabId, splitId, [50, 50]);
   }
 
-  function hasNoteDrag(event: DragEvent): boolean {
-    const types = event.dataTransfer?.types;
-    if (!types) return false;
-    const dragTypes = Array.from(types);
-    return dragTypes.includes('application/x-void-note') && !dragTypes.includes('application/x-void-note-link');
-  }
-
-  function readDraggedNotePath(event: DragEvent): string | null {
-    const transfer = event.dataTransfer;
-    if (!transfer) return null;
-    const raw = transfer.getData('application/x-void-note');
-    if (raw) {
-      try {
-        const parsed = JSON.parse(raw) as { path?: string };
-        if (parsed.path) return parsed.path;
-      } catch {
-        return raw;
-      }
-    }
-    return null;
-  }
-
-  function isKnownNotePath(path: string): boolean {
-    return notesStore.allNotes.some((note) => !note.isFolder && note.path === path);
-  }
-
-  function resolveDropIntent(event: DragEvent, element: HTMLElement): NotePaneDropIntent {
-    const rect = element.getBoundingClientRect();
-    const x = event.clientX - rect.left;
-    const y = event.clientY - rect.top;
-    const distances = [
-      ['left', x],
-      ['right', rect.width - x],
-      ['top', y],
-      ['bottom', rect.height - y],
-    ] as const;
-    const nearest = distances.reduce((best, current) => current[1] < best[1] ? current : best);
-    const threshold = Math.min(Math.max(Math.min(rect.width, rect.height) * 0.24, 72), 150);
-    return nearest[1] <= threshold ? nearest[0] : 'replace';
-  }
-
-  function handleDragEnter(event: DragEvent): void {
-    if (!hasNoteDrag(event)) return;
-    dragDepth += 1;
-    event.preventDefault();
-  }
-
-  function handleDragOver(event: DragEvent): void {
-    if (!hasNoteDrag(event)) return;
-    event.preventDefault();
-    event.dataTransfer!.dropEffect = 'copy';
-    dropIntent = resolveDropIntent(event, event.currentTarget as HTMLElement);
-  }
-
-  function handleDragLeave(event: DragEvent): void {
-    if (!hasNoteDrag(event)) return;
-    dragDepth = Math.max(0, dragDepth - 1);
-    if (dragDepth === 0) {
-      dropIntent = null;
-    }
-  }
-
-  function handleDrop(event: DragEvent, paneId: string): void {
-    if (!hasNoteDrag(event)) return;
-    event.preventDefault();
-    dragDepth = 0;
-    const intent = dropIntent ?? 'replace';
-    dropIntent = null;
-
-    const notePath = readDraggedNotePath(event);
-    if (!notePath || !isKnownNotePath(notePath)) return;
-    const result = noteWorkspaceStore.dropNoteOnPane(tabId, paneId, notePath, intent);
-    if (result.notePath) {
-      notesStore.selectNote(result.notePath);
-    }
-  }
-
   $effect(() => {
     if (node?.type !== 'leaf' || !node.notePath) {
       leafDocument = null;
@@ -283,9 +195,6 @@
           onCountsChange={forwardCountsChange}
           onError={forwardError}
           onTitleRename={forwardTitleRename}
-          {onPaneMoveStart}
-          {paneMoveSourceId}
-          {paneMoveTargetId}
           {editorStyle}
         />
       </Pane>
@@ -299,9 +208,6 @@
           onCountsChange={forwardCountsChange}
           onError={forwardError}
           onTitleRename={forwardTitleRename}
-          {onPaneMoveStart}
-          {paneMoveSourceId}
-          {paneMoveTargetId}
           {editorStyle}
         />
       </Pane>
@@ -317,20 +223,15 @@
     class="note-pane-leaf"
     class:active
     class:highlighted={noteWorkspaceStore.highlightedPaneId === leafNode.paneId}
-    class:drop-active={dropIntent !== null}
-    class:pane-moving-source={paneMoveSourceId === leafNode.paneId}
-    class:pane-moving-target={paneMoveTargetId === leafNode.paneId && paneMoveSourceId !== leafNode.paneId}
+    class:pane-drag-source={paneDrag.active && paneDrag.sourcePaneId === leafNode.paneId}
     data-pane-id={leafNode.paneId}
     data-tab-id={tabId}
     data-note-path={leafNode.notePath ?? ''}
     aria-label={leafNode.notePath ?? 'Choose note'}
-    ondragenter={handleDragEnter}
-    ondragover={handleDragOver}
-    ondragleave={handleDragLeave}
-    ondrop={(event) => handleDrop(event, leafNode.paneId)}
     onpointerdown={() => focusLeaf(leafNode.paneId, leafNode.notePath)}
     onfocusin={() => focusLeaf(leafNode.paneId, leafNode.notePath)}
   >
+    <div class="pane-drop-catcher" aria-hidden="true"></div>
     {#if !leafNode.notePath || replacingPaneId === leafNode.paneId}
       <SplitNotePicker
         {tabId}
@@ -350,7 +251,6 @@
         editing={active}
         onOpenNote={() => { replacingPaneId = leafNode.paneId; }}
         onClosePane={() => { void closePane(leafNode.paneId, leafNode.notePath); }}
-        {onPaneMoveStart}
       />
       {#if active && state?.conflict}
         <ConflictBanner />
@@ -368,15 +268,6 @@
         />
       {:else}
         <div class="note-pane-loading">Opening…</div>
-      {/if}
-      {#if dropIntent}
-        <div class="pane-drop-overlay" aria-hidden="true">
-          <div class="drop-zone drop-left" class:active={dropIntent === 'left'}>Open left</div>
-          <div class="drop-zone drop-right" class:active={dropIntent === 'right'}>Open right</div>
-          <div class="drop-zone drop-top" class:active={dropIntent === 'top'}>Open up</div>
-          <div class="drop-zone drop-bottom" class:active={dropIntent === 'bottom'}>Open down</div>
-          <div class="drop-zone drop-center" class:active={dropIntent === 'replace'}>Replace pane</div>
-        </div>
       {/if}
     {/if}
   </section>
@@ -427,18 +318,8 @@
     box-shadow: inset 0 0 0 2px var(--accent-primary);
   }
 
-  .note-pane-leaf.drop-active {
-    outline: 2px solid color-mix(in srgb, var(--accent-primary) 42%, transparent);
-    outline-offset: -2px;
-  }
-
-  .note-pane-leaf.pane-moving-source {
-    opacity: 0.72;
-  }
-
-  .note-pane-leaf.pane-moving-target {
-    outline: 2px solid color-mix(in srgb, var(--accent-primary) 50%, transparent);
-    outline-offset: -2px;
+  .note-pane-leaf.pane-drag-source {
+    opacity: 0.6;
   }
 
   .note-pane-loading {
@@ -449,48 +330,6 @@
     color: var(--text-tertiary);
     font-size: var(--text-small);
   }
-
-  .pane-drop-overlay {
-    position: absolute;
-    inset: 32px 0 0;
-    z-index: 60;
-    display: grid;
-    grid-template:
-      "top top top" 1fr
-      "left center right" 1.35fr
-      "bottom bottom bottom" 1fr / 1fr 1.35fr 1fr;
-    gap: 6px;
-    padding: 8px;
-    background: color-mix(in srgb, var(--bg-editor) 72%, transparent);
-    pointer-events: none;
-  }
-
-  .drop-zone {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border: 1px dashed color-mix(in srgb, var(--accent-primary) 42%, var(--border-light));
-    border-radius: var(--radius-sm);
-    background: color-mix(in srgb, var(--bg-card) 82%, transparent);
-    color: var(--text-secondary);
-    font-size: var(--text-caption);
-    font-weight: 650;
-    letter-spacing: 0;
-  }
-
-  .drop-zone.active {
-    border-style: solid;
-    border-color: var(--accent-primary);
-    background: color-mix(in srgb, var(--accent-primary) 12%, var(--bg-card));
-    color: var(--text-primary);
-    box-shadow: 0 0 0 3px var(--accent-soft);
-  }
-
-  .drop-left { grid-area: left; }
-  .drop-right { grid-area: right; }
-  .drop-top { grid-area: top; }
-  .drop-bottom { grid-area: bottom; }
-  .drop-center { grid-area: center; }
 
   @media (max-width: 879px) {
     :global(.note-pane-group[data-direction]) {

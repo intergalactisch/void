@@ -14,6 +14,7 @@
 
   import { Copy, FileText, Hash, Plus } from '@lucide/svelte';
   import { notesStore, toastStore } from '$lib/stores';
+  import { noteSource } from '$lib/components/dnd/paneDnd.svelte';
   import { buildRefId } from '$lib/domain/values';
   import { copyTextToClipboard } from '$lib/utils/clipboard';
   import type { NotesListItem, TagGroup } from '$lib/ports/inbound';
@@ -190,6 +191,7 @@
             class="note-row"
             role="button"
             tabindex="0"
+            use:noteSource={{ notePath: note.path, title: note.title }}
             onclick={() => openNote(note.path)}
             oncontextmenu={(event) => handleContextMenu(event, note.path, note.title)}
             onkeydown={(event) => handleRowKeydown(note.path, event)}

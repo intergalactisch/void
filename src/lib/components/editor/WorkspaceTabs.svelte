@@ -2,7 +2,7 @@
   import { noteWorkspaceStore, editorStore, notesStore, toastStore } from '$lib/stores';
   import { buildRefId, type NotePaneDirection, type NoteWorkspaceTab } from '$lib/domain';
   import { copyTextToClipboard } from '$lib/utils/clipboard';
-  import { AlertTriangle, Copy, PanelRight, Rows3, X } from '@lucide/svelte';
+  import { AlertTriangle, Copy, PanelRight, Plus, Rows3, X } from '@lucide/svelte';
 
   type ContextMenuState = {
     tabId: string;
@@ -81,6 +81,12 @@
     }
   }
 
+  function handleNewTab(): void {
+    // Creates an empty tab; NotePaneWorkspace shows its picker. We deliberately do not
+    // touch the note selection here — clearing it would close the freshly-created tab.
+    noteWorkspaceStore.openEmptyTab();
+  }
+
   async function handleClose(event: MouseEvent, tab: NoteWorkspaceTab): Promise<void> {
     event.stopPropagation();
     const removedPaths = pathsForTab(tab);
@@ -151,7 +157,13 @@
 <svelte:window onkeydown={handleWindowKeydown} />
 
 {#if noteWorkspaceStore.tabs.length > 0}
-  <div class="workspace-tabs" role="tablist" aria-label="Workspace tabs">
+  <div
+    class="workspace-tabs"
+    role="tablist"
+    aria-label="Workspace tabs"
+    data-empty-drop="true"
+    data-empty-drop-label="New tab"
+  >
     {#each noteWorkspaceStore.tabs as tab (tab.id)}
       {@const active = tab.id === noteWorkspaceStore.activeTabId}
       {@const paneCount = noteWorkspaceStore.getPaneCount(tab)}
@@ -189,6 +201,15 @@
         </button>
       </div>
     {/each}
+    <button
+      type="button"
+      class="workspace-tab-new"
+      title="New tab"
+      aria-label="New tab"
+      onclick={handleNewTab}
+    >
+      <Plus size={15} strokeWidth={2} aria-hidden="true" />
+    </button>
   </div>
 
   {#if contextMenu}
@@ -351,6 +372,29 @@
     .workspace-tab-close::before {
       display: block;
     }
+  }
+
+  .workspace-tab-new {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    align-self: center;
+    flex: 0 0 auto;
+    width: 28px;
+    height: 24px;
+    margin-left: 4px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-tertiary);
+    cursor: pointer;
+  }
+
+  .workspace-tab-new:hover,
+  .workspace-tab-new:focus-visible {
+    background: var(--surface-base);
+    color: var(--text-primary);
   }
 
   .workspace-tab-menu-backdrop {

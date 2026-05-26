@@ -135,7 +135,7 @@ function normalizeMediaKind(value: unknown, url: string): AgentMediaKind {
   if (isAgentMediaKind(value)) return value;
   const normalized = url.toLowerCase();
   if (/youtu\.be|youtube\.com/.test(normalized)) return 'youtube';
-  if (/\.(png|jpe?g|gif|webp|avif)(?:[?#]|$)/.test(normalized)) return 'image';
+  if (/\.(png|jpe?g|svg|gif|webp)(?:[?#]|$)/.test(normalized)) return 'image';
   if (/\.(mp4|mov|webm|m4v)(?:[?#]|$)/.test(normalized)) return 'video';
   if (/\.(mp3|wav|m4a|ogg)(?:[?#]|$)/.test(normalized)) return 'audio';
   if (/\.(csv|json|parquet|xlsx|zip)(?:[?#]|$)/.test(normalized)) return 'dataset';

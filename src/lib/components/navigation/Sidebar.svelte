@@ -18,6 +18,7 @@
   import type { ProtectedNoteMeta } from '$lib/domain/values/Protection';
   import type { NotesListItem, TagGroup } from '$lib/ports/inbound';
   import { createSortableState, type SortableState } from '$lib/components/dnd/sortable';
+  import { noteSource } from '$lib/components/dnd/paneDnd.svelte';
   import FolderTree from './FolderTree.svelte';
   import { createFolderReorderDnd } from './folderReorderDnd';
   import OpenNoteIndicator from '$lib/components/shared/OpenNoteIndicator.svelte';
@@ -581,6 +582,7 @@
               class="sidebar-item sidebar-item-nested group"
               class:selected={notesStore.selectedPath === recent.path}
               class:multi-selected={notesStore.selectedPaths.has(recent.path)}
+              use:noteSource={{ notePath: recent.path, title: recent.title }}
               onclick={(e) => handleSelectNote(recent.path, e)}
               oncontextmenu={(event) => handleNoteContextMenu(recent, event)}
               onkeydown={(event) => handleNoteRowKeydown(recent.path, event)}
@@ -659,6 +661,7 @@
               class="sidebar-item sidebar-item-nested group"
               class:selected={note.isFolder ? notesStore.activeFolderPath === note.path : notesStore.selectedPath === note.path}
               class:multi-selected={notesStore.selectedPaths.has(note.path)}
+              use:noteSource={{ notePath: note.path, title: note.title, disabled: note.isFolder }}
               onclick={(e) => handleSelectFavorite(note, e)}
               oncontextmenu={(event) => handleNoteContextMenu(note, event)}
               onkeydown={(event) => handleFavoriteRowKeydown(note, event)}
@@ -851,6 +854,7 @@
                   class="sidebar-item sidebar-item-nested group"
                   class:selected={notesStore.selectedPath === note.path}
                   class:multi-selected={notesStore.selectedPaths.has(note.path)}
+                  use:noteSource={{ notePath: note.path, title: note.title }}
                   onclick={(e) => handleSelectNote(note.path, e)}
                   oncontextmenu={(event) => handleNoteContextMenu(note, event)}
                   onkeydown={(event) => handleNoteRowKeydown(note.path, event)}

@@ -23,6 +23,11 @@ export interface EditorNotesProvider {
   getAllNotes(context?: { mode: 'typed' | 'selection'; activePath?: string | null }): EditorPageLinkNote[];
 }
 
+export type EditorImageSrcResolver = (
+  src: string,
+  context: { notePath: string | null }
+) => string | Promise<string>;
+
 export interface EditorPortFactoryOptions {
   commandRegistry: CommandRegistryPort;
   notesProvider?: EditorNotesProvider;
@@ -44,6 +49,7 @@ export interface EditorPortFactoryOptions {
   onPageLinkClick?: (path: string) => void;
   onExternalLinkClick?: (url: string) => void;
   onTodoToggle?: (blockId: string, content: string, checked: boolean) => void;
+  resolveImageSrc?: EditorImageSrcResolver;
   onAIInlineGenerate?: (
     prompt: string,
     selectionText: string | null,

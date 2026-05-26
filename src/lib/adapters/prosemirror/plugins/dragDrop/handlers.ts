@@ -177,12 +177,11 @@ export function calculateDropPosition(
  * @returns Whether the event was handled
  */
 export function handleDragOver(view: EditorView, event: DragEvent): boolean {
-  event.preventDefault();
-
   // Check if this is a block drag
   if (!event.dataTransfer?.types.includes(BLOCK_DRAG_MIME)) {
     return false;
   }
+  event.preventDefault();
 
   const state = dragDropKey.getState(view.state);
   const dropInfo = calculateDropPosition(
@@ -235,11 +234,10 @@ export function handleDragLeave(view: EditorView, event: DragEvent): boolean {
  * @returns Whether the event was handled
  */
 export function handleDrop(view: EditorView, event: DragEvent): boolean {
-  event.preventDefault();
-
   // Get drag data
   const dataStr = event.dataTransfer?.getData(BLOCK_DRAG_MIME);
   if (!dataStr) return false;
+  event.preventDefault();
 
   let dragData: BlockDragData;
   try {

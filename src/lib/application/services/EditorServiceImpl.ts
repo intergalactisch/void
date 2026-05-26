@@ -31,10 +31,12 @@ import type {
   EditorInlineAIComposerView,
   EditorInlineAIRangeAnchorInput,
   EditorInlineAIRangeAnchorResult,
+  EditorImageBlockAttrs,
   EditorNotesProvider,
   EditorPageLinkNote,
   EditorPort,
   EditorPortFactory,
+  EditorImageSrcResolver,
   ExternalNavigationPort,
   RegisteredCommand,
 } from '$lib/ports/outbound';
@@ -165,6 +167,7 @@ export class EditorServiceImpl implements EditorService {
     private readonly markdown?: MarkdownSerializerPort,
     private readonly lineageService?: LineageService,
     private readonly frecency?: FrecencyService,
+    private readonly resolveImageSrc?: EditorImageSrcResolver,
   ) {
     this.subscribeToTodoWorkspaceSync();
     this.subscribeToFileChanges();
@@ -1337,6 +1340,10 @@ export class EditorServiceImpl implements EditorService {
     this.editorPort?.execute('insertContentAfterBlock', blockId, markdown);
   }
 
+  updateImageBlockAttrs(blockId: string, attrs: EditorImageBlockAttrs): void {
+    this.editorPort?.execute('updateImageBlockAttrs', blockId, attrs);
+  }
+
   getAILockedBlocks(): string[] {
     return this.editorPort?.getAILockedBlocks() ?? [];
   }
@@ -1853,6 +1860,9 @@ export class EditorServiceImpl implements EditorService {
       onTodoToggle: () => undefined,
       onExternalLinkClick: () => undefined,
     };
+    if (this.resolveImageSrc) {
+      Object.assign(factoryOptions, { resolveImageSrc: this.resolveImageSrc });
+    }
     if (notesProvider) {
       Object.assign(factoryOptions, { notesProvider });
     }

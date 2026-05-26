@@ -12,9 +12,7 @@ import type { RegisteredCommand, CommandContext } from '$lib/ports/outbound';
 import { BUILTIN_COMMANDS } from '$lib/domain/values/Command';
 import type { BlockType } from '$lib/domain/values/BlockType';
 import type { Block } from '$lib/domain/entities/Block';
-import { getLogger } from '$lib/logging';
-
-const log = getLogger('CommandRegistry');
+import { events } from '$lib/events';
 
 /**
  * Create a block type command that sets the current block type.
@@ -140,23 +138,7 @@ export function createBuiltinCommands(): RegisteredCommand[] {
             console.warn('No editor available for command execution');
             return;
           }
-
-          const src = typeof window !== 'undefined'
-            ? window.prompt('Image URL')?.trim()
-            : '';
-          if (!src) {
-            log.info('Image insertion cancelled');
-            return;
-          }
-
-          context.editor.execute('insertBlock', 'image', {
-            type: 'image',
-            src,
-            alt: null,
-            title: null,
-            caption: null,
-            width: null,
-          });
+          events.emit('editor:request-insert-image', undefined);
         };
         break;
 

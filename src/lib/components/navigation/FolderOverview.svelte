@@ -14,6 +14,7 @@
   import { createSortableState, type SortableState } from '$lib/components/dnd/sortable';
   import type { FolderOverview as FolderOverviewModel } from '$lib/stores/notes.svelte';
   import { createFolderReorderDnd } from './folderReorderDnd';
+  import { noteSource } from '$lib/components/dnd/paneDnd.svelte';
   import { buildRefId } from '$lib/domain/values';
   import { copyTextToClipboard } from '$lib/utils/clipboard';
   import { toastStore } from '$lib/stores';
@@ -221,6 +222,7 @@
                 <button
                   type="button"
                   class="list-row"
+                  use:noteSource={{ notePath: note.path, title: note.title }}
                   onclick={() => onOpenNote(note.path)}
                   oncontextmenu={(event) => handleItemContextMenu(event, note.path, note.title)}
                 >
@@ -247,6 +249,7 @@
               <button
                 type="button"
                 class="nested-row"
+                use:noteSource={{ notePath: note.path, title: note.title }}
                 onclick={() => onOpenNote(note.path)}
                 oncontextmenu={(event) => handleItemContextMenu(event, note.path, note.title)}
               >

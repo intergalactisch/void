@@ -1910,16 +1910,26 @@ li.void-block > .void-todo-wrapper {
 .void-editor .void-image {
   margin: 1em 0;
   max-width: 100%;
+  border-radius: var(--radius-md);
+  outline: 1px solid transparent;
+  outline-offset: 3px;
 }
 
 .void-block > figure.void-image {
   margin: 0;
+  position: relative;
+}
+
+.void-editor .void-image:hover,
+.void-editor .void-image:focus-visible {
+  outline-color: color-mix(in srgb, var(--accent-primary) 38%, transparent);
 }
 
 .void-editor .void-image-img {
   max-width: 100%;
   height: auto;
   border-radius: var(--radius-md);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--text-primary) 5%, transparent);
 }
 
 .void-editor .void-image-caption {

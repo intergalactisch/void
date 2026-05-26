@@ -166,9 +166,10 @@ export const BUILTIN_COMMANDS: SlashCommand[] = [
   },
   {
     id: 'image',
-    label: 'Image',
-    keywords: ['image', 'picture', 'photo', 'img'],
+    label: 'Add image',
+    keywords: ['image', 'img', 'picture', 'photo', 'media', 'upload', 'file', 'url', 'attach'],
     category: 'media',
     icon: 'image',
+    description: 'Upload, paste, or download an image into this note',
   },
 ];

@@ -13,6 +13,7 @@
   import { getAppContext } from '$lib/bootstrap';
   import type { SearchService, SearchHit } from '$lib/ports/inbound/SearchService';
   import { createFocusTrap } from '$lib/utils/focusTrap';
+  import { noteSource } from '$lib/components/dnd/paneDnd.svelte';
   import OpenNoteIndicator from '$lib/components/shared/OpenNoteIndicator.svelte';
 
   interface Props {
@@ -240,7 +241,10 @@
       <div class="search-results" bind:this={listRef}>
         {#each groupedHits(hits) as group (group.path)}
           <div class="result-group">
-            <div class="result-file">
+            <div
+              class="result-file"
+              use:noteSource={{ notePath: group.path, title: group.title, onBegin: handleClose }}
+            >
               <span class="result-title">{group.title}</span>
               <span class="result-path">{group.path}</span>
               <OpenNoteIndicator state={noteWorkspaceStore.openStateForPath(group.path)} showLabel />

@@ -18,14 +18,6 @@ export interface ImportedMarkdownOpenHandlers {
   selectNote: (path: string) => void;
 }
 
-export interface MarkdownDropPreview {
-  paths: string[];
-  totalCount: number;
-  markdownCount: number;
-  unsupportedCount: number;
-  state: 'valid' | 'mixed' | 'invalid';
-}
-
 export function resolveMarkdownImportTargetFolder(state: MarkdownImportLocationState): string {
   if (state.activeFolderPath) return state.activeFolderPath;
   if (!state.selectedPath) return '';
@@ -37,61 +29,6 @@ export function resolveMarkdownImportTargetFolder(state: MarkdownImportLocationS
 export function formatMarkdownImportTargetFolder(folder: string): string {
   if (!folder) return 'Workspace root';
   return folder.split('/').filter(Boolean).join(' / ');
-}
-
-export function formatMarkdownDropAcceptedLabel(preview: MarkdownDropPreview): string {
-  const markdownPaths = preview.paths.filter(isMarkdownPath);
-  if (markdownPaths.length === 1) {
-    return basenameForDisplay(markdownPaths[0] ?? '');
-  }
-  return `${markdownPaths.length} Markdown files`;
-}
-
-export function formatMarkdownDropSkippedLabel(preview: MarkdownDropPreview): string {
-  const skippedPaths = preview.paths.filter((path) => !isMarkdownPath(path));
-  if (skippedPaths.length === 1) {
-    return `${basenameForDisplay(skippedPaths[0] ?? '')} skipped`;
-  }
-  return `${skippedPaths.length} skipped`;
-}
-
-export function summarizeMarkdownDropPaths(paths: string[]): MarkdownDropPreview {
-  const markdownCount = paths.filter(isMarkdownPath).length;
-  const totalCount = paths.length;
-  const unsupportedCount = totalCount - markdownCount;
-  const state = markdownCount === 0
-    ? 'invalid'
-    : unsupportedCount > 0
-      ? 'mixed'
-      : 'valid';
-
-  return {
-    paths,
-    totalCount,
-    markdownCount,
-    unsupportedCount,
-    state,
-  };
-}
-
-function isMarkdownPath(path: string): boolean {
-  return path.trim().toLowerCase().endsWith('.md');
-}
-
-function basenameForDisplay(path: string): string {
-  const normalized = normalizePathForDisplay(path);
-  return normalized.split('/').pop() || normalized || 'Markdown file';
-}
-
-function normalizePathForDisplay(path: string): string {
-  const trimmed = path.trim().replace(/^["']|["']$/g, '');
-  if (!trimmed.startsWith('file://')) return trimmed.replace(/\\/g, '/');
-
-  try {
-    return decodeURIComponent(new URL(trimmed).pathname).replace(/\\/g, '/');
-  } catch {
-    return trimmed.slice('file://'.length).replace(/\\/g, '/');
-  }
 }
 
 export async function openImportedMarkdownSummary(

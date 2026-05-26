@@ -9,6 +9,7 @@
   import type { NotesListItem } from '$lib/ports/inbound';
   import type { FolderDropPosition } from '$lib/ports/inbound';
   import { noteWorkspaceStore } from '$lib/stores';
+  import { noteSource } from '$lib/components/dnd/paneDnd.svelte';
   import OpenNoteIndicator from '$lib/components/shared/OpenNoteIndicator.svelte';
   import { ChevronRight, FileText, Folder, FolderOpen, FolderPlus, GripVertical, Lock, MoreHorizontal, Unlock } from '@lucide/svelte';
   import type { FolderReorderDnd } from './folderReorderDnd';
@@ -85,18 +86,6 @@
     event.preventDefault();
     event.stopPropagation();
   }
-
-  function handleNoteDragStart(event: DragEvent) {
-    if (item.isFolder) return;
-    const transfer = event.dataTransfer;
-    if (!transfer) return;
-    transfer.effectAllowed = 'copy';
-    transfer.setData('application/x-void-note', JSON.stringify({
-      path: item.path,
-      title: item.title,
-    }));
-    transfer.setData('text/plain', item.path);
-  }
 </script>
 
 <div
@@ -108,10 +97,9 @@
   class:drop-before={dropPosition === 'before'}
   class:drop-after={dropPosition === 'after'}
   use:sortableItemAction={{ id: item.path, groupId: parentPath, handle: '[data-folder-drag-handle]', disabled: !item.isFolder }}
+  use:noteSource={{ notePath: item.path, title: item.title, disabled: item.isFolder }}
   data-note-path={item.path}
   onclick={handleClick}
-  draggable={!item.isFolder}
-  ondragstart={handleNoteDragStart}
   oncontextmenu={handleContextMenu}
   onkeydown={(e) => e.key === 'Enter' && onClick(item, e)}
   role="treeitem"

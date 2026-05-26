@@ -19,6 +19,7 @@
  */
 
 export { MemoryFileSystemAdapter } from './MemoryFileSystemAdapter';
+export { MemoryAssetStorageAdapter } from './MemoryAssetStorageAdapter';
 export { MemoryFolderAccessAdapter } from './MemoryFolderAccessAdapter';
 export { MemorySettingsAdapter } from './MemorySettingsAdapter';
 export { MemoryCredentialAdapter } from './MemoryCredentialAdapter';

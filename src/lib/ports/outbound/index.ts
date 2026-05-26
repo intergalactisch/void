@@ -9,6 +9,7 @@
  */
 
 export type { FileSystemPort } from './FileSystemPort';
+export type { AssetKind, AssetMetadata, AssetStoragePort } from './AssetStoragePort';
 export type {
   FolderAccessGrant,
   FolderAccessPort,
@@ -27,6 +28,7 @@ export type {
   EditorMenuStatePayload,
   EditorMenuPosition,
   EditorBlockMenuRequest,
+  EditorImageBlockAttrs,
   EditorPageLinkNote,
   EditorInlineGenerateCallbacks,
   EditorInlineGenerateRequest,
@@ -41,6 +43,7 @@ export type {
   EditorPortFactory,
   EditorPortFactoryOptions,
   EditorNotesProvider,
+  EditorImageSrcResolver,
 } from './EditorPortFactory';
 export type { ExternalNavigationPort } from './ExternalNavigationPort';
 export type {

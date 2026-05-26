@@ -113,7 +113,7 @@ async fn ensure_public_host(host: &str, port: u16) -> Result<(), String> {
 /// Validate that a URL is fetchable: http/https only, has a host, the host does
 /// not look like a literal private/reserved IP, and DNS resolution returns only
 /// public addresses. Returns the parsed URL so callers can reuse it.
-async fn validate_fetch_url(url: &reqwest::Url) -> Result<(), String> {
+pub(crate) async fn validate_fetch_url(url: &reqwest::Url) -> Result<(), String> {
     if url.scheme() != "http" && url.scheme() != "https" {
         return Err(format!("Unsupported URL protocol: {}", url.scheme()));
     }
@@ -142,7 +142,8 @@ pub async fn web_fetch(url: String, timeout_ms: Option<u64>) -> Result<WebFetchR
         return Err(VoidError::WebFetch(message));
     }
 
-    let timeout = Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS).min(MAX_TIMEOUT_MS));
+    let timeout =
+        Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS).min(MAX_TIMEOUT_MS));
 
     // Manual redirect handling so we can re-validate each hop against the SSRF
     // policy. reqwest's built-in redirect follows happen inside the client and
@@ -306,7 +307,7 @@ pub async fn web_fetch(url: String, timeout_ms: Option<u64>) -> Result<WebFetchR
     })
 }
 
-fn current_timestamp() -> String {
+pub(crate) fn current_timestamp() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
@@ -450,7 +451,9 @@ mod tests {
     #[test]
     fn rejects_unique_and_link_local_v6() {
         assert!(is_disallowed_ipv6(Ipv6Addr::from_str("fc00::1").unwrap()));
-        assert!(is_disallowed_ipv6(Ipv6Addr::from_str("fd12:3456::1").unwrap()));
+        assert!(is_disallowed_ipv6(
+            Ipv6Addr::from_str("fd12:3456::1").unwrap()
+        ));
         assert!(is_disallowed_ipv6(Ipv6Addr::from_str("fe80::1").unwrap()));
     }
 

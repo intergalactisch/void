@@ -38,6 +38,12 @@ import searchNotes from './search/notes.tool';
 import searchContent from './search/content.tool';
 import searchMedia from './search/media.tool';
 
+// Media tools (4)
+import mediaAttachImage from './media/attach-image.tool';
+import mediaListAssets from './media/list-assets.tool';
+import mediaDownloadImage from './media/download-image.tool';
+import mediaCleanupOrphans from './media/cleanup-orphans.tool';
+
 // Navigation tools (3)
 import navigationGoto from './navigation/goto.tool';
 import navigationBack from './navigation/back.tool';
@@ -146,6 +152,12 @@ const ALL_TOOLS: RegisteredTool[] = [
   searchNotes,
   searchContent,
   searchMedia,
+
+  // Media tools (4)
+  mediaAttachImage,
+  mediaListAssets,
+  mediaDownloadImage,
+  mediaCleanupOrphans,
 
   // Navigation tools (3)
   navigationGoto,

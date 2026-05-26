@@ -22,6 +22,13 @@
     paneCount: number;
   }
 
+  export interface NoteContextMenuPaneTarget {
+    tabId: string;
+    paneId: string;
+    title: string;
+    meta: string;
+  }
+
   export interface NoteContextMenuOpenState {
     isOpen: boolean;
     canOpenInSplit: boolean;
@@ -57,12 +64,16 @@
     onOpenInExistingLayout?: (path: string, targetTabId: string) => void;
     /** Open this note with the active note in a fresh layout */
     onOpenInNewLayout?: (path: string) => void;
+    /** Open the note beside a specific existing pane (split right) */
+    onOpenInPane?: (path: string, tabId: string, paneId: string) => void;
     /** Open a folder's notes as a fresh multi-pane layout */
     onOpenFolderAsLayout?: (path: string) => void;
     /** State-aware open affordances for the selected note/folder */
     openState?: NoteContextMenuOpenState;
     /** Available pane targets grouped by existing multi-pane layout */
     layoutTargets?: NoteContextMenuLayoutDescriptor[];
+    /** Every open pane (across tabs) the note can be placed next to */
+    paneTargets?: NoteContextMenuPaneTarget[];
   }
 
   let {
@@ -79,6 +90,7 @@
     onOpenInSplit,
     onOpenInExistingLayout,
     onOpenInNewLayout,
+    onOpenInPane,
     onOpenFolderAsLayout,
     openState = {
       isOpen: false,
@@ -88,6 +100,7 @@
       folderLayoutNoteCount: 0,
     },
     layoutTargets = [],
+    paneTargets = [],
   }: Props = $props();
 
   let menuElement: HTMLDivElement | undefined = $state(undefined);
@@ -147,6 +160,8 @@
     children?: MenuItem[];
     /** When set, this item targets a specific existing layout tab. */
     targetTabId?: string;
+    /** When set (with targetTabId), this item targets a specific pane. */
+    targetPaneId?: string;
   }
 
   const existingLayoutChildren = $derived.by<MenuItem[]>(() => {
@@ -157,6 +172,18 @@
       icon: 'layout',
       targetTabId: layout.tabId,
       meta: `${layout.paneCount} pane${layout.paneCount === 1 ? '' : 's'}${layout.isActive ? ' - active' : ''}`,
+    }));
+  });
+
+  const paneTargetChildren = $derived.by<MenuItem[]>(() => {
+    if (isFolder || !onOpenInPane) return [];
+    return paneTargets.map((target) => ({
+      id: `open-in-pane:${target.tabId}:${target.paneId}`,
+      label: target.title,
+      icon: 'split-right',
+      meta: target.meta,
+      targetTabId: target.tabId,
+      targetPaneId: target.paneId,
     }));
   });
 
@@ -188,6 +215,14 @@
           label: 'Open in Existing Layout',
           icon: 'layout',
           children: existingLayoutChildren,
+        });
+      }
+      if (paneTargetChildren.length > 0) {
+        items.push({
+          id: 'open-in-pane',
+          label: 'Open in Pane',
+          icon: 'split-right',
+          children: paneTargetChildren,
         });
       }
       if (onOpenInNewLayout && openState.canOpenInNewLayout) {
@@ -274,6 +309,11 @@
     }
     if (selected.id.startsWith('open-in-layout:') && selected.targetTabId) {
       onOpenInExistingLayout?.(path, selected.targetTabId);
+      onClose();
+      return;
+    }
+    if (selected.id.startsWith('open-in-pane:') && selected.targetTabId && selected.targetPaneId) {
+      onOpenInPane?.(path, selected.targetTabId, selected.targetPaneId);
       onClose();
       return;
     }

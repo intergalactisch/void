@@ -20,6 +20,7 @@ import type { OperationService } from './OperationService';
 import type { BranchService } from './BranchService';
 import type { CommitmentLineageService } from './CommitmentLineageService';
 import type { SessionService } from './SessionService';
+import type { MediaAttachmentService } from './MediaAttachmentService';
 import type { AIAssistantProviderPort } from '$lib/ports/outbound/AIAssistantProviderPort';
 import type { SettingsStoragePort } from '$lib/ports/outbound/SettingsStoragePort';
 import type { ApplicationNavigationPort } from '$lib/ports/outbound/ApplicationNavigationPort';
@@ -59,6 +60,8 @@ export interface ToolServices {
   navigation?: ApplicationNavigationPort;
   /** Current media lead lookup for research and media scout workers */
   mediaSources?: MediaSourcePort;
+  /** Durable image import/download/attachment workflows */
+  mediaAttachments?: MediaAttachmentService;
   /** Session membership — groups notes from AI batch operations */
   sessions?: SessionService;
 }

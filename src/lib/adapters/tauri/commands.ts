@@ -41,6 +41,7 @@ import type {
   GitHubDeviceAuthCompleteParams,
   GitHubTokenResult,
   GitRemoteFile,
+  AssetMetadata,
 } from '$lib/ports/outbound';
 
 /**
@@ -131,6 +132,69 @@ export const fileCommands = {
    */
   renamePath: (from: string, to: string): Promise<void> =>
     invoke<void>('rename_path', { from, to }),
+};
+
+function toByteArray(bytes: Uint8Array | ArrayBuffer | number[]): number[] {
+  if (Array.isArray(bytes)) return bytes;
+  if (bytes instanceof ArrayBuffer) return Array.from(new Uint8Array(bytes));
+  return Array.from(bytes);
+}
+
+/**
+ * Durable workspace asset commands.
+ */
+export const assetCommands = {
+  importFile: (
+    notesDir: string,
+    notePath: string,
+    sourcePath: string,
+  ): Promise<AssetMetadata> =>
+    invoke<AssetMetadata>('asset_import_file', { notesDir, notePath, sourcePath }),
+
+  importBytes: (
+    notesDir: string,
+    notePath: string,
+    originalName: string,
+    bytes: Uint8Array | ArrayBuffer | number[],
+  ): Promise<AssetMetadata> =>
+    invoke<AssetMetadata>('asset_import_bytes', {
+      notesDir,
+      notePath,
+      originalName,
+      bytes: toByteArray(bytes),
+    }),
+
+  downloadImage: (
+    notesDir: string,
+    notePath: string,
+    url: string,
+    originalName?: string,
+  ): Promise<AssetMetadata> =>
+    invoke<AssetMetadata>('asset_download_image', {
+      notesDir,
+      notePath,
+      url,
+      originalName: originalName ?? null,
+    }),
+
+  metadata: (notesDir: string, relativePath: string): Promise<AssetMetadata> =>
+    invoke<AssetMetadata>('asset_metadata', { notesDir, relativePath }),
+
+  list: (notesDir: string): Promise<AssetMetadata[]> =>
+    invoke<AssetMetadata[]>('asset_list', { notesDir }),
+
+  saveAs: (
+    notesDir: string,
+    relativePath: string,
+    destinationPath: string,
+  ): Promise<AssetMetadata> =>
+    invoke<AssetMetadata>('asset_save_as', { notesDir, relativePath, destinationPath }),
+
+  delete: (notesDir: string, relativePath: string): Promise<void> =>
+    invoke<void>('asset_delete', { notesDir, relativePath }),
+
+  resolveAssetUrl: (notesDir: string, relativePath: string): Promise<string> =>
+    invoke<string>('asset_resolve_asset_url', { notesDir, relativePath }),
 };
 
 export interface FolderAccessBookmark {
@@ -477,6 +541,7 @@ export const githubCommands = {
  */
 export const commands = {
   files: fileCommands,
+  assets: assetCommands,
   settings: settingsCommands,
   updater: updaterCommands,
   credentials: credentialCommands,

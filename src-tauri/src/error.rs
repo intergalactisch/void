@@ -98,6 +98,9 @@ pub enum VoidError {
     #[error("Web fetch failed: {0}")]
     WebFetch(String),
 
+    #[error("Asset operation failed: {0}")]
+    Asset(String),
+
     #[error("Updater failed: {0}")]
     Updater(String),
 

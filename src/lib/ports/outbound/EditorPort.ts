@@ -54,6 +54,14 @@ export interface EditorPageLinkNote {
   isRecent?: boolean;
 }
 
+export interface EditorImageBlockAttrs {
+  src?: string;
+  alt?: string | null;
+  title?: string | null;
+  caption?: string | null;
+  width?: number | null;
+}
+
 export interface EditorInlineGenerateCallbacks {
   onComplete: (markdown: string) => void;
   onResult?: (result: EditorInlineGenerateResult) => void;
@@ -253,6 +261,8 @@ export interface EditorCommands {
   scrollBlockIntoView(blockId: string, mode?: 'nearest' | 'center' | 'smart'): void;
   /** Insert markdown blocks immediately after a block */
   insertContentAfterBlock(blockId: string, markdown: string): void;
+  /** Update attrs for an image block without replacing the block. */
+  updateImageBlockAttrs(blockId: string, attrs: EditorImageBlockAttrs): void;
   /** Update a todo item by matching its current text content */
   updateTodoContent(previousContent: string, nextContent: string, checked?: boolean): void;
   /** Delete a todo item by matching its current text content */

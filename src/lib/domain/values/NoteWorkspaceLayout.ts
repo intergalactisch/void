@@ -10,6 +10,11 @@ export type NotePaneDirection = 'horizontal' | 'vertical';
 export type NotePaneDropIntent = 'replace' | 'left' | 'right' | 'top' | 'bottom';
 export type NotePaneMoveIntent = 'swap' | 'left' | 'right' | 'top' | 'bottom';
 
+/** What is being dragged: an existing open pane (relocate) or a note from the sidebar/palette (open). */
+export type DragKind = 'pane' | 'note';
+/** Geometric drop zone within a target pane. `center` resolves to swap (pane) or replace (note). */
+export type DropPlacement = 'center' | 'left' | 'right' | 'top' | 'bottom';
+
 export interface NotePaneDragPayload {
   paneId: string;
   tabId: string;

@@ -18,6 +18,7 @@
 
 // Adapters
 export { TauriFileSystemAdapter } from './TauriFileSystemAdapter';
+export { TauriAssetStorageAdapter } from './TauriAssetStorageAdapter';
 export { TauriFolderAccessAdapter } from './TauriFolderAccessAdapter';
 export { FolderAccessFileSystemAdapter } from './FolderAccessFileSystemAdapter';
 export { FolderAccessVoidStorageAdapter } from './FolderAccessVoidStorageAdapter';
@@ -45,6 +46,7 @@ export {
 export {
   commands,
   fileCommands,
+  assetCommands,
   settingsCommands,
   updaterCommands,
   credentialCommands,

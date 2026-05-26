@@ -13,6 +13,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 ### Security
 
+## [0.2.0] - 2026-05-26
+
+### Added
+- Image & media attachments — insert images into notes by dragging files in from outside the app, picking a local file, pasting bytes, or downloading from a remote URL. Images are stored as content-addressed assets under `.void/` with metadata (dimensions, sha256, original name, source URL, creator/license, review status). New `MediaAttachmentService`, `AssetStoragePort` (Tauri + in-memory adapters), a Rust `assets` command, and image UI (insert popover, block toolbar, details popover, drop overlay).
+- Media action tools — `/attach-image`, `/download-image`, `/list-assets`, and `/cleanup-orphans` for attaching, fetching, listing, and pruning unreferenced note images.
+- Pane drag-and-drop — drag notes between and into split panes with a live drop overlay.
+- External file drop flow — dropping files from the OS onto the editor routes them through the media attachment pipeline.
+
+### Changed
+- Smarter note workspace layouts — improved automatic split-pane layout selection and a substantial rework of the note workspace store.
+
+### Fixed
+- Sidebar rendering and interaction fixes.
+- Note trash handling fixes.
+
 ## [0.1.4] - 2026-05-24
 
 ### Added

@@ -11,7 +11,7 @@ import type {
   MarkdownImportSummary,
   MarkdownImportOptions,
 } from '$lib/ports/inbound';
-import type { DocumentPort, FileSystemPort, MarkdownSerializerPort } from '$lib/ports/outbound';
+import type { AssetStoragePort, DocumentPort, FileSystemPort, MarkdownSerializerPort } from '$lib/ports/outbound';
 import { err, ok, type Result } from '$lib/core';
 
 const MAX_SUFFIX_ATTEMPTS = 99;
@@ -26,6 +26,8 @@ export class MarkdownImportServiceImpl implements MarkdownImportService {
     private readonly documents: DocumentPort,
     private readonly markdown: MarkdownSerializerPort,
     private readonly lineage?: LineageService,
+    private readonly assets?: AssetStoragePort,
+    private readonly notesDir?: string,
   ) {}
 
   async importFiles(
@@ -63,7 +65,8 @@ export class MarkdownImportServiceImpl implements MarkdownImportService {
         }
         reservedPaths.add(targetPath.value);
 
-        const parsed = this.markdown.parseDocument(read.value);
+        const importedMarkdown = await this.rewriteImageReferences(read.value, sourcePath, targetPath.value);
+        const parsed = this.markdown.parseDocument(importedMarkdown);
         const title = parsed.meta.title ?? titleFromFilename(targetPath.value);
         const document: Document = {
           path: targetPath.value,
@@ -136,6 +139,52 @@ export class MarkdownImportServiceImpl implements MarkdownImportService {
     if (reservedPaths.has(path)) return ok(true);
     return this.documents.exists(path);
   }
+
+  private async rewriteImageReferences(
+    markdown: string,
+    sourcePath: string,
+    targetNotePath: string,
+  ): Promise<string> {
+    if (!this.assets || !this.notesDir) return markdown;
+
+    const sourceDir = sourcePath.split('/').slice(0, -1).join('/');
+    const imagePattern = /!\[([^\]]*)]\((?:<([^>]+)>|([^\s)]+))(\s+["'][^"']*["'])?\)/g;
+    let output = '';
+    let lastIndex = 0;
+    let match: RegExpExecArray | null;
+
+    while ((match = imagePattern.exec(markdown)) !== null) {
+      output += markdown.slice(lastIndex, match.index);
+      lastIndex = imagePattern.lastIndex;
+
+      const alt = match[1] ?? '';
+      const rawPath = (match[2] ?? match[3] ?? '').trim();
+      const title = match[4] ?? '';
+      const importedPath = await this.importReferencedImage(rawPath, sourceDir, targetNotePath);
+      output += importedPath
+        ? `![${alt}](${encodeMarkdownPath(importedPath)}${title})`
+        : match[0];
+    }
+
+    return output + markdown.slice(lastIndex);
+  }
+
+  private async importReferencedImage(
+    imagePath: string,
+    sourceDir: string,
+    targetNotePath: string,
+  ): Promise<string | null> {
+    if (!this.assets || !this.notesDir) return null;
+    const cleanPath = decodeURIComponent(imagePath);
+    const imported = /^https:\/\//i.test(cleanPath)
+      ? await this.assets.downloadImage(this.notesDir, targetNotePath, cleanPath)
+      : isRelativeSupportedImagePath(cleanPath)
+        ? await this.assets.importFile(this.notesDir, targetNotePath, joinExternalPath(sourceDir, cleanPath))
+        : null;
+
+    if (!imported?.ok) return null;
+    return pathFromNoteToAsset(targetNotePath, imported.value.relativePath);
+  }
 }
 
 function normalizeExternalPath(path: string): string {
@@ -179,6 +228,35 @@ function titleFromFilename(path: string): string {
 
 function createImportedDocumentId(): string {
   return `doc-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function isRelativeSupportedImagePath(path: string): boolean {
+  if (!path || /^[a-z][a-z0-9+.-]*:/i.test(path) || path.startsWith('//') || path.startsWith('/')) {
+    return false;
+  }
+  const ext = path.split(/[?#]/, 1)[0]?.split('.').pop()?.toLowerCase() ?? '';
+  return ['png', 'jpg', 'jpeg', 'svg', 'gif', 'webp'].includes(ext);
+}
+
+function joinExternalPath(baseDir: string, relativePath: string): string {
+  const parts = baseDir.split('/').filter(Boolean);
+  for (const part of relativePath.replace(/\\/g, '/').split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') parts.pop();
+    else parts.push(part);
+  }
+  return `/${parts.join('/')}`;
+}
+
+function pathFromNoteToAsset(notePath: string, assetPath: string): string {
+  const noteParts = notePath.replace(/\\/g, '/').split('/').filter(Boolean);
+  noteParts.pop();
+  if (noteParts.length === 0) return assetPath;
+  return `${noteParts.map(() => '..').join('/')}/${assetPath}`;
+}
+
+function encodeMarkdownPath(path: string): string {
+  return /[\s()]/.test(path) ? `<${path.replace(/>/g, '%3E')}>` : path;
 }
 
 function skipped(

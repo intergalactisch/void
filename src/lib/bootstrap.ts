@@ -30,6 +30,7 @@ import { registerCLIProvider } from './bootstrap/registerCLI';
 // Adapters (infrastructure) - concrete implementations
 import {
   TauriFileSystemAdapter,
+  TauriAssetStorageAdapter,
   TauriFolderAccessAdapter,
   FolderAccessFileSystemAdapter,
   FolderAccessVoidStorageAdapter,
@@ -53,6 +54,7 @@ import {
 } from './adapters/tauri';
 import {
   MemoryFileSystemAdapter,
+  MemoryAssetStorageAdapter,
   MemoryFolderAccessAdapter,
   MemorySettingsAdapter,
   MemoryCredentialAdapter,
@@ -133,6 +135,7 @@ import {
   SettingsServiceImpl,
   WorkspaceServiceImpl,
   FileServiceImpl,
+  MediaAttachmentServiceImpl,
   CredentialServiceImpl,
   ProtectionRuntime,
   ProtectionServiceImpl,
@@ -229,6 +232,7 @@ import type {
   SettingsService,
   WorkspaceService,
   FileService,
+  MediaAttachmentService,
   CredentialService,
   ProtectionService,
   EditorService,
@@ -267,6 +271,7 @@ import type {
 } from './ports/inbound';
 import type {
   FileSystemPort,
+  AssetStoragePort,
   FolderAccessPort,
   CryptoPort,
   KeyCustodyPort,
@@ -287,6 +292,7 @@ import type {
   ResultParserPort,
   OperationStoragePort,
   EditorPortFactory,
+  EditorImageSrcResolver,
   ExternalNavigationPort,
   AgentRunStoragePort,
   SessionStoragePort,
@@ -325,6 +331,8 @@ export interface AppContext {
   workspaces: WorkspaceService;
   /** File system operations service */
   files: FileService;
+  /** Durable image import/download/attachment service. */
+  mediaAttachments: MediaAttachmentService;
   /** Credential storage service */
   credentials: CredentialService;
   /** Selected-note protection, unlock, recovery, and AI privacy controls. */
@@ -435,6 +443,26 @@ function normalizeAIReasoningEffort(value: unknown): AIReasoningEffort {
   )
     ? value
     : DEFAULT_AI_REASONING_EFFORT;
+}
+
+function resolveEditorAssetReference(src: string, notePath: string | null): string | null {
+  const trimmed = src.trim();
+  if (!trimmed || /^[a-z][a-z0-9+.-]*:/i.test(trimmed) || trimmed.startsWith('//')) {
+    return null;
+  }
+  const normalized = trimmed.replace(/\\/g, '/');
+  if (normalized.startsWith('assets/')) return normalized;
+
+  const noteParts = (notePath ?? '').replace(/\\/g, '/').split('/').filter(Boolean);
+  noteParts.pop();
+  const combined = [...noteParts];
+  for (const part of normalized.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') combined.pop();
+    else combined.push(part);
+  }
+  const resolved = combined.join('/');
+  return resolved.startsWith('assets/') ? resolved : null;
 }
 
 /**
@@ -589,6 +617,9 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
   container.register(TOKENS.ExternalNavigation, () =>
     useMocks ? new MemoryExternalNavigationAdapter() : new TauriExternalNavigationAdapter()
   );
+  container.register(TOKENS.AssetStorage, () =>
+    useMocks ? new MemoryAssetStorageAdapter() : new TauriAssetStorageAdapter()
+  );
   if (useMocks) {
     container.register(TOKENS.GitRepository, () => new MemoryGitRepositoryAdapter());
     container.register(TOKENS.GitHub, () => new MemoryGitHubAdapter());
@@ -660,6 +691,7 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
         operations: container.resolve<OperationService>(TOKENS.OperationService),
         navigation: container.resolve<ApplicationNavigationPort>(TOKENS.ApplicationNavigation),
         mediaSources: container.resolve<MediaSourcePort>(TOKENS.MediaSource),
+        mediaAttachments: container.resolve<MediaAttachmentService>(TOKENS.MediaAttachmentService),
         sessions: container.resolve<SessionService>(TOKENS.SessionService),
         protection: container.resolve<ProtectionService>(TOKENS.ProtectionService),
       })
@@ -776,6 +808,14 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
 
   // 4. Register remaining application services (wired to ports via container)
   // Note: SettingsService was registered earlier to load settings
+  const resolveEditorImageSrc: EditorImageSrcResolver = async (src, context) => {
+    const assetPath = resolveEditorAssetReference(src, context.notePath);
+    if (!assetPath) return src;
+    const service = container.resolve<MediaAttachmentService>(TOKENS.MediaAttachmentService);
+    const result = await service.resolveRenderUrl(assetPath);
+    return result.ok ? result.value : src;
+  };
+
   container.register(TOKENS.FileService, () =>
     new FileServiceImpl(container.resolve(TOKENS.FileSystem))
   );
@@ -796,7 +836,8 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
       notesPath,
       container.resolve<MarkdownSerializerPort>(TOKENS.MarkdownSerializer),
       container.resolve<LineageService>(TOKENS.LineageService),
-      container.resolve<FrecencyService>(TOKENS.FrecencyService)
+      container.resolve<FrecencyService>(TOKENS.FrecencyService),
+      resolveEditorImageSrc,
     )
   );
   container.register(TOKENS.CommandService, () =>
@@ -975,6 +1016,8 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
       container.resolve<DocumentPort>(TOKENS.DocumentStorage),
       container.resolve<MarkdownSerializerPort>(TOKENS.MarkdownSerializer),
       container.resolve<LineageService>(TOKENS.LineageService),
+      container.resolve<AssetStoragePort>(TOKENS.AssetStorage),
+      notesPath,
     )
   );
 
@@ -1023,6 +1066,17 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
       container.resolve<DocumentService>(TOKENS.DocumentService),
       container.resolve<NotesService>(TOKENS.NotesService),
       container.resolve<MarkdownSerializerPort>(TOKENS.MarkdownSerializer),
+    )
+  );
+
+  container.register(TOKENS.MediaAttachmentService, () =>
+    new MediaAttachmentServiceImpl(
+      notesPath,
+      container.resolve<AssetStoragePort>(TOKENS.AssetStorage),
+      container.resolve<NoteCollaborationService>(TOKENS.NoteCollaborationService),
+      container.resolve<DocumentService>(TOKENS.DocumentService),
+      container.resolve<NotesService>(TOKENS.NotesService),
+      container.resolve<ProvenanceService>(TOKENS.ProvenanceService),
     )
   );
 
@@ -1279,6 +1333,7 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
   const settings = settingsService;
   const workspaces = container.resolve<WorkspaceService>(TOKENS.WorkspaceService);
   const files = container.resolve<FileService>(TOKENS.FileService);
+  const mediaAttachments = container.resolve<MediaAttachmentService>(TOKENS.MediaAttachmentService);
   const credentials = container.resolve<CredentialService>(TOKENS.CredentialService);
   const protection = container.resolve<ProtectionService>(TOKENS.ProtectionService);
   const editor = container.resolve<EditorService>(TOKENS.EditorService);
@@ -1805,6 +1860,7 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
     settings,
     workspaces,
     files,
+    mediaAttachments,
     credentials,
     protection,
     editor,

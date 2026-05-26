@@ -17,18 +17,22 @@
   import { logStore } from '$lib/stores';
   import { AICommandCenter } from '$lib/components/ai-command';
   import { TodoWorkspace } from '$lib/components/todo';
-  import { AlertCircle, Copy, FileText, FolderOpen, FolderSearch, Hash, History, MoreHorizontal, Star, Trash2, Upload, X } from '@lucide/svelte';
+  import { AlertCircle, Copy, FileText, FolderOpen, FolderSearch, Hash, History, Image as ImageIcon, MoreHorizontal, Star, Trash2, Upload, X } from '@lucide/svelte';
   import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
   import { listenToMenuBarCommands, type MenuBarCommand } from '$lib/desktop/menuBar';
   import {
-    formatMarkdownDropAcceptedLabel,
-    formatMarkdownDropSkippedLabel,
     formatMarkdownImportTargetFolder,
-    type MarkdownDropPreview,
     openImportedMarkdownSummary,
     resolveMarkdownImportTargetFolder,
-    summarizeMarkdownDropPaths,
   } from '$lib/desktop/markdownImportFlow';
+  import {
+    formatExternalDropImageLabel,
+    formatExternalDropMarkdownLabel,
+    formatExternalDropSkippedLabel,
+    normalizeExternalFilePath,
+    summarizeExternalFileDropPaths,
+    type ExternalFileDropSummary,
+  } from '$lib/desktop/externalFileDropFlow';
   import { DEFAULT_TODO_VIEW, type TodoView } from '$lib/domain/values/TodoView';
   import { events } from '$lib/events';
   import type { EventMap } from '$lib/events/types';
@@ -42,7 +46,7 @@
     type GlobalKeymapBinder,
   } from '$lib/keymap';
   import { formatChord, type KeyChord } from '$lib/domain/values/KeyChord';
-  import { AI_UNAVAILABLE_MESSAGE, buildRefId, deriveTextNoteTitle, type NotePaneDirection, type NoteWorkspaceTab } from '$lib/domain/values';
+  import { AI_UNAVAILABLE_MESSAGE, buildRefId, deriveTextNoteTitle, type NotePaneDirection, type NotePaneDropIntent, type NoteWorkspaceTab } from '$lib/domain/values';
   import { copyTextToClipboard } from '$lib/utils/clipboard';
   import type { CommandService } from '$lib/ports/inbound/CommandService';
   import type { DocumentService } from '$lib/ports/inbound/DocumentService';
@@ -84,7 +88,7 @@
   let settingsOpen = $derived(uiStore.settingsOpen);
   let focusMode = $derived(uiStore.focusMode);
   let tasksWorkspaceOpen = $derived(uiStore.tasksWorkspaceOpen);
-  let markdownDropPreview = $state<MarkdownDropPreview | null>(null);
+  let externalDropPreview = $state<ExternalFileDropSummary | null>(null);
   let pasteCreateInFlight = false;
 
   const LIKELY_SECRET_CONTENT_PATTERNS = [
@@ -553,12 +557,12 @@
     }
   }
 
-  function showMarkdownDropPreview(paths: string[]): void {
-    markdownDropPreview = paths.length > 0 ? summarizeMarkdownDropPaths(paths) : null;
+  function showExternalDropPreview(paths: string[]): void {
+    externalDropPreview = paths.length > 0 ? summarizeExternalFileDropPaths(paths) : null;
   }
 
-  function clearMarkdownDropPreview(): void {
-    markdownDropPreview = null;
+  function clearExternalDropPreview(): void {
+    externalDropPreview = null;
   }
 
   async function importExternalMarkdownPaths(paths: string[]): Promise<void> {
@@ -587,6 +591,139 @@
     });
     showMarkdownImportToasts(summary);
     await suggestProtectionForImportedSecrets(summary);
+  }
+
+  type ExternalDropPosition = { x: number; y: number };
+
+  function showUnsupportedExternalDropToast(summary: ExternalFileDropSummary): void {
+    if (summary.unsupportedCount === 0) return;
+
+    if (summary.markdownCount + summary.imageCount > 0) {
+      toastStore.warning(
+        `Skipped ${summary.unsupportedCount} unsupported ${summary.unsupportedCount === 1 ? 'file' : 'files'}.`,
+      );
+      return;
+    }
+
+    toastStore.error('Drop .md files or supported images.');
+  }
+
+  async function logicalDropPoint(
+    position: ExternalDropPosition | undefined,
+    getScaleFactor: () => Promise<number>,
+  ): Promise<{ x: number; y: number } | null> {
+    if (!position) return null;
+    let scaleFactor = 1;
+    try {
+      scaleFactor = await getScaleFactor();
+    } catch {
+      scaleFactor = window.devicePixelRatio || 1;
+    }
+    const factor = Number.isFinite(scaleFactor) && scaleFactor > 0 ? scaleFactor : 1;
+    return {
+      x: position.x / factor,
+      y: position.y / factor,
+    };
+  }
+
+  async function resolveImageDropNotePath(
+    position: ExternalDropPosition | undefined,
+    getScaleFactor: () => Promise<number>,
+  ): Promise<string | null> {
+    const point = await logicalDropPoint(position, getScaleFactor);
+    if (point) {
+      const element = document.elementFromPoint(point.x, point.y);
+      const pane = element?.closest<HTMLElement>('[data-pane-id][data-note-path]');
+      const notePath = pane?.dataset.notePath?.trim() ?? '';
+      if (notePath) {
+        const paneId = pane?.dataset.paneId;
+        const tabId = pane?.dataset.tabId;
+        if (tabId && paneId) {
+          noteWorkspaceStore.focusPane(tabId, paneId);
+        }
+        if (paneId) {
+          editorStore.focusPane(paneId);
+        }
+        if (notesStore.selectedPath !== notePath) {
+          notesStore.selectNote(notePath);
+        }
+        return notePath;
+      }
+    }
+
+    const fallback = noteWorkspaceStore.activeNotePath ?? editorStore.activePath ?? notesStore.selectedPath;
+    if (fallback) {
+      const paneId = noteWorkspaceStore.activePaneId;
+      if (paneId) editorStore.focusPane(paneId);
+      if (notesStore.selectedPath !== fallback) notesStore.selectNote(fallback);
+    }
+    return fallback;
+  }
+
+  async function attachExternalImagePaths(
+    paths: string[],
+    position: ExternalDropPosition | undefined,
+    getScaleFactor: () => Promise<number>,
+  ): Promise<void> {
+    if (paths.length === 0) return;
+
+    const ctx = getAppContext();
+    if (!ctx) {
+      toastStore.error('Void is still starting up');
+      return;
+    }
+
+    const notePath = await resolveImageDropNotePath(position, getScaleFactor);
+    if (!notePath) {
+      toastStore.error('Open a note to add images.');
+      return;
+    }
+
+    const result = await ctx.mediaAttachments.attachLocalImages(
+      notePath,
+      paths.map(normalizeExternalFilePath),
+      { placement: 'cursor' },
+    );
+
+    if (!result.ok) {
+      toastStore.error(`Image attach failed: ${result.error.message}`);
+      return;
+    }
+
+    const summary = result.value;
+    if (summary.inserted) {
+      toastStore.success(summary.attached.length === 1 ? 'Image attached' : `${summary.attached.length} images attached`);
+    } else if (summary.insertionError) {
+      toastStore.error(`Image attach failed: ${summary.insertionError}`);
+    }
+
+    if (summary.failed.length > 0) {
+      const failedCount = summary.failed.length;
+      const firstMessage = summary.failed[0]?.message;
+      const message = summary.attached.length > 0
+        ? `Skipped ${failedCount} ${failedCount === 1 ? 'image' : 'images'}.`
+        : `No images attached${firstMessage ? `: ${firstMessage}` : '.'}`;
+      if (summary.attached.length > 0) toastStore.warning(message);
+      else toastStore.error(message);
+    }
+  }
+
+  async function handleExternalFileDrop(
+    paths: string[],
+    position: ExternalDropPosition | undefined,
+    getScaleFactor: () => Promise<number>,
+  ): Promise<void> {
+    if (paths.length === 0) return;
+    await tick();
+    const summary = summarizeExternalFileDropPaths(paths);
+
+    if (summary.imagePaths.length > 0) {
+      await attachExternalImagePaths(summary.imagePaths, position, getScaleFactor);
+    }
+    if (summary.markdownPaths.length > 0) {
+      await importExternalMarkdownPaths(summary.markdownPaths);
+    }
+    showUnsupportedExternalDropToast(summary);
   }
 
   async function openExternalMarkdownDialog(): Promise<void> {
@@ -922,6 +1059,16 @@
     activateNoteDocument(selectedPath, noteWorkspaceStore.activePaneId);
   }
 
+  function openNoteInPane(path: string, tabId: string, paneId: string, intent: NotePaneDropIntent = 'right') {
+    prepareNoteWorkspace();
+    const result = noteWorkspaceStore.dropNoteOnPane(tabId, paneId, path, intent);
+    if (result.notePath) {
+      activateNoteDocument(result.notePath, result.paneId);
+      return;
+    }
+    openNoteInNewTab(path);
+  }
+
   function noteTitleForPath(notePath: string | null): { title: string; isEmpty: boolean } {
     if (!notePath) return { title: '(empty pane)', isEmpty: true };
     const note = notesStore.allNotes.find((n) => n.path === notePath);
@@ -992,6 +1139,27 @@
         const tab = noteWorkspaceStore.tabs.find((item) => item.id === layout.tabId);
         return !!tab && !noteWorkspaceStore.getNotePaths(tab).includes(target.path);
       });
+  });
+
+  let paneTargetsForMenu = $derived.by(() => {
+    const target = noteContextMenu;
+    if (!target || target.isFolder || noteMenuOpenState.isOpen) return [];
+    const targets: { tabId: string; paneId: string; title: string; meta: string }[] = [];
+    for (const tab of noteWorkspaceStore.tabs) {
+      const panes = noteWorkspaceStore.getPanes(tab).filter((pane) => !!pane.notePath);
+      if (panes.length === 0) continue;
+      const tabTitle = workspaceTabTitle(tab);
+      panes.forEach((pane, index) => {
+        if (pane.notePath === target.path) return;
+        targets.push({
+          tabId: tab.id,
+          paneId: pane.paneId,
+          title: noteTitleForPath(pane.notePath).title,
+          meta: panes.length > 1 ? `${tabTitle} · ${index + 1}/${panes.length}` : tabTitle,
+        });
+      });
+    }
+    return targets;
   });
 
   function folderLayoutNotePaths(folderPath: string): string[] {
@@ -1277,21 +1445,26 @@
     let dragDropDisposed = false;
     let unlistenDragDrop: (() => void) | null = null;
     import('@tauri-apps/api/window')
-      .then(({ getCurrentWindow }) =>
-        getCurrentWindow().onDragDropEvent((event) => {
+      .then(({ getCurrentWindow }) => {
+        const appWindow = getCurrentWindow();
+        return appWindow.onDragDropEvent((event) => {
           if (event.payload.type === 'enter') {
-            showMarkdownDropPreview(event.payload.paths);
+            showExternalDropPreview(event.payload.paths);
             return;
           }
           if (event.payload.type === 'leave') {
-            clearMarkdownDropPreview();
+            clearExternalDropPreview();
             return;
           }
           if (event.payload.type !== 'drop') return;
-          clearMarkdownDropPreview();
-          void importExternalMarkdownPaths(event.payload.paths);
-        })
-      )
+          clearExternalDropPreview();
+          void handleExternalFileDrop(
+            event.payload.paths,
+            event.payload.position,
+            () => appWindow.scaleFactor(),
+          );
+        });
+      })
       .then((unlisten) => {
         if (dragDropDisposed) {
           unlisten();
@@ -1422,51 +1595,72 @@
     onclick={() => notesStore.hideSidebar()}
   ></button>
 
-  {#if markdownDropPreview}
+  {#if externalDropPreview}
     <div
       class="markdown-drop-overlay"
-      class:markdown-drop-overlay-mixed={markdownDropPreview.state === 'mixed'}
-      class:markdown-drop-overlay-invalid={markdownDropPreview.state === 'invalid'}
+      class:markdown-drop-overlay-mixed={externalDropPreview.state === 'mixed'}
+      class:markdown-drop-overlay-invalid={externalDropPreview.state === 'invalid'}
       role="status"
       aria-live="polite"
-      aria-label={markdownDropPreview.state === 'invalid' ? 'Only markdown files can be opened' : 'Release to import markdown files'}
+      aria-label={externalDropPreview.state === 'invalid' ? 'Drop markdown files or supported images' : 'Release to add files'}
     >
       <div class="markdown-drop-panel">
         <div class="markdown-drop-icon" aria-hidden="true">
-          {#if markdownDropPreview.state === 'invalid'}
+          {#if externalDropPreview.state === 'invalid'}
             <AlertCircle size={24} strokeWidth={1.8} />
           {:else}
             <Upload size={24} strokeWidth={1.8} />
           {/if}
         </div>
         <div class="markdown-drop-copy">
-          <span class="markdown-drop-kicker">External Markdown</span>
-          {#if markdownDropPreview.state === 'invalid'}
-            <h2>Only .md files can be opened</h2>
-            <p>Drop a Markdown file to import it into {formatMarkdownImportTargetFolder(getMarkdownImportTargetFolder())}.</p>
-          {:else}
+          <span class="markdown-drop-kicker">External Files</span>
+          {#if externalDropPreview.state === 'invalid'}
+            <h2>Drop Markdown or image files</h2>
+            <p>Void accepts .md files and PNG, JPG, SVG, GIF, or WEBP images.</p>
+          {:else if externalDropPreview.state === 'image'}
             <h2>
-              Release to import {markdownDropPreview.markdownCount}
-              {markdownDropPreview.markdownCount === 1 ? 'Markdown file' : 'Markdown files'}
+              Release to add {externalDropPreview.imageCount}
+              {externalDropPreview.imageCount === 1 ? 'image' : 'images'}
             </h2>
             <p>
-              Void will copy {markdownDropPreview.markdownCount === 1 ? 'it' : 'them'} into
+              Void will copy {externalDropPreview.imageCount === 1 ? 'it' : 'them'} into this note's assets
+              and insert {externalDropPreview.imageCount === 1 ? 'an image block' : 'image blocks'}.
+            </p>
+          {:else if externalDropPreview.state === 'markdown'}
+            <h2>
+              Release to import {externalDropPreview.markdownCount}
+              {externalDropPreview.markdownCount === 1 ? 'Markdown file' : 'Markdown files'}
+            </h2>
+            <p>
+              Void will copy {externalDropPreview.markdownCount === 1 ? 'it' : 'them'} into
               {formatMarkdownImportTargetFolder(getMarkdownImportTargetFolder())} and leave the original
-              {markdownDropPreview.markdownCount === 1 ? 'file' : 'files'} untouched.
+              {externalDropPreview.markdownCount === 1 ? 'file' : 'files'} untouched.
+            </p>
+          {:else}
+            <h2>Release to add files</h2>
+            <p>
+              Markdown files import into {formatMarkdownImportTargetFolder(getMarkdownImportTargetFolder())};
+              images attach to the open note.
             </p>
           {/if}
         </div>
         <div class="markdown-drop-facts" aria-label="Drop summary">
-          {#if markdownDropPreview.markdownCount > 0}
+          {#if externalDropPreview.markdownCount > 0}
             <span class="markdown-drop-fact markdown-drop-fact-valid">
               <FileText size={13} strokeWidth={1.8} aria-hidden="true" />
-              <span class="markdown-drop-fact-label">{formatMarkdownDropAcceptedLabel(markdownDropPreview)}</span>
+              <span class="markdown-drop-fact-label">{formatExternalDropMarkdownLabel(externalDropPreview)}</span>
             </span>
           {/if}
-          {#if markdownDropPreview.unsupportedCount > 0}
+          {#if externalDropPreview.imageCount > 0}
+            <span class="markdown-drop-fact markdown-drop-fact-valid">
+              <ImageIcon size={13} strokeWidth={1.8} aria-hidden="true" />
+              <span class="markdown-drop-fact-label">{formatExternalDropImageLabel(externalDropPreview)}</span>
+            </span>
+          {/if}
+          {#if externalDropPreview.unsupportedCount > 0}
             <span class="markdown-drop-fact markdown-drop-fact-invalid">
               <AlertCircle size={13} strokeWidth={1.8} aria-hidden="true" />
-              <span class="markdown-drop-fact-label">{formatMarkdownDropSkippedLabel(markdownDropPreview)}</span>
+              <span class="markdown-drop-fact-label">{formatExternalDropSkippedLabel(externalDropPreview)}</span>
             </span>
           {/if}
         </div>
@@ -1762,8 +1956,8 @@
           </button>
         </div>
       {:else if !currentDocument && !noteWorkspaceStore.hasTabs}
-        <!-- Empty state — refined, with quick paths -->
-        <div class="state-container animate-scale-in-subtle">
+        <!-- Empty state — refined, with quick paths. Also a drop target: dragging a note here opens it. -->
+        <div class="state-container animate-scale-in-subtle" data-empty-drop="true">
           <div class="empty-mark" aria-hidden="true">
             <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
               <circle cx="20" cy="20" r="19" stroke="currentColor" stroke-width="1" stroke-dasharray="2 4" opacity="0.35"/>
@@ -1836,6 +2030,10 @@
     commands={paletteCommands}
     onNoteContextMenu={(path, title, position, isFolder = false) => {
       noteContextMenu = { path, title, isFolder, position };
+    }}
+    onPlaceInPane={(path, tabId, paneId, intent) => {
+      uiStore.closeQuickSwitcher();
+      openNoteInPane(path, tabId, paneId, intent);
     }}
   />
 
@@ -1932,6 +2130,7 @@
       position={noteContextMenu.position}
       openState={noteMenuOpenState}
       layoutTargets={layoutTargetsForMenu}
+      paneTargets={paneTargetsForMenu}
       onFocusOpenNote={(path) => {
         noteContextMenu = null;
         focusOpenNote(path);
@@ -1951,6 +2150,10 @@
       onOpenInNewLayout={(path) => {
         noteContextMenu = null;
         openNoteInNewLayout(path);
+      }}
+      onOpenInPane={(path, tabId, paneId) => {
+        noteContextMenu = null;
+        openNoteInPane(path, tabId, paneId);
       }}
       onOpenFolderAsLayout={(path) => {
         noteContextMenu = null;

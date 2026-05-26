@@ -540,6 +540,82 @@ describe('ProseMirrorAdapter', () => {
       expect(caption?.textContent).toBe('An example image');
     });
 
+    it('updates image block attrs by id', async () => {
+      const doc = createTestDocument({
+        blocks: [
+          {
+            id: 'img1',
+            type: 'image',
+            content: '',
+            marks: [],
+            children: [],
+            attrs: {
+              type: 'image',
+              src: 'assets/research/original.png',
+              alt: 'Original',
+              title: null,
+              caption: null,
+              width: null,
+            },
+          },
+        ],
+      });
+
+      await adapter.mount(container, doc);
+      adapter.execute('updateImageBlockAttrs', 'img1', {
+        src: 'assets/research/replacement.webp',
+        alt: 'Updated alt',
+        title: 'Updated title',
+        caption: 'Updated caption',
+        width: 320,
+      });
+
+      const block = adapter.getDocument().blocks[0];
+      expect(block?.attrs).toMatchObject({
+        type: 'image',
+        src: 'assets/research/replacement.webp',
+        alt: 'Updated alt',
+        title: 'Updated title',
+        caption: 'Updated caption',
+        width: 320,
+      });
+      const image = container.querySelector<HTMLImageElement>('.void-block[data-block-type="image"] img.void-image-img');
+      const caption = container.querySelector('.void-image-caption');
+      expect(image?.getAttribute('src')).toBe('assets/research/replacement.webp');
+      expect(image?.getAttribute('alt')).toBe('Updated alt');
+      expect(image?.getAttribute('title')).toBe('Updated title');
+      expect(image?.getAttribute('width')).toBe('320');
+      expect(caption?.textContent).toBe('Updated caption');
+    });
+
+    it('does not update attrs on non-image blocks', async () => {
+      const doc = createTestDocument({
+        blocks: [
+          {
+            id: 'p1',
+            type: 'paragraph',
+            content: 'Hello World',
+            marks: [],
+            children: [],
+            attrs: { type: 'paragraph' },
+          },
+        ],
+      });
+
+      await adapter.mount(container, doc);
+      adapter.execute('updateImageBlockAttrs', 'p1', {
+        src: 'assets/research/replacement.webp',
+        alt: 'Updated alt',
+        caption: 'Updated caption',
+        width: 320,
+      });
+
+      const block = adapter.getDocument().blocks[0];
+      expect(block?.type).toBe('paragraph');
+      expect(block?.content).toBe('Hello World');
+      expect(block?.attrs).toEqual({ type: 'paragraph' });
+    });
+
     it('keeps lineage in the block menu request instead of a separate gutter button', async () => {
       adapter.destroy();
       const onMenuClick = vi.fn();

@@ -169,6 +169,7 @@ export const TOKENS = {
   // Using Symbol.for() ensures the same symbol is returned across module instances
   // This prevents issues with dynamic imports or bundler chunking creating different symbols
   FileSystem: Symbol.for('void:FileSystem'),
+  AssetStorage: Symbol.for('void:AssetStorage'),
   FolderAccess: Symbol.for('void:FolderAccess'),
   SettingsStorage: Symbol.for('void:SettingsStorage'),
   CredentialStorage: Symbol.for('void:CredentialStorage'),
@@ -208,6 +209,7 @@ export const TOKENS = {
   SettingsService: Symbol.for('void:SettingsService'),
   WorkspaceService: Symbol.for('void:WorkspaceService'),
   FileService: Symbol.for('void:FileService'),
+  MediaAttachmentService: Symbol.for('void:MediaAttachmentService'),
   CredentialService: Symbol.for('void:CredentialService'),
   ProtectionService: Symbol.for('void:ProtectionService'),
   EditorService: Symbol.for('void:EditorService'),

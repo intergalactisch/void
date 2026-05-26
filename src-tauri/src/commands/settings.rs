@@ -172,6 +172,7 @@ impl Default for SyncArtifactPolicy {
             include_patterns: vec![
                 "*.md".to_string(),
                 "**/*.md".to_string(),
+                "assets/**".to_string(),
                 ".void/provenance/**".to_string(),
                 ".void/lineage/**".to_string(),
                 ".void/conversations/**".to_string(),
@@ -1159,7 +1160,10 @@ mod tests {
         assert_eq!(preference.sort_mode, TodoSortMode::CompletedNewest);
         assert_eq!(preference.group_mode, TodoGroupMode::CompletedDate);
         assert_eq!(preference.filters.status, TodoFilterStatus::Completed);
-        assert_eq!(preference.filters.date_field, TodoDateFilterField::CompletedAt);
+        assert_eq!(
+            preference.filters.date_field,
+            TodoDateFilterField::CompletedAt
+        );
         assert_eq!(preference.filters.date_preset, TodoDateFilterPreset::Custom);
         assert_eq!(preference.filters.date_from, "2026-05-01");
         assert_eq!(preference.filters.date_to, "2026-05-31");

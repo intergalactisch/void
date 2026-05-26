@@ -1,6 +1,7 @@
 <script lang="ts">
   import { editorStore, noteWorkspaceStore, notesStore, toastStore } from '$lib/stores';
-  import { buildRefId, type NotePaneDirection, type NotePaneDragPayload } from '$lib/domain';
+  import { buildRefId, type NotePaneDirection } from '$lib/domain';
+  import { paneSource } from '$lib/components/dnd/paneDnd.svelte';
   import { hasSelection } from '$lib/domain/values';
   import { copyTextToClipboard } from '$lib/utils/clipboard';
   import {
@@ -28,7 +29,6 @@
     editing?: boolean;
     onOpenNote?: () => void;
     onClosePane?: () => void;
-    onPaneMoveStart?: ((event: PointerEvent, payload: NotePaneDragPayload) => void) | undefined;
   }
 
   let {
@@ -42,7 +42,6 @@
     editing = false,
     onOpenNote,
     onClosePane,
-    onPaneMoveStart,
   }: Props = $props();
 
   let moreOpen = $state(false);
@@ -145,17 +144,6 @@
     transfer.setData('text/plain', wikiLink());
   }
 
-  function handleHeaderPointerDown(event: PointerEvent): void {
-    if (event.button !== 0) return;
-    const target = event.target;
-    if (target instanceof HTMLElement) {
-      if (target.closest('[data-pane-control]')) return;
-      if (event.altKey && target.closest('[data-note-link-drag]')) return;
-    }
-    focusThisPane();
-    onPaneMoveStart?.(event, { tabId, paneId, notePath });
-  }
-
   function handleWindowKeydown(event: KeyboardEvent): void {
     if (!moreOpen || event.key !== 'Escape') return;
     event.preventDefault();
@@ -170,7 +158,7 @@
   class:active
   role="group"
   aria-label={`Pane header for ${title}`}
-  onpointerdown={handleHeaderPointerDown}
+  use:paneSource={{ tabId, paneId, notePath, ignore: '[data-pane-control]' }}
   title={`${title}${folderCrumb ? ` - ${folderCrumb}` : ''}`}
 >
   <div class="pane-title-shell">

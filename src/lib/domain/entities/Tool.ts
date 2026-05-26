@@ -48,6 +48,7 @@ export type ToolCategory =
   | 'note'          // Note operations
   | 'editor'        // Editor manipulation
   | 'search'        // Search functionality
+  | 'media'         // Durable media asset operations
   | 'navigation'    // Navigation
   | 'todo'          // Todo operations
   | 'content'       // Content generation

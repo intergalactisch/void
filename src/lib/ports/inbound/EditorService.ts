@@ -17,6 +17,7 @@ import type {
   EditorInlineAIComposerView,
   EditorInlineAIRangeAnchorInput,
   EditorInlineAIRangeAnchorResult,
+  EditorImageBlockAttrs,
   EditorPageLinkNote,
 } from '$lib/ports/outbound/EditorPort';
 import type { RegisteredCommand } from '$lib/ports/outbound/CommandRegistryPort';
@@ -582,6 +583,11 @@ export interface EditorService {
    * Insert markdown blocks immediately after an existing block.
    */
   insertContentAfterBlock(blockId: string, markdown: string): void;
+
+  /**
+   * Update attrs for an image block without replacing the block.
+   */
+  updateImageBlockAttrs(blockId: string, attrs: EditorImageBlockAttrs): void;
 
   /**
    * Get all currently AI-locked block IDs.

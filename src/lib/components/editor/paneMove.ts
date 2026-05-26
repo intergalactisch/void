@@ -1,166 +1,118 @@
-import type { NotePaneDirection, NotePaneDragPayload, NotePaneMoveIntent } from '$lib/domain';
+import type { DragKind, DropPlacement } from '$lib/domain';
 
-export interface PaneMovePoint {
+export interface PanePoint {
   x: number;
   y: number;
 }
 
-export interface PaneMoveRect {
+export interface PaneRect {
   left: number;
   top: number;
   width: number;
   height: number;
 }
 
-export interface PaneMoveTarget {
-  tabId: string;
-  paneId: string;
-  notePath: string | null;
-  rect: PaneMoveRect;
-  layoutRect: PaneMoveRect;
-}
-
-export interface PaneMovePreview {
-  intent: NotePaneMoveIntent;
+export interface PaneDropPreview {
+  /** Geometric zone the pointer resolved to. */
+  placement: DropPlacement;
+  /** Human label shown near the cursor (e.g. "Open right", "Swap"). */
   label: string;
-  targetRect: PaneMoveRect;
-  previewRect: PaneMoveRect;
+  /** The full target pane rect (drawn as a frame). */
+  targetRect: PaneRect;
+  /** The half where the dragged content lands — or the full rect for a center drop. */
+  previewRect: PaneRect;
+  /** The half that keeps the target's current note (empty for a center drop). */
+  survivorRect: PaneRect | null;
 }
 
-export interface PaneMoveReflowSlot {
-  index: number;
-  count: number;
-  layoutRect: PaneMoveRect;
+/** Fraction of a pane's width/height that counts as an edge zone; the inner box is "center". */
+const EDGE_RATIO = 0.28;
+
+export function rectFromDOMRect(rect: DOMRect | { left: number; top: number; width: number; height: number }): PaneRect {
+  return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
 }
 
-export type PaneMoveReflowSlots = Partial<Record<Exclude<NotePaneMoveIntent, 'swap'>, PaneMoveReflowSlot>>;
-
-export interface PaneMoveSession {
-  pointerId: number;
-  source: NotePaneDragPayload;
-  start: PaneMovePoint;
-  pointer: PaneMovePoint;
-  active: boolean;
-  target: PaneMoveTarget | null;
-  preview: PaneMovePreview | null;
+function clamp01(value: number): number {
+  return value < 0 ? 0 : value > 1 ? 1 : value;
 }
 
-export function rectFromDOMRect(rect: DOMRect | ClientRect): PaneMoveRect {
-  return {
-    left: rect.left,
-    top: rect.top,
-    width: rect.width,
-    height: rect.height,
-  };
-}
-
-export function paneMoveLabel(intent: NotePaneMoveIntent): string {
-  switch (intent) {
+export function placementLabel(placement: DropPlacement, kind: DragKind, alreadyOpen: boolean): string {
+  if (alreadyOpen) return 'Already open';
+  if (placement === 'center') return kind === 'pane' ? 'Swap' : 'Replace';
+  const verb = kind === 'pane' ? 'Move' : 'Open';
+  switch (placement) {
     case 'left':
-      return 'Move left';
+      return `${verb} left`;
     case 'right':
-      return 'Move right';
+      return `${verb} right`;
     case 'top':
-      return 'Move up';
+      return `${verb} up`;
     case 'bottom':
-      return 'Move down';
-    case 'swap':
-      return 'Swap panes';
+      return `${verb} down`;
   }
 }
 
-function directionForIntent(intent: Exclude<NotePaneMoveIntent, 'swap'>): NotePaneDirection {
-  return intent === 'left' || intent === 'right' ? 'horizontal' : 'vertical';
+function halfRect(placement: Exclude<DropPlacement, 'center'>, rect: PaneRect, insertion: boolean): PaneRect {
+  // `insertion` picks the side where the dragged content lands; `!insertion` is the surviving half.
+  const onStart = placement === 'left' || placement === 'top';
+  const takeStart = insertion ? onStart : !onStart;
+  switch (placement) {
+    case 'left':
+    case 'right':
+      return {
+        left: takeStart ? rect.left : rect.left + rect.width / 2,
+        top: rect.top,
+        width: rect.width / 2,
+        height: rect.height,
+      };
+    case 'top':
+    case 'bottom':
+      return {
+        left: rect.left,
+        top: takeStart ? rect.top : rect.top + rect.height / 2,
+        width: rect.width,
+        height: rect.height / 2,
+      };
+  }
 }
 
-function reflowSlotRect(
-  intent: Exclude<NotePaneMoveIntent, 'swap'>,
-  slot: PaneMoveReflowSlot,
-): PaneMoveRect {
-  const count = Math.max(1, slot.count);
-  const index = Math.max(0, Math.min(count - 1, slot.index));
-  if (directionForIntent(intent) === 'horizontal') {
-    const width = slot.layoutRect.width / count;
+export function resolveDropPlacement(point: PanePoint, rect: PaneRect): DropPlacement {
+  const nx = clamp01((point.x - rect.left) / Math.max(1, rect.width));
+  const ny = clamp01((point.y - rect.top) / Math.max(1, rect.height));
+  const inCenterX = nx >= EDGE_RATIO && nx <= 1 - EDGE_RATIO;
+  const inCenterY = ny >= EDGE_RATIO && ny <= 1 - EDGE_RATIO;
+  if (inCenterX && inCenterY) return 'center';
+
+  const distances: ReadonlyArray<readonly [Exclude<DropPlacement, 'center'>, number]> = [
+    ['left', nx],
+    ['right', 1 - nx],
+    ['top', ny],
+    ['bottom', 1 - ny],
+  ];
+  return distances.reduce((best, current) => (current[1] < best[1] ? current : best))[0];
+}
+
+export function resolvePaneDropPreview(
+  point: PanePoint,
+  rect: PaneRect,
+  options: { kind: DragKind; alreadyOpen?: boolean },
+): PaneDropPreview {
+  const placement = resolveDropPlacement(point, rect);
+  const alreadyOpen = options.alreadyOpen ?? false;
+  if (placement === 'center') {
     return {
-      left: slot.layoutRect.left + width * index,
-      top: slot.layoutRect.top,
-      width,
-      height: slot.layoutRect.height,
+      placement,
+      label: placementLabel(placement, options.kind, alreadyOpen),
+      targetRect: rect,
+      previewRect: rect,
+      survivorRect: null,
     };
   }
-
-  const height = slot.layoutRect.height / count;
   return {
-    left: slot.layoutRect.left,
-    top: slot.layoutRect.top + height * index,
-    width: slot.layoutRect.width,
-    height,
+    placement,
+    label: placementLabel(placement, options.kind, alreadyOpen),
+    targetRect: rect,
+    previewRect: halfRect(placement, rect, true),
+    survivorRect: halfRect(placement, rect, false),
   };
-}
-
-export function resolvePaneMovePreview(
-  pointer: PaneMovePoint,
-  targetRect: PaneMoveRect,
-  reflowSlots: PaneMoveReflowSlots = {},
-): PaneMovePreview {
-  const x = pointer.x - targetRect.left;
-  const y = pointer.y - targetRect.top;
-  const leftThird = targetRect.width / 3;
-  const rightThird = leftThird * 2;
-  const topThird = targetRect.height / 3;
-  const bottomThird = topThird * 2;
-  const inMiddleColumn = x >= leftThird && x <= rightThird;
-  const inMiddleRow = y >= topThird && y <= bottomThird;
-  const intent = inMiddleColumn && inMiddleRow
-    ? 'swap'
-    : nearestPaneMoveEdge(x, y, targetRect);
-
-  let previewRect = targetRect;
-  if (intent === 'left') {
-    previewRect = reflowSlots.left
-      ? reflowSlotRect('left', reflowSlots.left)
-      : { ...targetRect, width: targetRect.width / 2 };
-  } else if (intent === 'right') {
-    previewRect = reflowSlots.right
-      ? reflowSlotRect('right', reflowSlots.right)
-      : {
-          ...targetRect,
-          left: targetRect.left + targetRect.width / 2,
-          width: targetRect.width / 2,
-        };
-  } else if (intent === 'top') {
-    previewRect = reflowSlots.top
-      ? reflowSlotRect('top', reflowSlots.top)
-      : { ...targetRect, height: targetRect.height / 2 };
-  } else if (intent === 'bottom') {
-    previewRect = reflowSlots.bottom
-      ? reflowSlotRect('bottom', reflowSlots.bottom)
-      : {
-          ...targetRect,
-          top: targetRect.top + targetRect.height / 2,
-          height: targetRect.height / 2,
-        };
-  }
-
-  return {
-    intent,
-    label: paneMoveLabel(intent),
-    targetRect,
-    previewRect,
-  };
-}
-
-function nearestPaneMoveEdge(
-  x: number,
-  y: number,
-  targetRect: PaneMoveRect,
-): Exclude<NotePaneMoveIntent, 'swap'> {
-  const distances = [
-    ['left', x / targetRect.width],
-    ['right', (targetRect.width - x) / targetRect.width],
-    ['top', y / targetRect.height],
-    ['bottom', (targetRect.height - y) / targetRect.height],
-  ] as const;
-
-  return distances.reduce((best, current) => current[1] < best[1] ? current : best)[0];
 }

@@ -39,6 +39,34 @@ export interface BlockNodeViewOptions {
   onLineageClick?: (blockId: string, lineIndex: number, event: MouseEvent) => void;
   onDragStart?: (blockId: string, event: DragEvent) => void;
   onTodoToggle?: TodoToggleCallback;
+  resolveImageSrc?: (src: string) => string | Promise<string>;
+}
+
+export const IMAGE_BLOCK_UI_EVENT = 'void:image-block-ui';
+
+export interface ImageBlockAttrsUpdate {
+  src?: string;
+  alt?: string | null;
+  title?: string | null;
+  caption?: string | null;
+  width?: number | null;
+}
+
+export interface ImageBlockToolbarRequest {
+  blockId: string;
+  src: string;
+  alt: string | null;
+  title: string | null;
+  caption: string | null;
+  width: number | null;
+  rect: {
+    top: number;
+    left: number;
+    right: number;
+    bottom: number;
+    width: number;
+    height: number;
+  };
 }
 
 // ── SVG Icons ──────────────────────────────────────────────────────────
@@ -1167,6 +1195,20 @@ export class BlockNodeView implements NodeView {
     const figure = document.createElement('figure');
     figure.className = 'void-block-content void-image';
     figure.setAttribute('contenteditable', 'false');
+    figure.setAttribute('role', 'group');
+    figure.setAttribute('tabindex', '0');
+    figure.setAttribute('aria-label', 'Image block');
+    figure.addEventListener('mouseenter', () => this.announceImageToolbar());
+    figure.addEventListener('focusin', () => this.announceImageToolbar());
+    figure.addEventListener('click', (event) => {
+      event.preventDefault();
+      this.announceImageToolbar();
+    });
+    figure.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      this.announceImageToolbar();
+    });
     this.populateImageFigure(figure, node);
     return figure;
   }
@@ -1204,6 +1246,22 @@ export class BlockNodeView implements NodeView {
     const img = document.createElement('img');
     img.className = 'void-image-img';
     img.src = src;
+    img.dataset.assetSrc = src;
+    const resolvedSrc = this.options.resolveImageSrc?.(src);
+    if (typeof resolvedSrc === 'string') {
+      img.src = resolvedSrc;
+    } else if (resolvedSrc) {
+      resolvedSrc
+        .then((value) => {
+          if (this.imageEl === img && img.dataset.assetSrc === src) {
+            img.src = value;
+          }
+        })
+        .catch(() => {
+          // Keep the portable markdown path visible to the browser if
+          // resolution fails; the block metadata remains unchanged.
+        });
+    }
     img.alt = alt;
     if (title) img.title = title;
     if (width) img.width = width;
@@ -1217,6 +1275,31 @@ export class BlockNodeView implements NodeView {
       figure.appendChild(figcaption);
       this.imageCaptionEl = figcaption;
     }
+  }
+
+  private announceImageToolbar(): void {
+    if (!this.imageFigureEl) return;
+    const rect = this.imageFigureEl.getBoundingClientRect();
+    const src = (this.node.attrs.src as string | null) || '';
+    const detail: ImageBlockToolbarRequest = {
+      blockId: this.blockId,
+      src,
+      alt: (this.node.attrs.alt as string | null) ?? null,
+      title: (this.node.attrs.title as string | null) ?? null,
+      caption: (this.node.attrs.caption as string | null) ?? null,
+      width: (this.node.attrs.width as number | null) ?? null,
+      rect: {
+        top: rect.top,
+        left: rect.left,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height,
+      },
+    };
+    window.dispatchEvent(new CustomEvent<ImageBlockToolbarRequest>(IMAGE_BLOCK_UI_EVENT, {
+      detail,
+    }));
   }
 }
 

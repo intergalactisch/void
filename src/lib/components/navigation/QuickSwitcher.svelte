@@ -12,6 +12,8 @@
    */
 
   import { noteWorkspaceStore, notesStore } from '$lib/stores';
+  import { noteSource } from '$lib/components/dnd/paneDnd.svelte';
+  import type { NotePaneDropIntent } from '$lib/domain';
   import type { NotesListItem, TagGroup } from '$lib/ports/inbound';
   import { createFocusTrap } from '$lib/utils/focusTrap';
   import { formatRelativeDate } from '$lib/utils/relativeDate';
@@ -38,9 +40,65 @@
     commands?: PaletteCommand[];
     /** Right-click on a note row opens the shared note context menu */
     onNoteContextMenu?: (path: string, title: string, position: { x: number; y: number }, isFolder?: boolean) => void;
+    /** Place the note into a specific pane + edge (keyboard place-mode) */
+    onPlaceInPane?: (path: string, tabId: string, paneId: string, intent: NotePaneDropIntent) => void;
   }
 
-  let { isOpen = false, onSelect, onClose, commands = [], onNoteContextMenu }: Props = $props();
+  let { isOpen = false, onSelect, onClose, commands = [], onNoteContextMenu, onPlaceInPane }: Props = $props();
+
+  /** Keyboard "place mode": after picking a note, choose which pane + edge to open it in. */
+  let placeMode = $state(false);
+  let placeNote = $state<NotesListItem | null>(null);
+  let placePaneIndex = $state(0);
+  let placeDirIndex = $state(4);
+
+  /** Spatial order so Left/Right arrows cycle naturally across the edge zones. */
+  const PLACE_DIRS: { intent: NotePaneDropIntent; glyph: string; label: string }[] = [
+    { intent: 'left', glyph: '←', label: 'Left' },
+    { intent: 'top', glyph: '↑', label: 'Up' },
+    { intent: 'replace', glyph: '⊕', label: 'Replace' },
+    { intent: 'bottom', glyph: '↓', label: 'Down' },
+    { intent: 'right', glyph: '→', label: 'Right' },
+  ];
+
+  let placePanes = $derived.by(() => {
+    const tab = noteWorkspaceStore.activeTab;
+    if (!tab) return [] as { tabId: string; paneId: string; title: string; index: number; count: number }[];
+    const panes = noteWorkspaceStore.getPanes(tab).filter((pane) => !!pane.notePath);
+    return panes.map((pane, index) => ({
+      tabId: tab.id,
+      paneId: pane.paneId,
+      title: notesStore.titleForPath(pane.notePath!, pane.notePath!),
+      index,
+      count: panes.length,
+    }));
+  });
+
+  function enterPlaceMode(note: NotesListItem): void {
+    if (!onPlaceInPane || placePanes.length === 0) {
+      handleSelect(note);
+      return;
+    }
+    placeNote = note;
+    placePaneIndex = 0;
+    placeDirIndex = 4;
+    placeMode = true;
+  }
+
+  function exitPlaceMode(): void {
+    placeMode = false;
+    placeNote = null;
+  }
+
+  function commitPlace(): void {
+    const pane = placePanes[placePaneIndex];
+    const note = placeNote;
+    const dir = PLACE_DIRS[placeDirIndex];
+    if (!pane || !note || !dir) return;
+    onPlaceInPane?.(note.path, pane.tabId, pane.paneId, dir.intent);
+    exitPlaceMode();
+    handleClose();
+  }
 
   /** Search query */
   let query = $state('');
@@ -153,6 +211,8 @@
     if (isOpen) {
       query = '';
       selectedIndex = 0;
+      placeMode = false;
+      placeNote = null;
 
       // Set up focus trap when dialog opens
       if (dialogRef) {
@@ -220,6 +280,36 @@
    * Handle keyboard navigation in input.
    */
   function handleKeydown(event: KeyboardEvent) {
+    if (placeMode) {
+      switch (event.key) {
+        case 'ArrowDown':
+          event.preventDefault();
+          placePaneIndex = Math.min(placePaneIndex + 1, placePanes.length - 1);
+          break;
+        case 'ArrowUp':
+          event.preventDefault();
+          placePaneIndex = Math.max(placePaneIndex - 1, 0);
+          break;
+        case 'ArrowRight':
+          event.preventDefault();
+          placeDirIndex = Math.min(placeDirIndex + 1, PLACE_DIRS.length - 1);
+          break;
+        case 'ArrowLeft':
+          event.preventDefault();
+          placeDirIndex = Math.max(placeDirIndex - 1, 0);
+          break;
+        case 'Enter':
+          event.preventDefault();
+          commitPlace();
+          break;
+        case 'Escape':
+          event.preventDefault();
+          exitPlaceMode();
+          break;
+      }
+      return;
+    }
+
     switch (event.key) {
       case 'ArrowDown':
         event.preventDefault();
@@ -228,6 +318,13 @@
       case 'ArrowUp':
         event.preventDefault();
         selectedIndex = Math.max(selectedIndex - 1, 0);
+        break;
+      case 'Tab':
+        if (!isCommandMode && !isTagMode) {
+          event.preventDefault();
+          const note = filteredNotes[selectedIndex];
+          if (note) enterPlaceMode(note);
+        }
         break;
       case 'Enter':
         event.preventDefault();
@@ -319,11 +416,14 @@
           bind:value={query}
           class="switcher-input"
           type="text"
-          placeholder={isCommandMode
-            ? 'Type a command...'
-            : isTagMode
-              ? 'Filter tags...'
-              : 'Search notes... (> commands, # tags)'}
+          readonly={placeMode}
+          placeholder={placeMode
+            ? `Placing "${placeNote?.title ?? ''}" — choose a pane`
+            : isCommandMode
+              ? 'Type a command...'
+              : isTagMode
+                ? 'Filter tags...'
+                : 'Search notes... (> commands, # tags)'}
           onkeydown={handleKeydown}
           autocomplete="off"
           spellcheck="false"
@@ -345,7 +445,39 @@
 
       <!-- Results list -->
       <div class="switcher-list" bind:this={listRef}>
-        {#if isCommandMode}
+        {#if placeMode}
+          <div class="section-header">Open in pane</div>
+          {#each placePanes as pane, i (pane.paneId)}
+            <div
+              class="place-pane"
+              class:selected={i === placePaneIndex}
+              role="option"
+              aria-selected={i === placePaneIndex}
+            >
+              <div class="place-pane-head">
+                <span class="place-pane-title">{pane.title}</span>
+                {#if pane.count > 1}
+                  <span class="place-pane-meta">pane {pane.index + 1}/{pane.count}</span>
+                {/if}
+              </div>
+              <div class="place-dirs">
+                {#each PLACE_DIRS as dir, di}
+                  <button
+                    type="button"
+                    class="place-dir"
+                    class:active={i === placePaneIndex && di === placeDirIndex}
+                    title={dir.label}
+                    aria-label={`${dir.label} of ${pane.title}`}
+                    onmouseenter={() => { placePaneIndex = i; placeDirIndex = di; }}
+                    onclick={() => { placePaneIndex = i; placeDirIndex = di; commitPlace(); }}
+                  >
+                    {dir.glyph}
+                  </button>
+                {/each}
+              </div>
+            </div>
+          {/each}
+        {:else if isCommandMode}
           <!-- Command mode -->
           {#if filteredCommands.length === 0}
             <div class="empty-state">
@@ -433,6 +565,7 @@
                 role="option"
                 tabindex={index === selectedIndex ? 0 : -1}
                 aria-selected={index === selectedIndex}
+                use:noteSource={{ notePath: note.path, title: note.title, onBegin: handleClose }}
                 onclick={() => handleSelect(note)}
                 oncontextmenu={(event) => {
                   if (!onNoteContextMenu) return;
@@ -472,15 +605,19 @@
 
       <!-- Footer hints -->
       <div class="switcher-footer">
-        <span class="hint">
-          <kbd>&#8593;</kbd><kbd>&#8595;</kbd> to navigate
-        </span>
-        <span class="hint">
-          <kbd>Enter</kbd> to open
-        </span>
-        <span class="hint">
-          <kbd>Esc</kbd> to close
-        </span>
+        {#if placeMode}
+          <span class="hint"><kbd>&#8593;</kbd><kbd>&#8595;</kbd> pane</span>
+          <span class="hint"><kbd>&#8592;</kbd><kbd>&#8594;</kbd> edge</span>
+          <span class="hint"><kbd>Enter</kbd> place</span>
+          <span class="hint"><kbd>Esc</kbd> back</span>
+        {:else}
+          <span class="hint"><kbd>&#8593;</kbd><kbd>&#8595;</kbd> navigate</span>
+          <span class="hint"><kbd>Enter</kbd> open</span>
+          {#if onPlaceInPane}
+            <span class="hint"><kbd>&#8633;</kbd> place in pane</span>
+          {/if}
+          <span class="hint"><kbd>Esc</kbd> close</span>
+        {/if}
       </div>
     </div>
   </div>
@@ -752,5 +889,77 @@
     font-weight: 500;
     color: var(--text-secondary);
     letter-spacing: 0.02em;
+  }
+
+  /* ─── Place mode ─── */
+  .place-pane {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 10px;
+    border-radius: var(--radius-md);
+    border: 1px solid transparent;
+  }
+
+  .place-pane.selected {
+    background-color: var(--accent-light);
+    border-color: color-mix(in srgb, var(--accent-primary) 30%, transparent);
+  }
+
+  .place-pane-head {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .place-pane-title {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .place-pane-meta {
+    font-size: 11.5px;
+    color: var(--text-tertiary);
+    white-space: nowrap;
+  }
+
+  .place-dirs {
+    display: flex;
+    gap: 3px;
+    flex-shrink: 0;
+  }
+
+  .place-dir {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+  }
+
+  .place-dir:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .place-dir.active {
+    border-color: var(--accent-primary);
+    background: color-mix(in srgb, var(--accent-primary) 16%, var(--bg-card));
+    color: var(--accent-primary);
+    box-shadow: 0 0 0 2px var(--accent-soft);
   }
 </style>

@@ -76,6 +76,8 @@ export {
   isNotePaneSplit,
 } from './NoteWorkspaceLayout';
 export type {
+  DragKind,
+  DropPlacement,
   NotePaneDirection,
   NotePaneDragPayload,
   NotePaneDropIntent,

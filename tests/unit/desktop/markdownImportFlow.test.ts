@@ -1,11 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  formatMarkdownDropAcceptedLabel,
-  formatMarkdownDropSkippedLabel,
   formatMarkdownImportTargetFolder,
   openImportedMarkdownSummary,
   resolveMarkdownImportTargetFolder,
-  summarizeMarkdownDropPaths,
 } from '$lib/desktop/markdownImportFlow';
 
 describe('markdownImportFlow', () => {
@@ -51,43 +48,8 @@ describe('markdownImportFlow', () => {
     expect(selectNote).toHaveBeenCalledWith('folder/b.md');
   });
 
-  it('summarizes drag/drop previews for valid, mixed, and invalid drops', () => {
-    expect(summarizeMarkdownDropPaths(['/tmp/a.md', '/tmp/B.MD'])).toMatchObject({
-      totalCount: 2,
-      markdownCount: 2,
-      unsupportedCount: 0,
-      state: 'valid',
-    });
-    expect(summarizeMarkdownDropPaths(['/tmp/a.md', '/tmp/a.txt'])).toMatchObject({
-      totalCount: 2,
-      markdownCount: 1,
-      unsupportedCount: 1,
-      state: 'mixed',
-    });
-    expect(summarizeMarkdownDropPaths(['/tmp/a.markdown', '/tmp/a.txt'])).toMatchObject({
-      totalCount: 2,
-      markdownCount: 0,
-      unsupportedCount: 2,
-      state: 'invalid',
-    });
-  });
-
   it('formats import destination labels', () => {
     expect(formatMarkdownImportTargetFolder('')).toBe('Workspace root');
     expect(formatMarkdownImportTargetFolder('projects/alpha')).toBe('projects / alpha');
-  });
-
-  it('formats drop chips as filenames for single files and counts for batches', () => {
-    const single = summarizeMarkdownDropPaths(['/tmp/dit-is-een-test.md']);
-    expect(formatMarkdownDropAcceptedLabel(single)).toBe('dit-is-een-test.md');
-
-    const encoded = summarizeMarkdownDropPaths(['file:///tmp/dit%20is%20een%20test.md']);
-    expect(formatMarkdownDropAcceptedLabel(encoded)).toBe('dit is een test.md');
-
-    const batch = summarizeMarkdownDropPaths(['/tmp/a.md', '/tmp/b.md']);
-    expect(formatMarkdownDropAcceptedLabel(batch)).toBe('2 Markdown files');
-
-    const mixed = summarizeMarkdownDropPaths(['/tmp/a.md', '/tmp/not-this.txt']);
-    expect(formatMarkdownDropSkippedLabel(mixed)).toBe('not-this.txt skipped');
   });
 });

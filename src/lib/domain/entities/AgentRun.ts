@@ -275,6 +275,16 @@ export interface AgentArtifact {
   url?: string;
   thumbnailUrl?: string;
   mediaKind?: AgentMediaKind;
+  localAssetPath?: string;
+  originalUrl?: string;
+  finalUrl?: string;
+  contentType?: string;
+  hash?: string;
+  dimensions?: { width: number | null; height: number | null };
+  creator?: string | null;
+  license?: string | null;
+  fetchedAt?: string;
+  reviewStatus?: 'trusted' | 'needs-review' | 'rejected';
   noteId?: string;
   summary?: string;
   citation?: ResearchCitation;

@@ -85,6 +85,7 @@ export type EventMap = {
   'editor:page-link-clicked': { path: string };
   'editor:external-link-clicked': { url: string };
   'editor:todo-toggled': { blockId: string; content: string; checked: boolean };
+  'editor:request-insert-image': void;
 
   // Editor block-level events
   'editor:block-selected': { blockIds: string[] };

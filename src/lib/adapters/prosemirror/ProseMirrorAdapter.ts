@@ -26,8 +26,10 @@ import type {
   EditorInlineAIRangeAnchorResult,
   EditorInlineGenerateCallbacks,
   EditorInlineGenerateRequest,
+  EditorImageBlockAttrs,
   EditorPageLinkNote,
 } from '$lib/ports/outbound/EditorPort';
+import type { EditorImageSrcResolver } from '$lib/ports/outbound/EditorPortFactory';
 import type { Document } from '$lib/domain/entities/Document';
 import type { Block, BlockAttrs } from '$lib/domain/entities/Block';
 import type { InlineAIThread } from '$lib/domain/entities/InlineAIThread';
@@ -177,6 +179,8 @@ export interface ProseMirrorAdapterOptions {
   onExternalLinkClick?: (url: string) => void;
   /** Callback when a todo checkbox is toggled in the editor */
   onTodoToggle?: (blockId: string, content: string, checked: boolean) => void;
+  /** Resolve portable markdown image paths to webview-renderable URLs. */
+  resolveImageSrc?: EditorImageSrcResolver;
   /** Callback when AI block lock state changes */
   onAIBlockLocksChanged?: (locks: import('./plugins/aiBlock').AIBlockState) => void;
 }
@@ -512,6 +516,9 @@ export class ProseMirrorAdapter implements EditorPort {
         break;
       case 'insertContentAfterBlock':
         this.executeInsertContentAfterBlock(args[0] as string, args[1] as string);
+        break;
+      case 'updateImageBlockAttrs':
+        this.executeUpdateImageBlockAttrs(args[0] as string, args[1] as EditorImageBlockAttrs);
         break;
       case 'updateTodoContent':
         this.executeUpdateTodoContent(
@@ -1371,6 +1378,10 @@ export class ProseMirrorAdapter implements EditorPort {
         this.options.onTodoToggle?.(blockId, content, checked);
       };
     }
+    if (this.options.resolveImageSrc) {
+      options.resolveImageSrc = (src) =>
+        this.options.resolveImageSrc!(src, { notePath: this.currentDocument?.path ?? null });
+    }
 
     const factory = createBlockNodeViewFactory(options);
     const contextAwareFactory = createContextAwareFactory(options);
@@ -2058,6 +2069,36 @@ export class ProseMirrorAdapter implements EditorPort {
       .insert(insertPos, pmDoc.content)
       .setMeta(AI_BYPASS, true);
     this.view.dispatch(tr.scrollIntoView());
+  }
+
+  private executeUpdateImageBlockAttrs(blockId: string, attrs: EditorImageBlockAttrs): void {
+    if (!this.view) return;
+
+    let targetPos = -1;
+    let targetNode: PmNode | null = null;
+
+    this.view.state.doc.descendants((node, pos) => {
+      if (targetNode) return false;
+      if (node.attrs?.id === blockId) {
+        targetNode = node;
+        targetPos = pos;
+        return false;
+      }
+      return true;
+    });
+
+    if (!targetNode || targetPos < 0 || (targetNode as PmNode).type.name !== 'image') return;
+
+    const nextAttrs = {
+      ...(targetNode as PmNode).attrs,
+      ...attrs,
+    };
+    const width = nextAttrs.width;
+    nextAttrs.width = typeof width === 'number' && Number.isFinite(width) && width > 0 ? width : null;
+
+    this.view.dispatch(
+      this.view.state.tr.setNodeMarkup(targetPos, undefined, nextAttrs).scrollIntoView(),
+    );
   }
 
   private executeUpdateTodoContent(

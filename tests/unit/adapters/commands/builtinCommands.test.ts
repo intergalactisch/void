@@ -2,37 +2,41 @@ import { describe, expect, it, vi, afterEach } from 'vitest';
 import { createBuiltinCommands } from '$lib/adapters/commands/builtinCommands';
 import type { CommandContext, EditorPort } from '$lib/ports/outbound';
 import { EMPTY_SCOPE } from '$lib/domain/values';
+import { events } from '$lib/events';
 
 describe('createBuiltinCommands', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it('inserts an image block when the Image command receives a URL', () => {
-    vi.spyOn(window, 'prompt').mockReturnValue('https://example.com/image.png');
+  it('requests image insertion via the attachment flow when the Image command runs', () => {
+    const emit = vi.spyOn(events, 'emit');
     const editor = { execute: vi.fn() } as unknown as EditorPort;
     const command = createBuiltinCommands().find((cmd) => cmd.id === 'image');
 
+    expect(command).toMatchObject({
+      label: 'Add image',
+      description: 'Upload, paste, or download an image into this note',
+      category: 'media',
+      icon: 'image',
+    });
+    expect(command?.keywords).toEqual(expect.arrayContaining(['image', 'img', 'upload', 'file', 'url', 'attach']));
+
     command?.execute(createContext(editor));
 
-    expect(editor.execute).toHaveBeenCalledWith('insertBlock', 'image', {
-      type: 'image',
-      src: 'https://example.com/image.png',
-      alt: null,
-      title: null,
-      caption: null,
-      width: null,
-    });
+    // The Image command delegates to the media-attachment flow rather than
+    // inserting a block synchronously.
+    expect(emit).toHaveBeenCalledWith('editor:request-insert-image', undefined);
+    expect(editor.execute).not.toHaveBeenCalled();
   });
 
-  it('does not insert an image when the Image URL prompt is cancelled', () => {
-    vi.spyOn(window, 'prompt').mockReturnValue('');
-    const editor = { execute: vi.fn() } as unknown as EditorPort;
+  it('does nothing when no editor is available', () => {
+    const emit = vi.spyOn(events, 'emit');
     const command = createBuiltinCommands().find((cmd) => cmd.id === 'image');
 
-    command?.execute(createContext(editor));
+    command?.execute({ ...createContext(null as unknown as EditorPort) });
 
-    expect(editor.execute).not.toHaveBeenCalled();
+    expect(emit).not.toHaveBeenCalledWith('editor:request-insert-image', undefined);
   });
 });
 

@@ -1,3 +1,4 @@
+pub mod assets;
 pub mod cli_ai;
 pub mod clipboard_watcher;
 pub mod credentials;
@@ -12,6 +13,7 @@ pub mod updater;
 pub mod void_storage;
 pub mod web_fetch;
 
+pub use assets::*;
 pub use cli_ai::*;
 pub use clipboard_watcher::*;
 pub use credentials::*;

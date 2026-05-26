@@ -27,19 +27,52 @@
   } from '$lib/domain/values/Protection';
   import { EMPTY_SELECTION, normalizeNoteTag } from '$lib/domain/values';
   import { events } from '$lib/events';
+  import { getAppContext } from '$lib/bootstrap';
   import { buildRefId } from '$lib/domain/values';
   import { AI_UNAVAILABLE_MESSAGE } from '$lib/domain/values/AIAvailability';
+  import { SUPPORTED_EXTERNAL_IMAGE_EXTENSIONS } from '$lib/desktop/externalFileDropFlow';
   import { copyTextToClipboard } from '$lib/utils/clipboard';
   import type { SlashMenuState } from '$lib/adapters/prosemirror/plugins/slashMenu';
   import type { PageLinkNote, PageLinkState } from '$lib/adapters/prosemirror/plugins/pageLink';
-  import { SlashMenu, BlockMenu, EditorToolbar, PageLinkPopup, FindReplaceBar, RelationsPanel, LineageHistoryWorkspace, BranchPicker, SessionRibbon } from '$lib/components/editor';
+  import {
+    IMAGE_BLOCK_UI_EVENT,
+    type ImageBlockAttrsUpdate,
+    type ImageBlockToolbarRequest,
+  } from '$lib/adapters/prosemirror/views/BlockNodeView';
+  import {
+    SlashMenu,
+    BlockMenu,
+    EditorToolbar,
+    ImageBlockToolbar,
+    ImageDetailsPopover,
+    ImageInsertPopover,
+    PageLinkPopup,
+    FindReplaceBar,
+    RelationsPanel,
+    LineageHistoryWorkspace,
+    BranchPicker,
+    SessionRibbon,
+  } from '$lib/components/editor';
   import InlineAIComposer from './InlineAIComposer.svelte';
   import type { BlockMenuAction } from '$lib/components/editor/BlockMenu.svelte';
+  import type { MediaAttachmentResult } from '$lib/ports/inbound';
   import type { EditorInlineAIComposerView, RegisteredCommand } from '$lib/ports/outbound';
   import type { BlockType } from '$lib/domain/values/BlockType';
   import { CheckCircle2, KeyRound, LocateFixed, Lock, MessageSquare, Plus, Shield, ShieldOff, Sparkles, Unlock, X } from '@lucide/svelte';
 
   const LEGACY_EDITOR_PANE_ID = '__legacy__';
+  const SUPPORTED_IMAGE_EXTENSIONS: string[] = [...SUPPORTED_EXTERNAL_IMAGE_EXTENSIONS];
+  const SUPPORTED_IMAGE_MIME = new Set([
+    'image/png',
+    'image/jpeg',
+    'image/svg+xml',
+    'image/gif',
+    'image/webp',
+  ]);
+
+  type ImageInsertState =
+    | { mode: 'insert' }
+    | { mode: 'replace'; image: ImageBlockToolbarRequest };
 
   interface Props {
     document: Document;
@@ -113,6 +146,11 @@
   let grantingAIApproval = $state(false);
   let pendingInlineApprovalComposerId: string | null = $state(null);
   let grantingInlineAIApproval = $state(false);
+  let imageInsertState: ImageInsertState | null = $state(null);
+  let imageInsertBusy = $state(false);
+  let imageInsertError: string | null = $state(null);
+  let activeImageBlock: ImageBlockToolbarRequest | null = $state(null);
+  let imageDetailsTarget: ImageBlockToolbarRequest | null = $state(null);
   const inlineAIComposerDrafts = new Map<string, string>();
 
   const slashMenuState = $derived.by(() =>
@@ -288,6 +326,473 @@
 
   function focusShellPane() {
     if (paneId) editorStore.focusPane(paneId);
+  }
+
+  function currentNotePath(): string {
+    return currentPaneDocument.path;
+  }
+
+  function isSupportedImageFile(file: File): boolean {
+    if (SUPPORTED_IMAGE_MIME.has(file.type)) return true;
+    const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
+    return SUPPORTED_IMAGE_EXTENSIONS.includes(ext);
+  }
+
+  function isHttpsUrl(value: string): boolean {
+    try {
+      return new URL(value.trim()).protocol === 'https:';
+    } catch {
+      return false;
+    }
+  }
+
+  function isImageUrl(value: string): boolean {
+    const trimmed = value.trim();
+    if (!isHttpsUrl(trimmed)) return false;
+    try {
+      const url = new URL(trimmed);
+      const ext = url.pathname.split('.').pop()?.toLowerCase() ?? '';
+      return SUPPORTED_IMAGE_EXTENSIONS.includes(ext);
+    } catch {
+      return false;
+    }
+  }
+
+  function resolveAssetReference(src: string): string | null {
+    const trimmed = src.trim();
+    if (!trimmed || /^[a-z][a-z0-9+.-]*:/i.test(trimmed) || trimmed.startsWith('//')) return null;
+    const normalized = trimmed.replace(/\\/g, '/');
+    if (normalized.startsWith('assets/')) return normalized;
+    const noteParts = currentNotePath().replace(/\\/g, '/').split('/').filter(Boolean);
+    noteParts.pop();
+    const combined = [...noteParts];
+    for (const part of normalized.split('/')) {
+      if (!part || part === '.') continue;
+      if (part === '..') combined.pop();
+      else combined.push(part);
+    }
+    const resolved = combined.join('/');
+    return resolved.startsWith('assets/') ? resolved : null;
+  }
+
+  function altFromName(name: string): string {
+    return name.replace(/\.[a-z0-9]+$/i, '').replace(/[-_]+/g, ' ').trim();
+  }
+
+  function fileNameFromUrl(url: string): string {
+    try {
+      return new URL(url).pathname.split('/').pop() || 'image';
+    } catch {
+      return 'image';
+    }
+  }
+
+  function openImageInsertPopover(state: ImageInsertState = { mode: 'insert' }): void {
+    focusShellPane();
+    imageInsertState = state;
+    imageInsertError = null;
+  }
+
+  function closeImageInsertPopover(): void {
+    if (imageInsertBusy) return;
+    imageInsertState = null;
+    imageInsertError = null;
+  }
+
+  async function attachImageFile(file: File): Promise<boolean> {
+    if (!isSupportedImageFile(file)) return false;
+    const context = getAppContext();
+    if (!context) {
+      toastStore.error('Media attachments are not ready');
+      return true;
+    }
+
+    focusShellPane();
+    const notePath = currentNotePath();
+    const localPath = (file as File & { path?: string }).path;
+    const options = { placement: 'cursor' as const, alt: altFromName(file.name) };
+    const result = localPath
+      ? await context.mediaAttachments.attachLocalImage(notePath, localPath, options)
+      : await context.mediaAttachments.attachImageBytes(
+          notePath,
+          file.name || 'pasted-image.png',
+          await file.arrayBuffer(),
+          options,
+        );
+
+    if (!result.ok) {
+      toastStore.error(`Image attach failed: ${result.error.message}`);
+      return true;
+    }
+    toastStore.success('Image attached');
+    return true;
+  }
+
+  async function attachImageUrl(url: string): Promise<boolean> {
+    if (!isImageUrl(url)) return false;
+    const context = getAppContext();
+    if (!context) {
+      toastStore.error('Media attachments are not ready');
+      return true;
+    }
+
+    focusShellPane();
+    const result = await context.mediaAttachments.attachRemoteImage(currentNotePath(), url.trim(), {
+      placement: 'cursor',
+      alt: altFromName(fileNameFromUrl(url.trim())),
+    });
+    if (!result.ok) {
+      toastStore.error(`Image download failed: ${result.error.message}`);
+      return true;
+    }
+    toastStore.success('Image downloaded');
+    return true;
+  }
+
+  function handleInsertImageRequest() {
+    if (!shellIsActive) return;
+    openImageInsertPopover({ mode: 'insert' });
+  }
+
+  async function chooseImageFileForPopover(): Promise<boolean> {
+    if (!imageInsertState || imageInsertBusy) return true;
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const selected = await open({
+        multiple: false,
+        filters: [{ name: 'Images', extensions: SUPPORTED_IMAGE_EXTENSIONS }],
+      });
+      const selectedPath = Array.isArray(selected) ? selected[0] : selected;
+      if (typeof selectedPath === 'string' && selectedPath) {
+        await handleImageInsertLocalPath(selectedPath);
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function handleImageInsertLocalPath(selectedPath: string): Promise<void> {
+    const state = imageInsertState;
+    if (!state || imageInsertBusy) return;
+    const context = getAppContext();
+    if (!context) {
+      imageInsertError = 'Media attachments are not ready';
+      toastStore.error(imageInsertError);
+      return;
+    }
+
+    imageInsertBusy = true;
+    imageInsertError = null;
+    try {
+      const alt = altFromName(selectedPath.split(/[\\/]/).pop() || 'image');
+      const result = state.mode === 'replace'
+        ? await context.mediaAttachments.importLocalImage(currentNotePath(), selectedPath, { alt })
+        : await context.mediaAttachments.attachLocalImage(currentNotePath(), selectedPath, {
+            placement: 'cursor',
+            alt,
+          });
+      handleImageInsertResult(state, result);
+    } finally {
+      imageInsertBusy = false;
+    }
+  }
+
+  async function handleImageInsertFile(file: File): Promise<void> {
+    const state = imageInsertState;
+    if (!state || imageInsertBusy) return;
+    if (!isSupportedImageFile(file)) {
+      imageInsertError = 'Choose a PNG, JPG, SVG, GIF, or WEBP image';
+      return;
+    }
+    const localPath = (file as File & { path?: string }).path;
+    if (localPath) {
+      await handleImageInsertLocalPath(localPath);
+      return;
+    }
+
+    const context = getAppContext();
+    if (!context) {
+      imageInsertError = 'Media attachments are not ready';
+      toastStore.error(imageInsertError);
+      return;
+    }
+
+    imageInsertBusy = true;
+    imageInsertError = null;
+    try {
+      const originalName = file.name || 'pasted-image.png';
+      const alt = altFromName(originalName);
+      const bytes = await file.arrayBuffer();
+      const result = state.mode === 'replace'
+        ? await context.mediaAttachments.importImageBytes(currentNotePath(), originalName, bytes, { alt })
+        : await context.mediaAttachments.attachImageBytes(currentNotePath(), originalName, bytes, {
+            placement: 'cursor',
+            alt,
+          });
+      handleImageInsertResult(state, result);
+    } finally {
+      imageInsertBusy = false;
+    }
+  }
+
+  async function handleImageInsertUrl(url: string): Promise<void> {
+    const state = imageInsertState;
+    if (!state || imageInsertBusy) return;
+    const trimmed = url.trim();
+    if (!isHttpsUrl(trimmed)) {
+      imageInsertError = 'Use an HTTPS image URL';
+      return;
+    }
+    const context = getAppContext();
+    if (!context) {
+      imageInsertError = 'Media attachments are not ready';
+      toastStore.error(imageInsertError);
+      return;
+    }
+
+    imageInsertBusy = true;
+    imageInsertError = null;
+    try {
+      const alt = altFromName(fileNameFromUrl(trimmed));
+      const result = state.mode === 'replace'
+        ? await context.mediaAttachments.downloadImage(currentNotePath(), trimmed, { alt })
+        : await context.mediaAttachments.attachRemoteImage(currentNotePath(), trimmed, {
+            placement: 'cursor',
+            alt,
+          });
+      handleImageInsertResult(state, result);
+    } finally {
+      imageInsertBusy = false;
+    }
+  }
+
+  function handleImageInsertResult(
+    state: ImageInsertState,
+    result: { ok: true; value: MediaAttachmentResult } | { ok: false; error: Error },
+  ): void {
+    if (!result.ok) {
+      imageInsertError = result.error.message;
+      toastStore.error(state.mode === 'replace'
+        ? `Image replace failed: ${result.error.message}`
+        : `Image attach failed: ${result.error.message}`);
+      return;
+    }
+
+    if (state.mode === 'replace') {
+      replaceImageBlockFromAttachment(state.image, result.value);
+      toastStore.success('Image replaced');
+    } else {
+      toastStore.success('Image attached');
+    }
+    imageInsertState = null;
+    imageInsertError = null;
+  }
+
+  function replaceImageBlockFromAttachment(
+    image: ImageBlockToolbarRequest,
+    attachment: MediaAttachmentResult,
+  ): void {
+    const originalName = attachment.asset.originalName
+      || attachment.asset.fileName
+      || attachment.markdownPath.split('/').pop()
+      || 'image';
+    const nextAlt = image.alt?.trim() ? image.alt : altFromName(originalName);
+    const nextImage: ImageBlockToolbarRequest = {
+      ...image,
+      src: attachment.markdownPath,
+      alt: nextAlt || null,
+    };
+
+    focusShellPane();
+    editorStore.updateImageBlockAttrs(image.blockId, {
+      src: attachment.markdownPath,
+      alt: nextAlt || null,
+      title: image.title,
+      caption: image.caption,
+      width: image.width,
+    });
+    activeImageBlock = nextImage;
+    imageDetailsTarget = null;
+    editorStore.focus();
+  }
+
+  async function handleImagePaste(event: ClipboardEvent) {
+    if (!shellIsActive) return;
+    const files = Array.from(event.clipboardData?.files ?? []);
+    const imageFile = files.find(isSupportedImageFile);
+    if (imageFile) {
+      event.preventDefault();
+      await attachImageFile(imageFile);
+      return;
+    }
+
+    const text = event.clipboardData?.getData('text/plain')?.trim();
+    if (text && isImageUrl(text)) {
+      event.preventDefault();
+      await attachImageUrl(text);
+    }
+  }
+
+  function handleImageDragOver(event: DragEvent) {
+    const files = Array.from(event.dataTransfer?.items ?? []);
+    const hasImage = files.some((item) => item.kind === 'file' && (
+      SUPPORTED_IMAGE_MIME.has(item.type) || item.type.startsWith('image/')
+    ));
+    if (hasImage) {
+      event.preventDefault();
+      event.dataTransfer!.dropEffect = 'copy';
+    }
+  }
+
+  async function handleImageDrop(event: DragEvent) {
+    if (!shellIsActive) return;
+    const files = Array.from(event.dataTransfer?.files ?? []);
+    const imageFile = files.find(isSupportedImageFile);
+    if (imageFile) {
+      event.preventDefault();
+      await attachImageFile(imageFile);
+      return;
+    }
+
+    const text = event.dataTransfer?.getData('text/plain')?.trim();
+    if (text && isImageUrl(text)) {
+      event.preventDefault();
+      await attachImageUrl(text);
+    }
+  }
+
+  function handleImageBlockUI(event: Event): void {
+    if (!shellIsActive) return;
+    const detail = (event as CustomEvent<ImageBlockToolbarRequest>).detail;
+    if (!detail?.blockId) return;
+    activeImageBlock = detail;
+  }
+
+  function assetPathForImage(image: ImageBlockToolbarRequest): string | null {
+    return resolveAssetReference(image.src);
+  }
+
+  async function downloadImageCopy(image: ImageBlockToolbarRequest): Promise<void> {
+    const relativePath = assetPathForImage(image);
+    if (!relativePath) {
+      toastStore.error('Only workspace image assets can be downloaded');
+      return;
+    }
+    const context = getAppContext();
+    if (!context) {
+      toastStore.error('Media attachments are not ready');
+      return;
+    }
+
+    try {
+      const { save } = await import('@tauri-apps/plugin-dialog');
+      const fileName = relativePath.split('/').pop() || 'image';
+      const destination = await save({ defaultPath: fileName });
+      if (!destination) return;
+      const result = await context.mediaAttachments.saveAssetAs(relativePath, destination);
+      if (!result.ok) toastStore.error(`Download failed: ${result.error.message}`);
+      else toastStore.success('Image copy downloaded');
+    } catch (error) {
+      toastStore.error(`Download failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  async function showImageInFinder(image: ImageBlockToolbarRequest): Promise<void> {
+    const relativePath = assetPathForImage(image);
+    if (!relativePath) {
+      toastStore.error('Only workspace image assets can be shown in Finder');
+      return;
+    }
+    const context = getAppContext();
+    if (!context) {
+      toastStore.error('Media attachments are not ready');
+      return;
+    }
+
+    const metadata = await context.mediaAttachments.listAssets();
+    if (!metadata.ok) {
+      toastStore.error(`Show in Finder failed: ${metadata.error.message}`);
+      return;
+    }
+    const asset = metadata.value.find((item) => item.relativePath === relativePath);
+    if (!asset?.absolutePath) {
+      toastStore.error('Asset file path is unavailable');
+      return;
+    }
+    try {
+      const { revealItemInDir } = await import('@tauri-apps/plugin-opener');
+      await revealItemInDir(asset.absolutePath);
+    } catch (error) {
+      toastStore.error(`Show in Finder failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  async function copyImageMarkdownPath(image: ImageBlockToolbarRequest): Promise<void> {
+    const copied = await copyTextToClipboard(image.src);
+    if (copied) toastStore.info('Markdown path copied');
+    else toastStore.error('Failed to copy Markdown path');
+  }
+
+  async function copyImageAttribution(image: ImageBlockToolbarRequest): Promise<void> {
+    const relativePath = assetPathForImage(image);
+    if (!relativePath) {
+      toastStore.info('No workspace attribution is recorded for this image');
+      return;
+    }
+    const context = getAppContext();
+    if (!context) {
+      toastStore.error('Media attachments are not ready');
+      return;
+    }
+
+    const metadata = await context.mediaAttachments.listAssets();
+    if (!metadata.ok) {
+      toastStore.error(`Attribution lookup failed: ${metadata.error.message}`);
+      return;
+    }
+    const asset = metadata.value.find((item) => item.relativePath === relativePath);
+    const lines = [
+      asset?.creator ? `Creator: ${asset.creator}` : null,
+      asset?.license ? `License: ${asset.license}` : null,
+      asset?.sourceUrl ? `Source: ${asset.sourceUrl}` : null,
+      asset?.finalUrl && asset.finalUrl !== asset.sourceUrl ? `Final URL: ${asset.finalUrl}` : null,
+      asset?.fetchedAt ? `Fetched: ${asset.fetchedAt}` : null,
+    ].filter((line): line is string => Boolean(line));
+
+    if (lines.length === 0) {
+      toastStore.info('No attribution is recorded for this image');
+      return;
+    }
+
+    const copied = await copyTextToClipboard(lines.join('\n'));
+    if (copied) toastStore.info('Attribution copied');
+    else toastStore.error('Failed to copy attribution');
+  }
+
+  function openImageDetails(image: ImageBlockToolbarRequest): void {
+    imageDetailsTarget = image;
+  }
+
+  function saveImageDetails(attrs: ImageBlockAttrsUpdate): void {
+    const image = imageDetailsTarget;
+    if (!image) return;
+    focusShellPane();
+    editorStore.updateImageBlockAttrs(image.blockId, attrs);
+    const nextImage = { ...image, ...attrs };
+    activeImageBlock = nextImage;
+    imageDetailsTarget = null;
+    toastStore.success('Image details updated');
+    editorStore.focus();
+  }
+
+  function removeImageBlock(image: ImageBlockToolbarRequest): void {
+    focusShellPane();
+    editorStore.deleteBlock(image.blockId);
+    activeImageBlock = null;
+    imageDetailsTarget = null;
+    toastStore.info('Image block removed. Press Cmd+Z to undo');
+    editorStore.focus();
   }
 
   function handleBlockMenuAction(action: BlockMenuAction) {
@@ -917,6 +1422,8 @@
 
   function handleEditorScroll() {
     pauseAIFollow();
+    activeImageBlock = null;
+    imageDetailsTarget = null;
     refreshInlineAIMarkers();
     refreshInlineAIComposerPositions();
   }
@@ -1237,6 +1744,8 @@
     mountedPaneId = paneId ?? LEGACY_EDITOR_PANE_ID;
     window.addEventListener('resize', refreshInlineAIComposerPositions);
     window.addEventListener('void:inline-ai-thread-action', handleInlineAIAction);
+    window.addEventListener(IMAGE_BLOCK_UI_EVENT, handleImageBlockUI as EventListener);
+    events.on('editor:request-insert-image', handleInsertImageRequest);
     void tick().then(() => {
       if (destroyed || doc.meta.protection?.lockState === 'locked' || !editorContainer?.isConnected) return;
       const docKey = mountKeyFor(doc);
@@ -1248,6 +1757,8 @@
     return () => {
       window.removeEventListener('resize', refreshInlineAIComposerPositions);
       window.removeEventListener('void:inline-ai-thread-action', handleInlineAIAction);
+      window.removeEventListener(IMAGE_BLOCK_UI_EVENT, handleImageBlockUI as EventListener);
+      events.off('editor:request-insert-image', handleInsertImageRequest);
     };
   });
 
@@ -1457,6 +1968,9 @@
             onkeydown={handleEditorUserIntent}
             onbeforeinput={handleEditorUserIntent}
             onpointerdown={handleEditorUserIntent}
+            onpaste={handleImagePaste}
+            ondragover={handleImageDragOver}
+            ondrop={handleImageDrop}
             onclick={handleEditorClick}
           ></div>
         {/if}
@@ -1612,6 +2126,61 @@
       aiUnavailableMessage={aiStore.availabilityMessage ?? AI_UNAVAILABLE_MESSAGE}
       onAIUnavailable={showAIUnavailableMessage}
     />
+
+    {#if imageInsertState}
+      <ImageInsertPopover
+        mode={imageInsertState.mode}
+        busy={imageInsertBusy}
+        error={imageInsertError}
+        onClose={closeImageInsertPopover}
+        onChooseFile={chooseImageFileForPopover}
+        onAttachUrl={handleImageInsertUrl}
+        onAttachFile={handleImageInsertFile}
+      />
+    {/if}
+
+    {#if activeImageBlock && !imageDetailsTarget}
+      {@const workspaceAssetPath = assetPathForImage(activeImageBlock)}
+      <ImageBlockToolbar
+        image={activeImageBlock}
+        canReveal={Boolean(workspaceAssetPath)}
+        hasAttribution={Boolean(workspaceAssetPath)}
+        onReplace={() => {
+          if (activeImageBlock) openImageInsertPopover({ mode: 'replace', image: activeImageBlock });
+        }}
+        onDetails={() => {
+          if (activeImageBlock) openImageDetails(activeImageBlock);
+        }}
+        onDownload={() => {
+          if (activeImageBlock) void downloadImageCopy(activeImageBlock);
+        }}
+        onCopyPath={() => {
+          if (activeImageBlock) void copyImageMarkdownPath(activeImageBlock);
+        }}
+        onCopyAttribution={() => {
+          if (activeImageBlock) void copyImageAttribution(activeImageBlock);
+        }}
+        onReveal={() => {
+          if (activeImageBlock) void showImageInFinder(activeImageBlock);
+        }}
+        onRemove={() => {
+          if (activeImageBlock) removeImageBlock(activeImageBlock);
+        }}
+        onClose={() => {
+          activeImageBlock = null;
+        }}
+      />
+    {/if}
+
+    {#if imageDetailsTarget}
+      <ImageDetailsPopover
+        image={imageDetailsTarget}
+        onClose={() => {
+          imageDetailsTarget = null;
+        }}
+        onSave={saveImageDetails}
+      />
+    {/if}
 
     {#if pageLinkState}
       <PageLinkPopup

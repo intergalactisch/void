@@ -61,6 +61,7 @@ describe('GitHub sync domain values', () => {
     expect(DEFAULT_SYNC_ARTIFACT_POLICY.includePatterns).toContain('.void/provenance/**');
     expect(DEFAULT_SYNC_ARTIFACT_POLICY.includePatterns).toContain('.void/lineage/**');
     expect(DEFAULT_SYNC_ARTIFACT_POLICY.includePatterns).toContain('.void/conversations/**');
+    expect(DEFAULT_SYNC_ARTIFACT_POLICY.includePatterns).toContain('assets/**');
     expect(DEFAULT_SYNC_ARTIFACT_POLICY.includePatterns).toContain('.void/repo.json');
     expect(DEFAULT_SYNC_ARTIFACT_POLICY.excludePatterns).toContain('.void/index/**');
     expect(DEFAULT_SYNC_ARTIFACT_POLICY.excludePatterns).toContain('.void/insights/pending.json');

@@ -126,6 +126,22 @@ describe('noteWorkspaceStore split pane operations', () => {
     expect(noteWorkspaceStore.activeNotePath).toBe('alpha.md');
   });
 
+  it('opens an empty tab with a placeholder pane that can be filled', () => {
+    noteWorkspaceStore.openNoteTab('alpha.md');
+
+    const id = noteWorkspaceStore.openEmptyTab();
+
+    expect(noteWorkspaceStore.activeTabId).toBe(id);
+    expect(noteWorkspaceStore.tabs).toHaveLength(2);
+    const tab = noteWorkspaceStore.activeTab!;
+    expect(tab.root.type).toBe('leaf');
+    expect(noteWorkspaceStore.activeNotePath).toBeNull();
+
+    noteWorkspaceStore.setPaneNote(tab.id, tab.activePaneId, 'beta.md');
+    expect(noteWorkspaceStore.activeNotePath).toBe('beta.md');
+    expect(noteWorkspaceStore.tabs).toHaveLength(2);
+  });
+
   it('splits a target pane with a concrete note and focuses the new pane', () => {
     noteWorkspaceStore.openNoteTab('alpha.md');
     const tab = noteWorkspaceStore.activeTab!;
@@ -302,7 +318,7 @@ describe('noteWorkspaceStore split pane operations', () => {
     expect(new Set(allWorkspaceNotePaths()).size).toBe(allWorkspaceNotePaths().length);
   });
 
-  it('adds a note to the right edge of a horizontal layout as equal columns', () => {
+  it('adds a note to the right edge by wrapping the layout without rebalancing', () => {
     noteWorkspaceStore.openNoteTab('alpha.md');
     let tab = noteWorkspaceStore.activeTab!;
     noteWorkspaceStore.splitPaneWithNote(tab.id, tab.activePaneId, 'right', 'beta.md');
@@ -317,14 +333,23 @@ describe('noteWorkspaceStore split pane operations', () => {
       'beta.md',
       'gamma.md',
     ]);
-    const widths = collectEffectiveWidths(noteWorkspaceStore.activeTab!.root);
+    const root = noteWorkspaceStore.activeTab!.root;
+    expect(root.type).toBe('split');
+    if (root.type !== 'split') return;
+    expect(root.direction).toBe('horizontal');
+    expect(root.sizes[0]).toBeCloseTo(50, 4);
+    expect(root.sizes[1]).toBeCloseTo(50, 4);
+    expect(collectPathsFromNode(root.children[0])).toEqual(['alpha.md', 'beta.md']);
+    expect(collectPathsFromNode(root.children[1])).toEqual(['gamma.md']);
+    // Newcomer takes half; the existing two share the other half (no equal-thirds rebalance).
+    const widths = collectEffectiveWidths(root);
     expect(widths).toHaveLength(3);
-    for (const width of widths) {
-      expect(width).toBeCloseTo(100 / 3, 4);
-    }
+    expect(widths[0]).toBeCloseTo(25, 4);
+    expect(widths[1]).toBeCloseTo(25, 4);
+    expect(widths[2]).toBeCloseTo(50, 4);
   });
 
-  it('adds a note to the bottom edge of a vertical layout as equal rows', () => {
+  it('adds a note to the bottom edge by wrapping the layout without rebalancing', () => {
     noteWorkspaceStore.openNoteTab('alpha.md');
     let tab = noteWorkspaceStore.activeTab!;
     noteWorkspaceStore.splitPaneWithNote(tab.id, tab.activePaneId, 'bottom', 'beta.md');
@@ -338,11 +363,17 @@ describe('noteWorkspaceStore split pane operations', () => {
       'beta.md',
       'gamma.md',
     ]);
-    const heights = collectEffectiveHeights(noteWorkspaceStore.activeTab!.root);
+    const root = noteWorkspaceStore.activeTab!.root;
+    expect(root.type).toBe('split');
+    if (root.type !== 'split') return;
+    expect(root.direction).toBe('vertical');
+    expect(root.sizes[0]).toBeCloseTo(50, 4);
+    expect(root.sizes[1]).toBeCloseTo(50, 4);
+    const heights = collectEffectiveHeights(root);
     expect(heights).toHaveLength(3);
-    for (const height of heights) {
-      expect(height).toBeCloseTo(100 / 3, 4);
-    }
+    expect(heights[0]).toBeCloseTo(25, 4);
+    expect(heights[1]).toBeCloseTo(25, 4);
+    expect(heights[2]).toBeCloseTo(50, 4);
   });
 
   it('wraps a mixed layout when adding to an outer edge', () => {
@@ -360,8 +391,9 @@ describe('noteWorkspaceStore split pane operations', () => {
     expect(root.type).toBe('split');
     if (root.type !== 'split') return;
     expect(root.direction).toBe('horizontal');
-    expect(root.sizes[0]).toBeCloseTo(75, 4);
-    expect(root.sizes[1]).toBeCloseTo(25, 4);
+    // The previous layout is wrapped intact on one side at a fixed 50/50 — no proportional rebalance.
+    expect(root.sizes[0]).toBeCloseTo(50, 4);
+    expect(root.sizes[1]).toBeCloseTo(50, 4);
     expect(collectPathsFromNode(root.children[0])).toEqual(['alpha.md', 'beta.md', 'gamma.md']);
     expect(collectPathsFromNode(root.children[1])).toEqual(['delta.md']);
   });
@@ -381,7 +413,7 @@ describe('noteWorkspaceStore split pane operations', () => {
     expect(noteWorkspaceStore.getNotePaths(noteWorkspaceStore.activeTab!)).toEqual(['alpha.md', 'beta.md']);
   });
 
-  it('closing one pane from a four-column layout leaves equal effective widths', () => {
+  it('closing a pane detaches it and preserves the surrounding sizes', () => {
     noteWorkspaceStore.openNoteTab('alpha.md');
     let tab = noteWorkspaceStore.activeTab!;
     noteWorkspaceStore.splitPaneWithNote(tab.id, tab.activePaneId, 'right', 'beta.md');
@@ -405,14 +437,15 @@ describe('noteWorkspaceStore split pane operations', () => {
       'delta.md',
     ]);
     expect(noteWorkspaceStore.activeNotePath).toBe('gamma.md');
+    // alpha keeps its original half; beta's sibling subtree (gamma|delta) is promoted intact.
     const widths = collectEffectiveWidths(noteWorkspaceStore.activeTab!.root);
     expect(widths).toHaveLength(3);
-    for (const width of widths) {
-      expect(width).toBeCloseTo(100 / 3, 4);
-    }
+    expect(widths[0]).toBeCloseTo(50, 4);
+    expect(widths[1]).toBeCloseTo(25, 4);
+    expect(widths[2]).toBeCloseTo(25, 4);
   });
 
-  it('closing a pane from a mixed layout rebuilds a balanced tree in visual order', () => {
+  it('closing a pane from a mixed layout collapses to the surviving split', () => {
     noteWorkspaceStore.openNoteTab('alpha.md');
     let tab = noteWorkspaceStore.activeTab!;
     noteWorkspaceStore.splitPaneWithNote(tab.id, tab.activePaneId, 'right', 'beta.md');
@@ -530,7 +563,7 @@ describe('noteWorkspaceStore split pane operations', () => {
     }
   });
 
-  it('moving a pane from a mixed layout flattens the target axis into equal columns', () => {
+  it('moving a pane to a pane edge splits it locally without flattening', () => {
     noteWorkspaceStore.openNoteTab('alpha.md');
     let tab = noteWorkspaceStore.activeTab!;
     noteWorkspaceStore.splitPaneWithNote(tab.id, tab.activePaneId, 'right', 'beta.md');
@@ -550,13 +583,23 @@ describe('noteWorkspaceStore split pane operations', () => {
     ]);
     const root = noteWorkspaceStore.activeTab!.root;
     expect(root.type).toBe('split');
-    if (root.type === 'split') expect(root.direction).toBe('horizontal');
-    for (const width of collectEffectiveWidths(root)) {
-      expect(width).toBeCloseTo(100 / 3, 4);
+    if (root.type !== 'split') return;
+    expect(root.direction).toBe('horizontal');
+    // alpha is untouched on the left; beta gets a local horizontal split with gamma.
+    expect(root.children[0].type).toBe('leaf');
+    expect(collectPathsFromNode(root.children[0])).toEqual(['alpha.md']);
+    expect(root.children[1].type).toBe('split');
+    if (root.children[1].type === 'split') {
+      expect(root.children[1].direction).toBe('horizontal');
+      expect(collectPathsFromNode(root.children[1])).toEqual(['beta.md', 'gamma.md']);
     }
+    const widths = collectEffectiveWidths(root);
+    expect(widths[0]).toBeCloseTo(50, 4);
+    expect(widths[1]).toBeCloseTo(25, 4);
+    expect(widths[2]).toBeCloseTo(25, 4);
   });
 
-  it('edge-dropping a sidebar note into a mixed layout flattens the target axis', () => {
+  it('edge-dropping a note splits the target pane locally without flattening', () => {
     noteWorkspaceStore.openNoteTab('alpha.md');
     let tab = noteWorkspaceStore.activeTab!;
     noteWorkspaceStore.splitPaneWithNote(tab.id, tab.activePaneId, 'right', 'beta.md');
@@ -576,10 +619,15 @@ describe('noteWorkspaceStore split pane operations', () => {
     ]);
     const root = noteWorkspaceStore.activeTab!.root;
     expect(root.type).toBe('split');
-    if (root.type === 'split') expect(root.direction).toBe('horizontal');
-    for (const width of collectEffectiveWidths(root)) {
-      expect(width).toBeCloseTo(25, 4);
-    }
+    if (root.type !== 'split') return;
+    expect(root.direction).toBe('horizontal');
+    // Only beta is wrapped (beta|delta); alpha and gamma keep their places.
+    expect(collectPathsFromNode(root.children[0])).toEqual(['alpha.md']);
+    expect(root.children[1].type).toBe('split');
+    if (root.children[1].type !== 'split') return;
+    expect(root.children[1].direction).toBe('vertical');
+    expect(collectPathsFromNode(root.children[1].children[0])).toEqual(['beta.md', 'delta.md']);
+    expect(collectPathsFromNode(root.children[1].children[1])).toEqual(['gamma.md']);
   });
 
   it('moves a pane across tabs and closes an empty source tab', () => {
@@ -619,7 +667,7 @@ describe('noteWorkspaceStore split pane operations', () => {
     expect(noteWorkspaceStore.getNotePaths(noteWorkspaceStore.activeTab!)).toEqual(['beta.md', 'gamma.md']);
   });
 
-  it('cross-tab pane moves reflow the target layout and rebalance the source', () => {
+  it('cross-tab move collapses the source and splits the target locally', () => {
     noteWorkspaceStore.openNoteTab('alpha.md');
     let sourceTab = noteWorkspaceStore.activeTab!;
     noteWorkspaceStore.splitPaneWithNote(sourceTab.id, sourceTab.activePaneId, 'right', 'beta.md');
@@ -642,12 +690,20 @@ describe('noteWorkspaceStore split pane operations', () => {
     const target = noteWorkspaceStore.tabs.find((tab) => tab.id === targetTab.id)!;
     expect(noteWorkspaceStore.getNotePaths(source)).toEqual(['alpha.md', 'gamma.md']);
     expect(noteWorkspaceStore.getNotePaths(target)).toEqual(['delta.md', 'beta.md', 'epsilon.md']);
+    // Source collapses to its two survivors (alpha keeps its half).
     for (const width of collectEffectiveWidths(source.root)) {
       expect(width).toBeCloseTo(50, 4);
     }
-    for (const width of collectEffectiveWidths(target.root)) {
-      expect(width).toBeCloseTo(100 / 3, 4);
-    }
+    // Target splits delta locally (delta|beta); epsilon keeps its half.
+    const targetRoot = target.root;
+    expect(targetRoot.type).toBe('split');
+    if (targetRoot.type !== 'split') return;
+    expect(collectPathsFromNode(targetRoot.children[0])).toEqual(['delta.md', 'beta.md']);
+    expect(collectPathsFromNode(targetRoot.children[1])).toEqual(['epsilon.md']);
+    const widths = collectEffectiveWidths(targetRoot);
+    expect(widths[0]).toBeCloseTo(25, 4);
+    expect(widths[1]).toBeCloseTo(25, 4);
+    expect(widths[2]).toBeCloseTo(50, 4);
   });
 
   it('swaps panes within a tab without changing pane count', () => {
@@ -711,5 +767,93 @@ describe('noteWorkspaceStore split pane operations', () => {
     expect(noteWorkspaceStore.focusNextPane(1)).toBe('alpha.md');
     expect(noteWorkspaceStore.focusNextPane(1)).toBe('beta.md');
     expect(noteWorkspaceStore.focusNextPane(-1)).toBe('alpha.md');
+  });
+
+  it('moves the rightmost column below the first, keeping the third full height', () => {
+    // Build three columns: [alpha | beta | gamma].
+    noteWorkspaceStore.openNoteTab('alpha.md');
+    let tab = noteWorkspaceStore.activeTab!;
+    noteWorkspaceStore.splitPaneWithNote(tab.id, tab.activePaneId, 'right', 'beta.md');
+    tab = noteWorkspaceStore.activeTab!;
+    noteWorkspaceStore.splitPaneWithNote(tab.id, tab.activePaneId, 'right', 'gamma.md');
+    tab = noteWorkspaceStore.activeTab!;
+    const alphaPane = noteWorkspaceStore.getPanes(tab).find((pane) => pane.notePath === 'alpha.md')!;
+    const gammaPane = noteWorkspaceStore.getPanes(tab).find((pane) => pane.notePath === 'gamma.md')!;
+
+    // Drag gamma (rightmost) onto the bottom edge of alpha (first).
+    const result = noteWorkspaceStore.movePane(tab.id, gammaPane.paneId, tab.id, alphaPane.paneId, 'bottom');
+
+    expect(result.action).toBe('moved');
+    // Expected tree: split(h, [ split(v, [alpha, gamma]), beta ]).
+    const root = noteWorkspaceStore.activeTab!.root;
+    expect(root.type).toBe('split');
+    if (root.type !== 'split') return;
+    expect(root.direction).toBe('horizontal');
+    expect(root.children[0].type).toBe('split');
+    if (root.children[0].type === 'split') {
+      expect(root.children[0].direction).toBe('vertical');
+      expect(collectPathsFromNode(root.children[0])).toEqual(['alpha.md', 'gamma.md']);
+    }
+    expect(root.children[1].type).toBe('leaf');
+    expect(collectPathsFromNode(root.children[1])).toEqual(['beta.md']);
+    expect(noteWorkspaceStore.activeNotePath).toBe('gamma.md');
+    expect(noteWorkspaceStore.activePaneId).toBe(gammaPane.paneId);
+
+    // beta stays full height; alpha and gamma each take half of the left column.
+    const heights = collectEffectiveHeights(root); // visual order [alpha, gamma, beta]
+    expect(heights[0]).toBeCloseTo(50, 4);
+    expect(heights[1]).toBeCloseTo(50, 4);
+    expect(heights[2]).toBeCloseTo(100, 4);
+  });
+
+  it('preserves split sizes when closing a pane', () => {
+    noteWorkspaceStore.openNoteTab('alpha.md');
+    let tab = noteWorkspaceStore.activeTab!;
+    noteWorkspaceStore.splitPaneWithNote(tab.id, tab.activePaneId, 'right', 'beta.md');
+    tab = noteWorkspaceStore.activeTab!;
+    const rootSplit = tab.root;
+    if (rootSplit.type !== 'split') throw new Error('expected split');
+    // User drags the divider so alpha gets 70% width.
+    noteWorkspaceStore.setSplitSizes(tab.id, rootSplit.splitId, [70, 30]);
+    tab = noteWorkspaceStore.activeTab!;
+    const betaPane = noteWorkspaceStore.getPanes(tab).find((pane) => pane.notePath === 'beta.md')!;
+    // Split beta downward, then close the newcomer — the root 70/30 must survive.
+    noteWorkspaceStore.splitPaneWithNote(tab.id, betaPane.paneId, 'bottom', 'gamma.md');
+    tab = noteWorkspaceStore.activeTab!;
+    const gammaPane = noteWorkspaceStore.getPanes(tab).find((pane) => pane.notePath === 'gamma.md')!;
+
+    noteWorkspaceStore.closePane(tab.id, gammaPane.paneId);
+
+    const root = noteWorkspaceStore.activeTab!.root;
+    expect(root.type).toBe('split');
+    if (root.type !== 'split') return;
+    expect(collectPathsFromNode(root)).toEqual(['alpha.md', 'beta.md']);
+    expect(root.sizes[0]).toBeCloseTo(70, 4);
+    expect(root.sizes[1]).toBeCloseTo(30, 4);
+  });
+
+  it('round-trips a pane move back to its original layout', () => {
+    noteWorkspaceStore.openNoteTab('alpha.md');
+    let tab = noteWorkspaceStore.activeTab!;
+    noteWorkspaceStore.splitPaneWithNote(tab.id, tab.activePaneId, 'right', 'beta.md');
+    tab = noteWorkspaceStore.activeTab!;
+    const alphaPane = noteWorkspaceStore.getPanes(tab).find((pane) => pane.notePath === 'alpha.md')!;
+    let betaPane = noteWorkspaceStore.getPanes(tab).find((pane) => pane.notePath === 'beta.md')!;
+
+    noteWorkspaceStore.movePane(tab.id, alphaPane.paneId, tab.id, betaPane.paneId, 'right');
+    expect(noteWorkspaceStore.getNotePaths(noteWorkspaceStore.activeTab!)).toEqual(['beta.md', 'alpha.md']);
+
+    tab = noteWorkspaceStore.activeTab!;
+    betaPane = noteWorkspaceStore.getPanes(tab).find((pane) => pane.notePath === 'beta.md')!;
+    noteWorkspaceStore.movePane(tab.id, alphaPane.paneId, tab.id, betaPane.paneId, 'left');
+
+    expect(noteWorkspaceStore.getNotePaths(noteWorkspaceStore.activeTab!)).toEqual(['alpha.md', 'beta.md']);
+    const root = noteWorkspaceStore.activeTab!.root;
+    expect(root.type).toBe('split');
+    if (root.type === 'split') {
+      expect(root.direction).toBe('horizontal');
+      expect(root.children[0].type).toBe('leaf');
+      expect(root.children[1].type).toBe('leaf');
+    }
   });
 });

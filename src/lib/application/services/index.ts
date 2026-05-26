@@ -11,6 +11,7 @@
 export { SettingsServiceImpl } from './SettingsServiceImpl';
 export { WorkspaceServiceImpl } from './WorkspaceServiceImpl';
 export { FileServiceImpl } from './FileServiceImpl';
+export { MediaAttachmentServiceImpl } from './MediaAttachmentServiceImpl';
 export { CredentialServiceImpl } from './CredentialServiceImpl';
 export { ProtectionRuntime } from './ProtectionRuntime';
 export { ProtectionServiceImpl } from './ProtectionServiceImpl';

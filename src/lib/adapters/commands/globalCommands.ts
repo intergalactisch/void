@@ -26,6 +26,7 @@ import {
   toastStore,
   syncStore,
   todoStore,
+  noteWorkspaceStore,
 } from '$lib/stores';
 import { TOKENS } from '$lib/core';
 import { getAppContext } from '$lib/bootstrap';
@@ -158,6 +159,20 @@ export function createGlobalCommands(): RegisteredCommand[] {
       execute: () => {
         uiStore.openQuickSwitcher();
       },
+    },
+    {
+      id: 'layout.balance',
+      label: 'Balance Layout',
+      keywords: ['balance', 'even', 'distribute', 'equal', 'pane', 'split', 'layout'],
+      category: 'view',
+      icon: 'layout',
+      description: 'Evenly redistribute the panes in the active layout',
+      scope: ['global'],
+      execute: () => {
+        const tabId = noteWorkspaceStore.activeTabId;
+        if (tabId) noteWorkspaceStore.balanceTab(tabId);
+      },
+      runWhen: () => noteWorkspaceStore.isActiveTabSplit,
     },
     {
       id: 'editor.referenceNote',

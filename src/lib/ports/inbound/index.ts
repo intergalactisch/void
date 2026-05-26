@@ -18,6 +18,14 @@ export type {
 } from './WorkspaceService';
 export type { FileService } from './FileService';
 export type {
+  MediaAttachmentBatchResult,
+  MediaAttachmentFailure,
+  MediaAttachmentOptions,
+  MediaAttachmentResult,
+  MediaAttachmentService,
+  MediaOrphanReport,
+} from './MediaAttachmentService';
+export type {
   AIContextAuthorizationRequest,
   ProtectionService,
   ProtectionStatus,

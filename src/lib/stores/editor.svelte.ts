@@ -16,7 +16,7 @@ import type { DocumentMeta, Selection } from '$lib/domain/values';
 import { EMPTY_SELECTION } from '$lib/domain/values';
 import { events } from '$lib/events';
 import type { BlockType } from '$lib/domain/values/BlockType';
-import type { EditorInlineAIComposerView, EditorMenuPosition, EditorPageLinkNote, RegisteredCommand } from '$lib/ports/outbound';
+import type { EditorImageBlockAttrs, EditorInlineAIComposerView, EditorMenuPosition, EditorPageLinkNote, RegisteredCommand } from '$lib/ports/outbound';
 
 /**
  * Operation result for tracking the last completed operation.
@@ -867,6 +867,10 @@ class EditorStore {
 
   insertContentAfterBlock(blockId: string, markdown: string) {
     this.#service?.insertContentAfterBlock(blockId, markdown);
+  }
+
+  updateImageBlockAttrs(blockId: string, attrs: EditorImageBlockAttrs) {
+    this.#service?.updateImageBlockAttrs(blockId, attrs);
   }
 
   getAILockedBlocks(): string[] {

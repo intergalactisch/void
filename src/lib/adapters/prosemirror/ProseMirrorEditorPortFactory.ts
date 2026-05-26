@@ -20,6 +20,7 @@ export class ProseMirrorEditorPortFactory implements EditorPortFactory {
     if (options.onPageLinkClick) adapterOptions.onPageLinkClick = options.onPageLinkClick;
     if (options.onExternalLinkClick) adapterOptions.onExternalLinkClick = options.onExternalLinkClick;
     if (options.onTodoToggle) adapterOptions.onTodoToggle = options.onTodoToggle;
+    if (options.resolveImageSrc) adapterOptions.resolveImageSrc = options.resolveImageSrc;
     if (options.onAIInlineGenerate) adapterOptions.onAIInlineGenerate = options.onAIInlineGenerate;
     if (options.onBlockMenuRequest) {
       adapterOptions.onMenuClick = (blockId, lineIndex, event) => {

@@ -18,6 +18,7 @@ export type ToolNamespace =
   | 'note'          // Note CRUD + organization
   | 'editor'        // Editor manipulation
   | 'search'        // Search operations
+  | 'media'         // Durable media assets
   | 'navigation'    // Navigation between views
   | 'todo'          // Todo operations
   | 'content'       // Content generation
@@ -58,7 +59,7 @@ export function parseToolId(id: string): { namespace: ToolNamespace; action: str
 
   const [namespace, action] = parts;
   const validNamespaces: ToolNamespace[] = [
-    'note', 'editor', 'search', 'navigation', 'todo', 'content',
+    'note', 'editor', 'search', 'media', 'navigation', 'todo', 'content',
     'transform', 'intelligence', 'action', 'lineage', 'commitment',
     'fs', 'system', 'ai', 'custom',
   ];
@@ -123,6 +124,12 @@ export const TOOL_IDS = {
   SEARCH_NOTES: createToolId('search', 'notes'),
   SEARCH_CONTENT: createToolId('search', 'content'),
   SEARCH_MEDIA: createToolId('search', 'media'),
+
+  // Media tools
+  MEDIA_ATTACH_IMAGE: createToolId('media', 'attach-image'),
+  MEDIA_LIST_ASSETS: createToolId('media', 'list-assets'),
+  MEDIA_DOWNLOAD_IMAGE: createToolId('media', 'download-image'),
+  MEDIA_CLEANUP_ORPHANS: createToolId('media', 'cleanup-orphans'),
 
   // Navigation tools
   NAV_GOTO: createToolId('navigation', 'goto'),
