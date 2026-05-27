@@ -32,7 +32,7 @@ export { aiStore } from './ai.svelte';
 export { conversationStore } from './conversation.svelte';
 export { toolStore } from './tools.svelte';
 export { commandCenterStore } from './commandCenter.svelte';
-export type { CommandInspectorMode } from './commandCenter.svelte';
+export type { CommandStreamDensity } from './commandCenter.svelte';
 
 // TODO store
 export { getTodoViewLabel, todoStore } from './todo.svelte';

@@ -40,6 +40,8 @@ export type EventMap = {
     | { view: 'tag'; tag: string | null }
     | { view: 'search'; query?: string }
     | { view: 'tasks' }
+    | { view: 'trash' }
+    | { view: 'workspaces' }
     | { view: 'actions' }
     | { view: 'settings' }
     | { view: 'back' }

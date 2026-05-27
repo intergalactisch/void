@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { noteWorkspaceStore, notesStore } from '$lib/stores';
   import OpenNoteIndicator from '$lib/components/shared/OpenNoteIndicator.svelte';
   import { FileSearch, X } from '@lucide/svelte';
@@ -16,6 +16,9 @@
   let query = $state('');
   let selectedIndex = $state(0);
   let inputElement: HTMLInputElement | null = $state(null);
+  let previousQuery = $state('');
+
+  const listboxId = $derived(`split-note-results-${paneId}`);
 
   const filteredNotes = $derived.by(() => {
     const needle = query.trim().toLowerCase();
@@ -28,11 +31,23 @@
       })
       .slice(0, 40);
   });
+  const activeResultId = $derived(filteredNotes[selectedIndex] ? `split-note-result-${paneId}-${selectedIndex}` : undefined);
 
   $effect(() => {
+    if (query !== previousQuery) {
+      previousQuery = query;
+      selectedIndex = 0;
+      return;
+    }
     if (selectedIndex >= filteredNotes.length) {
       selectedIndex = Math.max(0, filteredNotes.length - 1);
     }
+  });
+
+  $effect(() => {
+    selectedIndex;
+    filteredNotes;
+    void scrollSelectedIntoView();
   });
 
   function isEmptyPlaceholderPane(): boolean {
@@ -65,12 +80,25 @@
   function handleKeydown(event: KeyboardEvent): void {
     if (event.key === 'ArrowDown') {
       event.preventDefault();
+      if (filteredNotes.length === 0) return;
       selectedIndex = Math.min(filteredNotes.length - 1, selectedIndex + 1);
       return;
     }
     if (event.key === 'ArrowUp') {
       event.preventDefault();
+      if (filteredNotes.length === 0) return;
       selectedIndex = Math.max(0, selectedIndex - 1);
+      return;
+    }
+    if (event.key === 'Home') {
+      event.preventDefault();
+      selectedIndex = 0;
+      return;
+    }
+    if (event.key === 'End') {
+      event.preventDefault();
+      if (filteredNotes.length === 0) return;
+      selectedIndex = Math.max(0, filteredNotes.length - 1);
       return;
     }
     if (event.key === 'Enter') {
@@ -85,6 +113,12 @@
     }
   }
 
+  async function scrollSelectedIntoView(): Promise<void> {
+    await tick();
+    if (!activeResultId) return;
+    document.getElementById(activeResultId)?.scrollIntoView({ block: 'nearest' });
+  }
+
   function folderCrumb(path: string): string {
     const parts = path.split('/');
     if (parts.length <= 1) return '';
@@ -96,7 +130,8 @@
   });
 </script>
 
-<div class="split-note-picker">
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="split-note-picker" onkeydown={handleKeydown}>
   <div class="split-note-search">
     <FileSearch size={15} strokeWidth={1.8} aria-hidden="true" />
     <input
@@ -105,7 +140,8 @@
       bind:value={query}
       placeholder="Open note in pane"
       aria-label="Open note in pane"
-      onkeydown={handleKeydown}
+      aria-controls={listboxId}
+      aria-activedescendant={activeResultId}
     />
     {#if onCancel}
       <button type="button" class="split-note-cancel" onclick={onCancel} aria-label="Cancel">
@@ -114,7 +150,7 @@
     {/if}
   </div>
 
-  <div class="split-note-results" role="listbox" aria-label="Notes">
+  <div id={listboxId} class="split-note-results" role="listbox" aria-label="Notes">
     {#each filteredNotes as note, index (note.path)}
       <button
         type="button"
@@ -122,6 +158,7 @@
         class:active={index === selectedIndex}
         role="option"
         aria-selected={index === selectedIndex}
+        id={`split-note-result-${paneId}-${index}`}
         data-note-path={note.path}
         onmouseenter={() => { selectedIndex = index; }}
         onclick={() => pick(note.path)}

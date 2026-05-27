@@ -38,6 +38,7 @@
     IMAGE_BLOCK_UI_EVENT,
     type ImageBlockAttrsUpdate,
     type ImageBlockToolbarRequest,
+    type ImageBlockUIEvent,
   } from '$lib/adapters/prosemirror/views/BlockNodeView';
   import {
     SlashMenu,
@@ -151,7 +152,41 @@
   let imageInsertError: string | null = $state(null);
   let activeImageBlock: ImageBlockToolbarRequest | null = $state(null);
   let imageDetailsTarget: ImageBlockToolbarRequest | null = $state(null);
+  // Hover-driven toolbar: the figure reports pointer/focus, the toolbar reports
+  // its own pointer + open menu. `imageToolbarVisible` lags the intent by a
+  // short delay so the pointer can cross the gap between image and toolbar.
+  let imageHoverFigure = $state(false);
+  let imageHoverToolbar = $state(false);
+  let imageFigureFocused = $state(false);
+  let imageMenuOpen = $state(false);
+  let imageToolbarVisible = $state(false);
+  let imageToolbarHideTimer: ReturnType<typeof setTimeout> | null = null;
   const inlineAIComposerDrafts = new Map<string, string>();
+
+  // The toolbar is wanted while the image/toolbar is hovered or focused, or its
+  // menu is open — and never while a popover already covers the image.
+  const wantImageToolbar = $derived(
+    !!activeImageBlock
+      && !imageDetailsTarget
+      && imageInsertState === null
+      && (imageHoverFigure || imageHoverToolbar || imageFigureFocused || imageMenuOpen),
+  );
+
+  $effect(() => {
+    if (wantImageToolbar) {
+      if (imageToolbarHideTimer) {
+        clearTimeout(imageToolbarHideTimer);
+        imageToolbarHideTimer = null;
+      }
+      imageToolbarVisible = true;
+    } else if (activeImageBlock && imageToolbarHideTimer === null) {
+      imageToolbarHideTimer = setTimeout(() => {
+        imageToolbarHideTimer = null;
+        imageToolbarVisible = false;
+        if (!imageDetailsTarget && imageInsertState === null) activeImageBlock = null;
+      }, 140);
+    }
+  });
 
   const slashMenuState = $derived.by(() =>
     (editorStore.slashMenuState as SlashMenuState | null) ?? DEFAULT_SLASH_MENU_STATE
@@ -389,7 +424,13 @@
 
   function openImageInsertPopover(state: ImageInsertState = { mode: 'insert' }): void {
     focusShellPane();
-    imageInsertState = state;
+    resetImageToolbarState();
+    if (state.mode === 'replace') {
+      const rect = imageFigureRect(state.image.blockId) ?? state.image.rect;
+      imageInsertState = { mode: 'replace', image: { ...state.image, rect } };
+    } else {
+      imageInsertState = state;
+    }
     imageInsertError = null;
   }
 
@@ -664,9 +705,50 @@
 
   function handleImageBlockUI(event: Event): void {
     if (!shellIsActive) return;
-    const detail = (event as CustomEvent<ImageBlockToolbarRequest>).detail;
-    if (!detail?.blockId) return;
-    activeImageBlock = detail;
+    const detail = (event as CustomEvent<ImageBlockUIEvent>).detail;
+    if (!detail) return;
+    switch (detail.kind) {
+      case 'show':
+        activeImageBlock = detail.request;
+        imageHoverFigure = true;
+        break;
+      case 'focus':
+        activeImageBlock = detail.request;
+        imageFigureFocused = true;
+        break;
+      case 'hide':
+        // Ignore a trailing leave from an image we already moved off of.
+        if (activeImageBlock?.blockId === detail.blockId) imageHoverFigure = false;
+        break;
+      case 'blur':
+        if (activeImageBlock?.blockId === detail.blockId) imageFigureFocused = false;
+        break;
+    }
+  }
+
+  /** Re-read the on-screen rect of an image block so overlays sit on it exactly. */
+  function imageFigureRect(blockId: string): ImageBlockToolbarRequest['rect'] | null {
+    const figure = editorContainer?.querySelector(
+      `[data-block-id="${CSS.escape(blockId)}"] figure.void-image`,
+    ) as HTMLElement | null;
+    if (!figure) return null;
+    const rect = figure.getBoundingClientRect();
+    return {
+      top: rect.top,
+      left: rect.left,
+      right: rect.right,
+      bottom: rect.bottom,
+      width: rect.width,
+      height: rect.height,
+    };
+  }
+
+  /** Clear hover/focus/menu state so the toolbar releases when a popover opens. */
+  function resetImageToolbarState(): void {
+    imageHoverFigure = false;
+    imageHoverToolbar = false;
+    imageFigureFocused = false;
+    imageMenuOpen = false;
   }
 
   function assetPathForImage(image: ImageBlockToolbarRequest): string | null {
@@ -771,7 +853,9 @@
   }
 
   function openImageDetails(image: ImageBlockToolbarRequest): void {
-    imageDetailsTarget = image;
+    resetImageToolbarState();
+    const rect = imageFigureRect(image.blockId) ?? image.rect;
+    imageDetailsTarget = { ...image, rect };
   }
 
   function saveImageDetails(attrs: ImageBlockAttrsUpdate): void {
@@ -1424,6 +1508,7 @@
     pauseAIFollow();
     activeImageBlock = null;
     imageDetailsTarget = null;
+    resetImageToolbarState();
     refreshInlineAIMarkers();
     refreshInlineAIComposerPositions();
   }
@@ -1768,6 +1853,7 @@
     editorStore.unmountPane(mountedPaneId, mountedHost ?? editorContainer ?? null);
     if (countTimeout) clearTimeout(countTimeout);
     if (aiFollowClearTimer) clearTimeout(aiFollowClearTimer);
+    if (imageToolbarHideTimer) clearTimeout(imageToolbarHideTimer);
     inlineAIObserver?.disconnect();
   });
 </script>
@@ -2130,6 +2216,7 @@
     {#if imageInsertState}
       <ImageInsertPopover
         mode={imageInsertState.mode}
+        rect={imageInsertState.mode === 'replace' ? imageInsertState.image.rect : null}
         busy={imageInsertBusy}
         error={imageInsertError}
         onClose={closeImageInsertPopover}
@@ -2139,7 +2226,7 @@
       />
     {/if}
 
-    {#if activeImageBlock && !imageDetailsTarget}
+    {#if imageToolbarVisible && activeImageBlock}
       {@const workspaceAssetPath = assetPathForImage(activeImageBlock)}
       <ImageBlockToolbar
         image={activeImageBlock}
@@ -2166,9 +2253,9 @@
         onRemove={() => {
           if (activeImageBlock) removeImageBlock(activeImageBlock);
         }}
-        onClose={() => {
-          activeImageBlock = null;
-        }}
+        onPointerEnter={() => { imageHoverToolbar = true; }}
+        onPointerLeave={() => { imageHoverToolbar = false; }}
+        onMenuOpenChange={(open) => { imageMenuOpen = open; }}
       />
     {/if}
 

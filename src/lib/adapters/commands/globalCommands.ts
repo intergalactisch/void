@@ -281,6 +281,32 @@ export function createGlobalCommands(): RegisteredCommand[] {
         events.emit('app:navigate', { view: 'tasks' });
       },
     },
+    {
+      id: 'view.openTrash',
+      label: 'Open Trash',
+      keywords: ['trash', 'deleted', 'restore', 'recover'],
+      category: 'view',
+      icon: 'trash',
+      description: 'Open the trash workspace',
+      defaultKeybinding: 'mod+shift+backspace',
+      scope: ['global'],
+      execute: () => {
+        events.emit('app:navigate', { view: 'trash' });
+      },
+    },
+    {
+      id: 'view.openWorkspaces',
+      label: 'Open Workspaces',
+      keywords: ['workspaces', 'workspace', 'folders', 'sync'],
+      category: 'view',
+      icon: 'layers',
+      description: 'Open workspace management',
+      defaultKeybinding: 'mod+shift+w',
+      scope: ['global'],
+      execute: () => {
+        events.emit('app:navigate', { view: 'workspaces' });
+      },
+    },
     ...createTaskCommands(),
     {
       id: 'view.toggleLog',

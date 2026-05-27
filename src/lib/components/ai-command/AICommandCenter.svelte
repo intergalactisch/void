@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
   import { AlertCircle, Bot, Check, Copy, Lock, MessageSquare, PanelRightClose, Plus, RefreshCw, Settings, ShieldCheck, Sparkles, X } from '@lucide/svelte';
-  import { aiStore, commandCenterStore, editorStore, lineageStore, operationsStore, protectionStore, toastStore, uiStore } from '$lib/stores';
+  import { aiStore, commandCenterStore, editorStore, protectionStore, toastStore, uiStore } from '$lib/stores';
   import { copyTextToClipboard } from '$lib/utils/clipboard';
   import { createFocusTrap } from '$lib/utils/focusTrap';
   import { buildRefId, hasSelection } from '$lib/domain/values';
@@ -13,8 +13,9 @@
     type AIContextAuthorizationScope,
   } from '$lib/domain/values/Protection';
   import CommandComposer from './CommandComposer.svelte';
-  import CommandHistoryPanel from './CommandHistoryPanel.svelte';
-  import CommandInspector from './CommandInspector.svelte';
+  import CommandConversationList from './CommandConversationList.svelte';
+  import ConversationDetailPanel from './ConversationDetailPanel.svelte';
+  import CommandTemplatePanel from './CommandTemplatePanel.svelte';
   import CommandTranscript from './CommandTranscript.svelte';
   import WorkerConversationView from './WorkerConversationView.svelte';
 
@@ -46,7 +47,11 @@
     [
       aiStore.agentRunState.currentRun?.id ?? '',
       aiStore.agentRunState.currentRun?.updatedAt ?? '',
-      ...aiStore.agentRunState.runs.map((run) => `${run.id}:${run.updatedAt}`),
+      // Stream entries are driven by run events/artifacts/worker messages, so
+      // include their counts to keep the transcript autoscrolling mid-run.
+      ...aiStore.agentRunState.runs.map(
+        (run) => `${run.id}:${run.updatedAt}:${run.events.length}:${run.artifacts.length}:${run.workerMessages.length}`
+      ),
     ].join('|')
   );
   let isActive = $derived(aiStore.isRouting || aiStore.isProcessing || aiStore.isStreaming || aiStore.agentRunState.isRunning);
@@ -81,10 +86,13 @@
     return 'Ready';
   });
   let workBadge = $derived(commandCenterStore.activeWorkCount);
-  let inspectorVisible = $derived(commandCenterStore.hasInspectorContent || lineageStore.visible);
+  // The right detail panel is the open conversation's process dashboard, so it
+  // shows whenever a conversation is open (not only when work is in flight).
+  let detailVisible = $derived(hasOpenConversation && commandCenterStore.conversationDetailVisible && !aiUnavailable);
   let historyCollapsed = $derived(commandCenterStore.historyCollapsed);
   let inspectorCollapsed = $derived(commandCenterStore.inspectorCollapsed);
-  let inspectorLayout = $derived(!inspectorVisible ? 'hidden' : inspectorCollapsed ? 'rail' : 'visible');
+  let inspectorLayout = $derived(!detailVisible ? 'hidden' : inspectorCollapsed ? 'rail' : 'visible');
+  let templatesOpen = $derived(commandCenterStore.templatesOpen);
   let workerView = $derived(commandCenterStore.workerConversationVisible);
   let selectedWorkerDetail = $derived(commandCenterStore.selectedWorker);
   let retryableSwarmRun = $derived(commandCenterStore.retryableSwarmRun);
@@ -201,7 +209,8 @@
   }
 
   function handleCloseConversationDetail() {
-    commandCenterStore.hideConversationDetail();
+    void aiStore.deselectConversation();
+    commandCenterStore.clearSelectedRun();
   }
 
   async function handleNewConversation() {
@@ -369,22 +378,6 @@
       commandCenterRef
         ?.querySelector<HTMLInputElement>('input[name="command-center-search"]')
         ?.focus({ preventScroll: true });
-      return;
-    }
-
-    if (!event.altKey || event.metaKey || event.ctrlKey || event.shiftKey) return;
-    if (event.key === '1') {
-      event.preventDefault();
-      commandCenterStore.showNow();
-    } else if (event.key === '2') {
-      event.preventDefault();
-      commandCenterStore.showInbox();
-    } else if (event.key === '3') {
-      event.preventDefault();
-      commandCenterStore.showHistory();
-    } else if (event.key === '4') {
-      event.preventDefault();
-      commandCenterStore.showTemplates();
     }
   }
 
@@ -429,20 +422,6 @@
     });
   });
 
-  // Auto-route the inspector to the most relevant view as state changes.
-  // Reading these reactives wires the effect; selectAutoMode itself decides
-  // whether to override a manual selection.
-  $effect(() => {
-    if (!visible) return;
-    aiStore.currentConversation?.id;
-    commandCenterStore.activeRun?.id;
-    operationsStore.unappliedResultOperations.length;
-    aiStore.isProcessing;
-    aiStore.isStreaming;
-    aiStore.isRouting;
-    commandCenterStore.selectAutoMode();
-  });
-
   $effect(() => {
     visibleMessageCount;
     runVersion;
@@ -455,6 +434,9 @@
   $effect(() => {
     if (conversationId !== previousConversationId) {
       previousConversationId = conversationId;
+      // New/switched conversation: clear the pinned run so the detail panel
+      // re-resolves this conversation's active/latest run.
+      commandCenterStore.clearSelectedRun();
       idCopyState = 'idle';
       if (copyResetTimer) {
         clearTimeout(copyResetTimer);
@@ -530,7 +512,7 @@
             <Settings size={15} strokeWidth={1.8} aria-hidden="true" />
           </button>
         {:else}
-          <button type="button" class="header-icon" title="Action templates" aria-label="Action templates" onclick={() => commandCenterStore.showTemplates()}>
+          <button type="button" class="header-icon" title="Action templates" aria-label="Action templates" onclick={() => commandCenterStore.openTemplates()}>
             <Sparkles size={15} strokeWidth={1.8} aria-hidden="true" />
           </button>
           <button type="button" class="header-icon" title="New command thread" aria-label="New command thread" onclick={handleNewConversation}>
@@ -601,7 +583,7 @@
           >
             <PanelRightClose size={13} strokeWidth={1.8} aria-hidden="true" />
           </button>
-          <CommandHistoryPanel />
+          <CommandConversationList />
         {/if}
       </aside>
 
@@ -780,21 +762,38 @@
         {/if}
       </section>
 
-      {#if inspectorVisible && !inspectorCollapsed}
-        <CommandInspector />
-      {:else if inspectorVisible && inspectorCollapsed}
-        <aside class="inspector-rail" aria-label="Collapsed agent inspector">
+      {#if detailVisible && !inspectorCollapsed}
+        <ConversationDetailPanel />
+      {:else if detailVisible && inspectorCollapsed}
+        <aside class="inspector-rail" aria-label="Collapsed conversation details">
           <button
             type="button"
             class="rail-toggle"
-            aria-label="Expand agent inspector"
+            aria-label="Expand conversation details"
             onclick={() => commandCenterStore.togglePanel('inspector')}
           >
             <Sparkles size={15} strokeWidth={1.8} aria-hidden="true" />
-            <span>Status</span>
+            <span>Details</span>
           </button>
         </aside>
       {/if}
+      {/if}
+
+      {#if templatesOpen}
+        <div class="templates-overlay" role="dialog" aria-label="Action templates" aria-modal="false">
+          <div class="templates-backdrop" onclick={() => commandCenterStore.closeTemplates()} aria-hidden="true"></div>
+          <div class="templates-sheet">
+            <header class="templates-sheet-head">
+              <span>Action templates</span>
+              <button type="button" class="header-icon" aria-label="Close templates" onclick={() => commandCenterStore.closeTemplates()}>
+                <X size={15} strokeWidth={1.8} aria-hidden="true" />
+              </button>
+            </header>
+            <div class="templates-sheet-body scrollbar-thin">
+              <CommandTemplatePanel />
+            </div>
+          </div>
+        </div>
       {/if}
     </div>
   </div>
@@ -1006,7 +1005,7 @@
 
   .command-body {
     display: grid;
-    grid-template-columns: minmax(230px, 270px) minmax(360px, 1fr) minmax(318px, 372px);
+    grid-template-columns: minmax(230px, 270px) minmax(360px, 1fr) minmax(340px, 400px);
     min-width: 0;
     min-height: 0;
   }
@@ -1016,7 +1015,7 @@
   }
 
   .command-body[data-history='collapsed'] {
-    grid-template-columns: 44px minmax(360px, 1fr) minmax(318px, 372px);
+    grid-template-columns: 44px minmax(360px, 1fr) minmax(340px, 400px);
   }
 
   .command-body[data-history='collapsed'][data-inspector='hidden'] {
@@ -1440,6 +1439,50 @@
     padding: 10px 12px 12px;
     border-top: 1px solid var(--border-light);
     background: var(--bg-app);
+  }
+
+  /* ── Action templates popover ─────────────────────────────────────── */
+  .templates-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    display: flex;
+    align-items: stretch;
+    justify-content: flex-end;
+  }
+
+  .templates-backdrop {
+    position: absolute;
+    inset: 0;
+    background: color-mix(in srgb, var(--bg-overlay) 24%, transparent);
+  }
+
+  .templates-sheet {
+    position: relative;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    width: min(420px, 100%);
+    border-left: 1px solid var(--border-light);
+    background: var(--bg-editor);
+    box-shadow: var(--shadow-lg);
+  }
+
+  .templates-sheet-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 10px 10px 10px 14px;
+    border-bottom: 1px solid var(--border-light);
+    color: var(--text-primary);
+    font-size: 12.5px;
+    font-weight: 650;
+  }
+
+  .templates-sheet-body {
+    min-height: 0;
+    overflow-y: auto;
+    padding: 12px;
   }
 
   .empty-composer-footer {

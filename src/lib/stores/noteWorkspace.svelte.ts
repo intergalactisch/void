@@ -14,7 +14,7 @@ import {
 import { events } from '$lib/events';
 
 const STORAGE_KEY = 'void:note-workspace-layout:v1';
-const MAX_OPEN_LAYOUT_NOTES = 6;
+const MAX_OPEN_LAYOUT_NOTES = 8;
 
 export interface NotePaneDropResult {
   action: 'focused-existing' | 'replaced' | 'split' | 'ignored';

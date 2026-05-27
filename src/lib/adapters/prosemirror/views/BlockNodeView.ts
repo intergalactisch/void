@@ -17,6 +17,10 @@ import { slashMenuKey } from '../plugins/slashMenu';
 import { clampToViewport } from '../plugins/positioning';
 import { aiBlockKey } from '../plugins/aiBlock';
 import {
+  insertFinalBlockContinuationForBlockId,
+  shouldActivateFinalBlockContinuationFromKey,
+} from '../plugins/finalBlockContinuation';
+import {
   buildCodeFence,
   normalizeCodeLanguageLabel,
   parseCodeBlockDisplayOptions,
@@ -68,6 +72,19 @@ export interface ImageBlockToolbarRequest {
     height: number;
   };
 }
+
+/**
+ * Image block UI lifecycle event. The figure emits `show`/`hide` on pointer
+ * enter/leave and `focus`/`blur` on keyboard focus so the shell can reveal the
+ * floating toolbar only while the image is hovered or focused. `show`/`focus`
+ * carry the current rect + attrs; `hide`/`blur` only identify the block so a
+ * stale leave from a previous image can be ignored.
+ */
+export type ImageBlockUIEvent =
+  | { kind: 'show'; request: ImageBlockToolbarRequest }
+  | { kind: 'focus'; request: ImageBlockToolbarRequest }
+  | { kind: 'hide'; blockId: string }
+  | { kind: 'blur'; blockId: string };
 
 // ── SVG Icons ──────────────────────────────────────────────────────────
 
@@ -1198,16 +1215,27 @@ export class BlockNodeView implements NodeView {
     figure.setAttribute('role', 'group');
     figure.setAttribute('tabindex', '0');
     figure.setAttribute('aria-label', 'Image block');
-    figure.addEventListener('mouseenter', () => this.announceImageToolbar());
-    figure.addEventListener('focusin', () => this.announceImageToolbar());
+    figure.addEventListener('mouseenter', () => this.emitImageUI('show'));
+    figure.addEventListener('mouseleave', () => this.emitImageUI('hide'));
+    figure.addEventListener('focusin', () => this.emitImageUI('focus'));
+    figure.addEventListener('focusout', () => this.emitImageUI('blur'));
     figure.addEventListener('click', (event) => {
       event.preventDefault();
-      this.announceImageToolbar();
+      this.emitImageUI('show');
     });
     figure.addEventListener('keydown', (event) => {
+      if (
+        shouldActivateFinalBlockContinuationFromKey(event) &&
+        insertFinalBlockContinuationForBlockId(this.view, this.blockId)
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+
       if (event.key !== 'Enter' && event.key !== ' ') return;
       event.preventDefault();
-      this.announceImageToolbar();
+      this.emitImageUI('focus');
     });
     this.populateImageFigure(figure, node);
     return figure;
@@ -1277,11 +1305,11 @@ export class BlockNodeView implements NodeView {
     }
   }
 
-  private announceImageToolbar(): void {
-    if (!this.imageFigureEl) return;
+  private buildImageRequest(): ImageBlockToolbarRequest | null {
+    if (!this.imageFigureEl) return null;
     const rect = this.imageFigureEl.getBoundingClientRect();
     const src = (this.node.attrs.src as string | null) || '';
-    const detail: ImageBlockToolbarRequest = {
+    return {
       blockId: this.blockId,
       src,
       alt: (this.node.attrs.alt as string | null) ?? null,
@@ -1297,9 +1325,19 @@ export class BlockNodeView implements NodeView {
         height: rect.height,
       },
     };
-    window.dispatchEvent(new CustomEvent<ImageBlockToolbarRequest>(IMAGE_BLOCK_UI_EVENT, {
-      detail,
-    }));
+  }
+
+  private emitImageUI(kind: ImageBlockUIEvent['kind']): void {
+    if (!this.imageFigureEl) return;
+    let detail: ImageBlockUIEvent;
+    if (kind === 'show' || kind === 'focus') {
+      const request = this.buildImageRequest();
+      if (!request) return;
+      detail = { kind, request };
+    } else {
+      detail = { kind, blockId: this.blockId };
+    }
+    window.dispatchEvent(new CustomEvent<ImageBlockUIEvent>(IMAGE_BLOCK_UI_EVENT, { detail }));
   }
 }
 

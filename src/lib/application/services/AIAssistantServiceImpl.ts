@@ -485,6 +485,10 @@ export class AIAssistantServiceImpl implements AIAssistantService {
     return this.conversationStore.setCurrent(conversationId);
   }
 
+  async clearCurrentConversation(): Promise<void> {
+    this.conversationStore.clearCurrent();
+  }
+
   // =========================================================================
   // Tool execution methods — delegate to ToolInvocationService.
   // =========================================================================

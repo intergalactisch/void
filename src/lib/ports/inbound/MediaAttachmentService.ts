@@ -84,6 +84,8 @@ export interface MediaAttachmentService {
     options?: MediaAttachmentOptions & { originalName?: string },
   ): Promise<Result<MediaAttachmentResult, Error>>;
   listAssets(): Promise<Result<AssetMetadata[], Error>>;
+  /** Note paths whose markdown references the given asset (workspace-relative `assets/...` path). */
+  findReferencingNotePaths(relativePath: string): Promise<Result<string[], Error>>;
   cleanupOrphans(options?: { dryRun?: boolean }): Promise<Result<MediaOrphanReport, Error>>;
   saveAssetAs(relativePath: string, destinationPath: string): Promise<Result<AssetMetadata, Error>>;
   deleteAsset(relativePath: string): Promise<Result<void, Error>>;

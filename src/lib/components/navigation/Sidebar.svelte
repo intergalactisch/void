@@ -49,6 +49,10 @@
     onOpenQuickSwitcher?: () => void;
     /** Callback to open the Tasks workspace */
     onOpenTasks?: () => void;
+    /** Callback to open the Trash workspace */
+    onOpenTrash?: () => void;
+    /** Callback to open workspace management */
+    onOpenWorkspaces?: () => void;
     /** Legacy callback accepted by older callers; deletion now lives in the dropdown menu. */
     onRequestDeleteNote?: (path: string, title: string) => void;
     /** Callback when a note is right-clicked */
@@ -66,6 +70,8 @@
     onOpenSettings,
     onOpenQuickSwitcher,
     onOpenTasks,
+    onOpenTrash,
+    onOpenWorkspaces,
     onNoteContextMenu,
     onRequestCreateFolder,
     onSplitNote,
@@ -81,7 +87,7 @@
   /**
    * Handle note selection with optional multi-select.
    *
-   * - Cmd/Ctrl+click toggles a note in/out of multi-selection (no nav).
+   * - Alt+click or Cmd/Ctrl+click toggles a note in/out of multi-selection (no nav).
    * - Shift+click extends multi-selection (adds; doesn't navigate).
    * - Plain click clears multi-selection and navigates to the note.
    */
@@ -92,7 +98,7 @@
       onSplitNote?.(path, event.shiftKey ? 'vertical' : 'horizontal');
       return;
     }
-    if (event && (event.metaKey || event.ctrlKey)) {
+    if (event && (event.altKey || event.metaKey || event.ctrlKey)) {
       notesStore.toggleSelection(path);
       return;
     }
@@ -473,12 +479,13 @@
   <div class="workspace-identity">
     <div class="workspace-left">
       {#if workspaceStore.workspaces.length > 1}
-        <a
-          href="/workspaces"
+        <button
+          type="button"
           class="workspace-icon workspace-icon-link"
+          onclick={() => onOpenWorkspaces?.()}
           title="Manage workspaces"
           aria-label="Manage workspaces"
-        >V</a>
+        >V</button>
         <SelectShell class="workspace-select-shell">
           <select
             class="workspace-select"
@@ -495,11 +502,12 @@
         </SelectShell>
       {:else}
         <span class="workspace-icon" aria-hidden="true">V</span>
-        <a
-          href="/workspaces"
+        <button
+          type="button"
           class="workspace-name workspace-name-link"
+          onclick={() => onOpenWorkspaces?.()}
           title="Manage workspaces"
-        >{workspaceStore.activeWorkspace?.name ?? 'Void'}</a>
+        >{workspaceStore.activeWorkspace?.name ?? 'Void'}</button>
       {/if}
     </div>
     <div class="workspace-actions">
@@ -767,6 +775,7 @@
           items={notesStore.orderedItems}
           selectedPath={notesStore.selectedPath}
           selectedFolderPath={notesStore.activeFolderPath}
+          selectedPaths={notesStore.selectedPaths}
           expandedFolders={notesStore.expandedFolders}
           onSelectNote={handleSelectNote}
           onSelectFolder={handleSelectFolder}
@@ -941,24 +950,28 @@
         </span>
       {/if}
     </button>
-    <a
-      href="/trash"
+    <button
+      type="button"
       class="dock-item"
-      title="Trash"
+      class:dock-item-active={uiStore.trashWorkspaceOpen}
+      onclick={() => onOpenTrash?.()}
+      title="Trash — ⌘⇧⌫"
       aria-label="Trash"
     >
       <svg class="dock-icon" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5" aria-hidden="true">
         <path stroke-linecap="round" stroke-linejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
       </svg>
-    </a>
-    <a
-      href="/workspaces"
+    </button>
+    <button
+      type="button"
       class="dock-item"
-      title="Workspaces"
+      class:dock-item-active={uiStore.workspacesWorkspaceOpen}
+      onclick={() => onOpenWorkspaces?.()}
+      title="Workspaces — ⌘⇧W"
       aria-label="Workspaces"
     >
       <Layers class="dock-icon" size={16} strokeWidth={1.5} aria-hidden="true" />
-    </a>
+    </button>
     <button
       type="button"
       class="dock-item"
@@ -1125,8 +1138,11 @@
   /* Anchored "V" badge — keeps the gradient styling, adds a subtle hover
      so it reads as the canonical entry-point to /workspaces. */
   .workspace-icon-link {
+    border: 0;
+    padding: 0;
     text-decoration: none;
     cursor: pointer;
+    font-family: inherit;
     transition: filter var(--transition-fast), box-shadow var(--transition-fast);
   }
 
@@ -1143,6 +1159,9 @@
   /* Anchored workspace name — single-workspace mode only. Inherits the
      non-link typography so it doesn't look like a hyperlink. */
   .workspace-name-link {
+    border: 0;
+    background: transparent;
+    font: inherit;
     text-decoration: none;
     cursor: pointer;
     border-radius: 4px;

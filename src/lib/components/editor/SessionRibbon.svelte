@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import {
     Bot,
     ChevronDown,
@@ -24,18 +25,34 @@
 
   let { notePath }: Props = $props();
 
+  let lastNotePath = $state<string | null>(null);
+  let expandedSessionId = $state<string | null>(null);
+  let showAllList = $state(false);
+
   $effect(() => {
-    void sessionsStore.fetchFor(notePath);
+    const path = notePath;
+    untrack(() => {
+      void sessionsStore.fetchFor(path);
+    });
+  });
+
+  $effect(() => {
+    if (lastNotePath === null) {
+      lastNotePath = notePath;
+      return;
+    }
+    if (lastNotePath === notePath) return;
+    lastNotePath = notePath;
+    expandedSessionId = null;
+    showAllList = false;
   });
 
   const MAX_VISIBLE = 2;
 
-  let sessions = $derived(sessionsStore.sessions);
+  let sessions = $derived(sessionsStore.sessionsFor(notePath));
   let visibleSessions = $derived(sessions.slice(0, MAX_VISIBLE));
   let overflowCount = $derived(Math.max(0, sessions.length - MAX_VISIBLE));
-  let expandedId = $derived(sessionsStore.expandedSessionId);
-  let expandedSession = $derived(sessions.find((s) => s.id === expandedId) ?? null);
-  let showAllList = $state(false);
+  let expandedSession = $derived(sessions.find((s) => s.id === expandedSessionId) ?? null);
 
   function iconFor(kind: SessionKind) {
     switch (kind) {
@@ -73,22 +90,22 @@
 
   function toggleChip(session: Session) {
     if (showAllList) showAllList = false;
-    sessionsStore.toggleExpanded(session.id);
+    expandedSessionId = expandedSessionId === session.id ? null : session.id;
   }
 
   function toggleAll() {
     if (showAllList) {
       showAllList = false;
-      sessionsStore.toggleExpanded(null);
+      expandedSessionId = null;
     } else {
-      sessionsStore.toggleExpanded(null);
+      expandedSessionId = null;
       showAllList = true;
     }
   }
 
   function closeExpander() {
     showAllList = false;
-    sessionsStore.toggleExpanded(null);
+    expandedSessionId = null;
   }
 
   function navigateToPeer(path: string) {
@@ -125,7 +142,7 @@
         <button
           type="button"
           class="session-chip"
-          class:active={expandedId === session.id && !showAllList}
+          class:active={expandedSessionId === session.id && !showAllList}
           data-source={session.createdBy}
           onclick={() => toggleChip(session)}
           title={session.title}
@@ -172,7 +189,7 @@
               class="all-session-row"
               onclick={() => {
                 showAllList = false;
-                sessionsStore.toggleExpanded(session.id);
+                expandedSessionId = session.id;
               }}
             >
               <span class="all-session-icon" aria-hidden="true">

@@ -15,7 +15,7 @@ import {
 import { createTestDocument, createDocumentWithHeadings, createDocumentWithLists } from '../fixtures/documents';
 import type { Document } from '$lib/domain/entities/Document';
 import type { EditorView } from 'prosemirror-view';
-import { TextSelection } from 'prosemirror-state';
+import { NodeSelection, TextSelection } from 'prosemirror-state';
 
 describe('ProseMirrorAdapter', () => {
   let adapter: ProseMirrorAdapter;
@@ -538,6 +538,223 @@ describe('ProseMirrorAdapter', () => {
       expect(image?.getAttribute('src')).toBe('https://example.com/image.png');
       expect(image?.getAttribute('alt')).toBe('Example');
       expect(caption?.textContent).toBe('An example image');
+    });
+
+    it('shows a final-block continuation affordance after a final image without changing the document', async () => {
+      const doc = createTestDocument({
+        blocks: [
+          {
+            id: 'img1',
+            type: 'image',
+            content: '',
+            marks: [],
+            children: [],
+            attrs: {
+              type: 'image',
+              src: 'https://example.com/image.png',
+              alt: 'Example',
+              title: null,
+              caption: null,
+              width: null,
+            },
+          },
+        ],
+      });
+
+      await adapter.mount(container, doc);
+
+      expect(container.querySelector('.void-final-continuation-button')).not.toBeNull();
+      expect(adapter.getDocument().blocks.map((block) => block.type)).toEqual(['image']);
+    });
+
+    it('clicking the final image continuation creates one editable paragraph below it', async () => {
+      const doc = createTestDocument({
+        blocks: [
+          {
+            id: 'img1',
+            type: 'image',
+            content: '',
+            marks: [],
+            children: [],
+            attrs: {
+              type: 'image',
+              src: 'https://example.com/image.png',
+              alt: 'Example',
+              title: null,
+              caption: null,
+              width: null,
+            },
+          },
+        ],
+      });
+
+      await adapter.mount(container, doc);
+
+      const button = container.querySelector<HTMLButtonElement>('.void-final-continuation-button');
+      expect(button).not.toBeNull();
+      button?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+
+      const blocks = adapter.getDocument().blocks;
+      expect(blocks.map((block) => block.type)).toEqual(['image', 'paragraph']);
+      expect(blocks.map((block) => block.content)).toEqual(['', '']);
+      expect(getMountedView(adapter).state.selection.$from.parent.type.name).toBe('paragraph');
+    });
+
+    it('does not create duplicate paragraphs from a stale final image continuation click', async () => {
+      const doc = createTestDocument({
+        blocks: [
+          {
+            id: 'img1',
+            type: 'image',
+            content: '',
+            marks: [],
+            children: [],
+            attrs: {
+              type: 'image',
+              src: 'https://example.com/image.png',
+              alt: 'Example',
+              title: null,
+              caption: null,
+              width: null,
+            },
+          },
+        ],
+      });
+
+      await adapter.mount(container, doc);
+
+      const button = container.querySelector<HTMLButtonElement>('.void-final-continuation-button');
+      expect(button).not.toBeNull();
+      button?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      button?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+
+      expect(adapter.getDocument().blocks.map((block) => block.type)).toEqual(['image', 'paragraph']);
+    });
+
+    it('pressing Enter on a focused final image creates a continuation below it', async () => {
+      const doc = createTestDocument({
+        blocks: [
+          {
+            id: 'img1',
+            type: 'image',
+            content: '',
+            marks: [],
+            children: [],
+            attrs: {
+              type: 'image',
+              src: 'https://example.com/image.png',
+              alt: 'Example',
+              title: null,
+              caption: null,
+              width: null,
+            },
+          },
+        ],
+      });
+
+      await adapter.mount(container, doc);
+
+      const figure = container.querySelector<HTMLElement>('.void-block[data-block-type="image"] figure.void-image');
+      expect(figure).not.toBeNull();
+      figure?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+
+      expect(adapter.getDocument().blocks.map((block) => block.type)).toEqual(['image', 'paragraph']);
+      expect(getMountedView(adapter).state.selection.$from.parent.type.name).toBe('paragraph');
+    });
+
+    it('pressing ArrowDown with a final image selected creates a continuation below it', async () => {
+      const doc = createTestDocument({
+        blocks: [
+          {
+            id: 'img1',
+            type: 'image',
+            content: '',
+            marks: [],
+            children: [],
+            attrs: {
+              type: 'image',
+              src: 'https://example.com/image.png',
+              alt: 'Example',
+              title: null,
+              caption: null,
+              width: null,
+            },
+          },
+        ],
+      });
+
+      await adapter.mount(container, doc);
+      const view = getMountedView(adapter);
+      view.dispatch(view.state.tr.setSelection(NodeSelection.create(view.state.doc, 0)));
+
+      const handled = pressEditorKey(view, 'ArrowDown');
+
+      expect(handled).toBe(true);
+      expect(adapter.getDocument().blocks.map((block) => block.type)).toEqual(['image', 'paragraph']);
+      expect(view.state.selection.$from.parent.type.name).toBe('paragraph');
+    });
+
+    it('does not show or trigger image continuation when the image is not final', async () => {
+      const doc = createTestDocument({
+        blocks: [
+          {
+            id: 'img1',
+            type: 'image',
+            content: '',
+            marks: [],
+            children: [],
+            attrs: {
+              type: 'image',
+              src: 'https://example.com/image.png',
+              alt: 'Example',
+              title: null,
+              caption: null,
+              width: null,
+            },
+          },
+          {
+            id: 'p1',
+            type: 'paragraph',
+            content: 'After',
+            marks: [],
+            children: [],
+            attrs: { type: 'paragraph' },
+          },
+        ],
+      });
+
+      await adapter.mount(container, doc);
+      const view = getMountedView(adapter);
+      view.dispatch(view.state.tr.setSelection(NodeSelection.create(view.state.doc, 0)));
+
+      expect(container.querySelector('.void-final-continuation-button')).toBeNull();
+      expect(pressEditorKey(view, 'ArrowDown')).toBe(false);
+      expect(adapter.getDocument().blocks.map((block) => block.type)).toEqual(['image', 'paragraph']);
+      expect(adapter.getDocument().blocks.map((block) => block.content)).toEqual(['', 'After']);
+    });
+
+    it('reuses the final-block continuation affordance for a final horizontal rule', async () => {
+      const doc = createTestDocument({
+        blocks: [
+          {
+            id: 'hr1',
+            type: 'horizontalRule',
+            content: '',
+            marks: [],
+            children: [],
+            attrs: { type: 'horizontalRule' },
+          },
+        ],
+      });
+
+      await adapter.mount(container, doc);
+
+      const button = container.querySelector<HTMLButtonElement>('.void-final-continuation-button');
+      expect(button).not.toBeNull();
+      button?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+
+      expect(adapter.getDocument().blocks.map((block) => block.type)).toEqual(['horizontalRule', 'paragraph']);
+      expect(getMountedView(adapter).state.selection.$from.parent.type.name).toBe('paragraph');
     });
 
     it('updates image block attrs by id', async () => {

@@ -20,6 +20,8 @@
     selectedPath: string | null;
     /** Currently selected virtual folder path */
     selectedFolderPath?: string | null;
+    /** Multi-selected note paths */
+    selectedPaths?: Set<string>;
     /** Set of expanded folder paths */
     expandedFolders: Set<string>;
     /** Callback when a note is selected */
@@ -46,6 +48,7 @@
     items,
     selectedPath,
     selectedFolderPath = null,
+    selectedPaths = new Set(),
     expandedFolders,
     onSelectNote,
     onSelectFolder,
@@ -102,6 +105,7 @@
     <NoteItem
       {item}
       isSelected={item.isFolder ? selectedFolderPath === item.path : selectedPath === item.path}
+      isMultiSelected={!item.isFolder && selectedPaths.has(item.path)}
       isExpanded={item.isFolder && isExpanded(item.path)}
       onClick={handleItemClick}
       onToggle={handleToggle}
@@ -120,6 +124,7 @@
           items={item.children}
           {selectedPath}
           {selectedFolderPath}
+          {selectedPaths}
           {expandedFolders}
           {onSelectNote}
           {onSelectFolder}

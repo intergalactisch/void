@@ -60,6 +60,18 @@ export interface FolderOverview {
   latestModifiedAt: Date | null;
 }
 
+/** A renderable image asset that lives directly inside a folder overview. */
+export interface FolderImage {
+  /** Workspace-relative `assets/...` path (asset identity for actions). */
+  relativePath: string;
+  fileName: string;
+  /** Resolved, browser-renderable URL (Tauri asset protocol or data URL). */
+  url: string;
+  width: number | null;
+  height: number | null;
+  size: number;
+}
+
 export type FavoriteSidebarItem = NotesListItem & {
   favoriteKind: SidebarFavoriteKind;
 };

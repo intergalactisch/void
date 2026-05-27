@@ -17,6 +17,10 @@ import { generateBlockId } from '$lib/domain/entities/Block';
 import type { BlockType } from '$lib/domain/values/BlockType';
 import { toggleList } from './lists';
 import { getVisibleBlockOrder } from './blockUtils';
+import {
+  buildFinalBlockContinuationTransaction,
+  resolveFinalBlockContinuationTargetForBlockId,
+} from '../plugins/finalBlockContinuation';
 
 /**
  * Insert a new block after the current block.
@@ -309,14 +313,14 @@ export function exitFinalCodeBlockOnArrowDown(): Command {
     const visibleIndex = visibleBlocks.findIndex((block) => block.pos === codeBlockPos);
     if (visibleIndex === -1 || visibleIndex !== visibleBlocks.length - 1) return false;
 
-    const paragraphType = state.schema.nodes.paragraph;
-    if (!paragraphType) return false;
+    const blockId = codeBlock.attrs.id as string | null;
+    if (!blockId) return false;
+    const target = resolveFinalBlockContinuationTargetForBlockId(state, blockId);
+    if (!target) return false;
 
     if (dispatch) {
-      const insertPos = $from.after($from.depth);
-      const paragraph = paragraphType.create({ id: generateBlockId() });
-      const tr = state.tr.insert(insertPos, paragraph);
-      tr.setSelection(TextSelection.create(tr.doc, insertPos + 1));
+      const tr = buildFinalBlockContinuationTransaction(state, target);
+      if (!tr) return false;
       dispatch(tr.scrollIntoView());
     }
 

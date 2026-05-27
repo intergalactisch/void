@@ -17,6 +17,7 @@
   interface Props {
     item: NotesListItem;
     isSelected: boolean;
+    isMultiSelected?: boolean;
     isExpanded?: boolean;
     onClick: (item: NotesListItem, event?: MouseEvent | KeyboardEvent) => void;
     onToggle?: (item: NotesListItem) => void;
@@ -39,6 +40,7 @@
   let {
     item,
     isSelected,
+    isMultiSelected = false,
     isExpanded = false,
     onClick,
     onToggle,
@@ -92,6 +94,7 @@
   class="note-item group flex w-full cursor-pointer items-center gap-1 rounded-sm py-0.5 pr-1.5 pl-1 text-left"
   class:note-item-folder={item.isFolder}
   class:note-item-selected={isSelected}
+  class:note-item-multi-selected={isMultiSelected}
   class:note-item-expanded={isExpanded}
   class:note-item-dragging={isDragging}
   class:drop-before={dropPosition === 'before'}
@@ -221,6 +224,15 @@
   }
   .note-item-selected:hover {
     background: var(--bg-hover);
+  }
+  .note-item-multi-selected {
+    background: var(--accent-light);
+    color: var(--text-primary);
+    box-shadow: inset 0 0 0 1px var(--accent-primary);
+  }
+  .note-item-selected.note-item-multi-selected {
+    background: var(--accent-light);
+    box-shadow: inset 0 0 0 1px var(--accent-primary), var(--shadow-xs);
   }
   .note-item-dragging {
     background: var(--bg-active);

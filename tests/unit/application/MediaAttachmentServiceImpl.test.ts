@@ -4,6 +4,7 @@ import { err, ok } from '$lib/core';
 import type {
   DocumentService,
   NoteCollaborationService,
+  NotesListItem,
   NotesService,
   ProvenanceService,
 } from '$lib/ports/inbound';
@@ -68,11 +69,47 @@ describe('MediaAttachmentServiceImpl', () => {
     expect(collaboration.insertAtCursor).toHaveBeenCalledTimes(1);
     expect(provenance.record).not.toHaveBeenCalled();
   });
+
+  it('finds the note whose markdown references an asset', async () => {
+    const { service } = createService({
+      noteItems: [
+        { path: 'research/note.md', title: 'Note', isFolder: false, children: [] },
+        { path: 'other.md', title: 'Other', isFolder: false, children: [] },
+      ] as unknown as NotesListItem[],
+      noteContents: {
+        'research/note.md': 'Body\n\n![chart](../assets/note/hash-1-chart.png)\n',
+        'other.md': 'Nothing here',
+      },
+    });
+
+    const result = await service.findReferencingNotePaths('assets/note/hash-1-chart.png');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).toEqual(['research/note.md']);
+  });
+
+  it('returns no referencing notes when the asset is unused', async () => {
+    const { service } = createService({
+      noteItems: [
+        { path: 'note.md', title: 'Note', isFolder: false, children: [] },
+      ] as unknown as NotesListItem[],
+      noteContents: { 'note.md': 'No images here' },
+    });
+
+    const result = await service.findReferencingNotePaths('assets/note/orphan.png');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).toEqual([]);
+  });
 });
 
 function createService(options: {
   failImports?: Set<string>;
   insertError?: Error;
+  noteContents?: Record<string, string>;
+  noteItems?: NotesListItem[];
 } = {}) {
   let importCount = 0;
   const assets: AssetStoragePort = {
@@ -110,12 +147,12 @@ function createService(options: {
   } as unknown as NoteCollaborationService;
 
   const documents = {
-    readContent: vi.fn(async () => ok('')),
+    readContent: vi.fn(async (notePath: string) => ok(options.noteContents?.[notePath] ?? '')),
   } as unknown as DocumentService;
 
   const notes = {
     getState: vi.fn(() => ({
-      items: [],
+      items: options.noteItems ?? [],
       tagGroups: [],
       selectedPath: null,
       isLoading: false,

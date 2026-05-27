@@ -1,9 +1,14 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
+  import { goto } from '$app/navigation';
   import '../app.css';
   import { bootstrap, getAppContext, isBootstrapped } from '$lib';
-  import { operationsStore, settingsStore, uiStore } from '$lib/stores';
+  import { operationsStore, settingsStore, notesStore, todoStore, uiStore } from '$lib/stores';
   import { AppTitlebar, ShortcutSheet } from '$lib/components/shared';
+  import { DEFAULT_TODO_VIEW } from '$lib/domain/values/TodoView';
+  import { events } from '$lib/events';
+  import type { EventMap } from '$lib/events/types';
+  import { attachGlobalKeymapBinder, type GlobalKeymapBinder } from '$lib/keymap';
 
   let { children } = $props();
 
@@ -26,6 +31,7 @@
    */
   let error = $state<Error | null>(null);
   let cleanupCloseListener: (() => void) | null = null;
+  let keymapBinder: GlobalKeymapBinder | null = null;
 
   /**
    * Resolve the effective theme ('light' or 'dark') from the setting.
@@ -67,12 +73,42 @@
     }
   };
 
-  function handleGlobalKeydown(event: KeyboardEvent) {
-    const isMod = event.metaKey || event.ctrlKey;
-    if (isMod && event.key === '/') {
-      event.preventDefault();
-      uiStore.toggleShortcutSheet();
-      return;
+  function attachAppKeymap() {
+    if (keymapBinder) return;
+    const ctx = getAppContext();
+    if (!ctx) return;
+    keymapBinder = attachGlobalKeymapBinder({
+      keymap: ctx.keymap,
+      commands: ctx.commands,
+    });
+  }
+
+  function currentRoutePath(): string {
+    if (typeof window === 'undefined') return '/';
+    return window.location.pathname.replace(/\/$/, '') || '/';
+  }
+
+  function openForegroundWorkspaceFromRoute(view: 'tasks' | 'trash' | 'workspaces') {
+    if (currentRoutePath() === '/') return;
+
+    uiStore.openForegroundWorkspace(view, notesStore.selectedPath, uiStore.aiSidebarVisible);
+    uiStore.closeAISidebar();
+    notesStore.hideSidebar();
+    notesStore.selectNote(null);
+    notesStore.selectTagView(null);
+
+    if (view === 'tasks') {
+      todoStore.openWorkspace(settingsStore.settings?.taskDefaultView ?? DEFAULT_TODO_VIEW);
+    } else {
+      todoStore.closeWorkspace();
+    }
+
+    void goto('/');
+  }
+
+  function handleAppNavigate(event: EventMap['app:navigate']) {
+    if (event.view === 'tasks' || event.view === 'trash' || event.view === 'workspaces') {
+      openForegroundWorkspaceFromRoute(event.view);
     }
   }
 
@@ -91,7 +127,7 @@
     // Listen for OS theme changes when using 'system' mode
     mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
     mediaQuery.addEventListener('change', handleMediaChange);
-    window.addEventListener('keydown', handleGlobalKeydown);
+    events.on('app:navigate', handleAppNavigate);
 
     const isTauri =
       typeof window !== 'undefined' &&
@@ -118,6 +154,7 @@
     // Skip if already bootstrapped (e.g., HMR)
     if (isBootstrapped()) {
       ready = true;
+      attachAppKeymap();
       return;
     }
 
@@ -127,6 +164,7 @@
       // call Tauri commands that don't exist outside the desktop shell.
       await bootstrap({ useMocks: !isTauri });
       ready = true;
+      attachAppKeymap();
     } catch (e) {
       console.error('Failed to bootstrap application:', e);
       error = e instanceof Error ? e : new Error(String(e));
@@ -135,7 +173,9 @@
 
   onDestroy(() => {
     mediaQuery?.removeEventListener('change', handleMediaChange);
-    window.removeEventListener('keydown', handleGlobalKeydown);
+    events.off('app:navigate', handleAppNavigate);
+    keymapBinder?.dispose();
+    keymapBinder = null;
     cleanupCloseListener?.();
   });
 </script>

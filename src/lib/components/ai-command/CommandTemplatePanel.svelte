@@ -21,7 +21,7 @@
     await aiStore.queueFromTemplate(selectedTemplate.id, values);
     selectedTemplate = null;
     values = {};
-    commandCenterStore.showNow();
+    commandCenterStore.closeTemplates();
   }
 </script>
 

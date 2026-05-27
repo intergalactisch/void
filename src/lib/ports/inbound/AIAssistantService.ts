@@ -189,6 +189,12 @@ export interface AIAssistantService {
   setCurrentConversation(conversationId: string): Promise<void>;
 
   /**
+   * Deselect the current conversation so no conversation is active.
+   * Used by the command center to close a conversation back to the placeholder.
+   */
+  clearCurrentConversation(): Promise<void>;
+
+  /**
    * Load conversations bound to a specific document from .void/ storage.
    * @param documentPath - Path to the document
    * @returns Array of conversations for this document

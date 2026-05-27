@@ -22,22 +22,10 @@ function taskOrderKey(task: AgentTask): string {
   return task.startedAt ?? task.createdAt;
 }
 
-export type CommandInspectorMode = 'now' | 'inbox' | 'history' | 'templates';
+/** How much of the agent's activity the narrative stream shows. */
+export type CommandStreamDensity = 'firehose' | 'milestones';
 export type PendingUserTurnStatus = 'routing' | 'submitted' | 'failed';
-export type CommandWorkIndexKind = 'threads' | 'runs' | 'jobs';
-export type CommandWorkDatePreset = 'all' | 'today' | 'week' | 'month' | 'custom';
 export type CommandPanelSide = 'history' | 'inspector';
-
-export interface CommandWorkIndexFilters {
-  kind: CommandWorkIndexKind;
-  query: string;
-  status: string;
-  datePreset: CommandWorkDatePreset;
-  dateFrom: string;
-  dateTo: string;
-  cursor: string | null;
-  pageSize: number;
-}
 
 export interface RunHistoryGroup {
   label: string;
@@ -116,23 +104,12 @@ const FALLBACK_MATCH_WINDOW_MS = 60_000;
 const MAX_COLLABORATION_HOTSPOTS = 12;
 
 class CommandCenterStore {
-  inspectorMode = $state<CommandInspectorMode>('now');
   selectedRunId = $state<string | null>(null);
   selectedAgentTarget = $state<CommandAgentTarget | null>(null);
   selectedResultOperationId = $state<OperationId | null>(null);
   pendingUserTurns = $state<PendingUserTurn[]>([]);
   collapsedRunIds = $state<string[]>([]);
   deletedConversationIds = $state<string[]>([]);
-  workIndexFilters = $state<CommandWorkIndexFilters>({
-    kind: 'threads',
-    query: '',
-    status: 'all',
-    datePreset: 'all',
-    dateFrom: '',
-    dateTo: '',
-    cursor: null,
-    pageSize: 80,
-  });
   historyCollapsed = $state(false);
   inspectorCollapsed = $state(false);
   resourceLocks = $state<ResourceLockSnapshot[]>(resourceLock.snapshot());
@@ -145,18 +122,13 @@ class CommandCenterStore {
    */
   conversationDetailVisible = $state(true);
   /**
-   * Whether the user has manually selected the inspector mode for the
-   * current conversation. While false, `selectAutoMode()` is allowed to
-   * reroute attention as state changes (run starts, results land, etc.).
-   * Reset alongside `inspectorMode` whenever the conversation switches.
+   * Narrative-stream verbosity for the center column. `firehose` shows every
+   * tool call / progress tick / trace; `milestones` folds low-signal entries
+   * into collapsible "N steps" groups. Global default, persisted in-memory.
    */
-  manualModeSelection = $state(false);
-  /** Tracks the conversation id we last auto-routed for. */
-  #lastAutoRoutedConversationId: string | null = null;
-  /** Last unapplied-result count we observed, used to detect 0→N transitions. */
-  #lastUnappliedResultCount = 0;
-  /** Last active-run id we observed, used to detect new-run transitions. */
-  #lastActiveRunId: string | null = null;
+  streamDensity = $state<CommandStreamDensity>('firehose');
+  /** Whether the action-templates popover is open (replaces the old tab). */
+  templatesOpen = $state(false);
   /** Last known per-surface pressure, used to count contention episodes. */
   #lastSurfacePressure = new Map<string, CollaborationPressure>();
 
@@ -234,6 +206,16 @@ class CommandCenterStore {
     return this.activeRun ?? this.currentTurnRun;
   }
 
+  /** Conversation ids that currently have an active run — used by the
+   *  conversations list to show a live indicator per row. */
+  get activeRunConversationIds(): Set<string> {
+    return new Set(
+      this.globalActiveRuns
+        .map((run) => run.conversationId)
+        .filter((id): id is string => !!id)
+    );
+  }
+
   get selectedWorker(): SelectedWorkerDetail | null {
     const target = this.selectedAgentTarget;
     if (!target || target.kind !== 'worker') return null;
@@ -290,7 +272,6 @@ class CommandCenterStore {
     // and active work. It should NOT appear just because a conversation has
     // messages: a regular chat exchange doesn't need an inspector pane.
     const conversationId = this.currentConversationId;
-    if (this.inspectorMode === 'templates') return true;
     if (this.runs.length > 0) return true;
     if (this.globalActiveRuns.length > 0) return true;
     if (operationsStore.activeOperations.length > 0) return true;
@@ -416,7 +397,6 @@ class CommandCenterStore {
 
   createPendingUserTurn(text: string, conversationId: string | null): PendingUserTurn {
     this.selectedRunId = null;
-    this.inspectorMode = 'now';
     const turn: PendingUserTurn = {
       id: `turn_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       text,
@@ -496,8 +476,6 @@ class CommandCenterStore {
   selectRun(runId: string): void {
     this.selectedRunId = runId;
     this.selectedAgentTarget = null;
-    this.inspectorMode = 'now';
-    this.manualModeSelection = true;
   }
 
   selectWorker(runId: string, workerId: string): void {
@@ -506,8 +484,6 @@ class CommandCenterStore {
 
     this.selectedRunId = runId;
     this.selectedAgentTarget = { kind: 'worker', runId, workerId };
-    this.inspectorMode = 'now';
-    this.manualModeSelection = true;
   }
 
   selectOrchestrator(runId: string): void {
@@ -515,8 +491,6 @@ class CommandCenterStore {
 
     this.selectedRunId = runId;
     this.selectedAgentTarget = { kind: 'orchestrator', runId };
-    this.inspectorMode = 'now';
-    this.manualModeSelection = true;
   }
 
   isWorkerSelected(runId: string, workerId: string): boolean {
@@ -538,9 +512,14 @@ class CommandCenterStore {
       : [...this.collapsedRunIds, runId];
   }
 
+  /**
+   * Compatibility alias: bring the live conversation detail into focus.
+   * The four inspector tabs were replaced by one always-on detail panel, so
+   * "show now" now just ensures the detail is visible and closes templates.
+   */
   showNow(): void {
-    this.inspectorMode = 'now';
-    this.manualModeSelection = true;
+    this.templatesOpen = false;
+    this.conversationDetailVisible = true;
   }
 
   /** Re-show the conversation transcript + composer in the conversation pane. */
@@ -548,79 +527,37 @@ class CommandCenterStore {
     this.conversationDetailVisible = true;
   }
 
+  setStreamDensity(density: CommandStreamDensity): void {
+    this.streamDensity = density;
+  }
+
+  toggleStreamDensity(): void {
+    this.streamDensity = this.streamDensity === 'firehose' ? 'milestones' : 'firehose';
+  }
+
+  openTemplates(): void {
+    this.templatesOpen = true;
+  }
+
+  closeTemplates(): void {
+    this.templatesOpen = false;
+  }
+
+  toggleTemplates(): void {
+    this.templatesOpen = !this.templatesOpen;
+  }
+
+  /** Clear the pinned run so the detail panel re-resolves the conversation's
+   *  active/latest run (called when switching conversations). */
+  clearSelectedRun(): void {
+    this.selectedRunId = null;
+    this.selectedAgentTarget = null;
+  }
+
   /** Hide the active conversation's detail, returning the pane to a neutral
    *  state where the user can pick another thread or start fresh. */
   hideConversationDetail(): void {
     this.conversationDetailVisible = false;
-  }
-
-  showInbox(): void {
-    this.inspectorMode = 'inbox';
-    this.selectedRunId = null;
-    this.selectedAgentTarget = null;
-    this.manualModeSelection = true;
-  }
-
-  showResults(): void {
-    this.showInbox();
-  }
-
-  showHistory(): void {
-    this.inspectorMode = 'history';
-    this.manualModeSelection = true;
-  }
-
-  showTemplates(): void {
-    this.inspectorMode = 'templates';
-    this.manualModeSelection = true;
-  }
-
-  setWorkIndexKind(kind: CommandWorkIndexKind): void {
-    this.workIndexFilters = { ...this.workIndexFilters, kind, cursor: null };
-  }
-
-  setWorkIndexQuery(query: string): void {
-    this.workIndexFilters = { ...this.workIndexFilters, query, cursor: null };
-  }
-
-  setWorkIndexStatus(status: string): void {
-    this.workIndexFilters = { ...this.workIndexFilters, status, cursor: null };
-  }
-
-  setWorkIndexDatePreset(datePreset: CommandWorkDatePreset): void {
-    this.workIndexFilters = {
-      ...this.workIndexFilters,
-      datePreset,
-      dateFrom: datePreset === 'custom' ? this.workIndexFilters.dateFrom : '',
-      dateTo: datePreset === 'custom' ? this.workIndexFilters.dateTo : '',
-      cursor: null,
-    };
-  }
-
-  setWorkIndexDateRange(dateFrom: string, dateTo: string): void {
-    this.workIndexFilters = {
-      ...this.workIndexFilters,
-      datePreset: 'custom',
-      dateFrom,
-      dateTo,
-      cursor: null,
-    };
-  }
-
-  setWorkIndexCursor(cursor: string | null): void {
-    this.workIndexFilters = { ...this.workIndexFilters, cursor };
-  }
-
-  resetWorkIndexFilters(): void {
-    this.workIndexFilters = {
-      ...this.workIndexFilters,
-      query: '',
-      status: 'all',
-      datePreset: 'all',
-      dateFrom: '',
-      dateTo: '',
-      cursor: null,
-    };
   }
 
   togglePanel(side: CommandPanelSide): void {
@@ -632,74 +569,13 @@ class CommandCenterStore {
   }
 
   selectResultOperation(operationId: OperationId): void {
-    this.inspectorMode = 'inbox';
     this.selectedRunId = null;
     this.selectedAgentTarget = null;
     this.selectedResultOperationId = operationId;
-    this.manualModeSelection = true;
   }
 
   clearResultOperation(): void {
     this.selectedResultOperationId = null;
-  }
-
-  /**
-   * Pick the inspector mode that best reflects the current operational
-   * state, unless the user has manually chosen one for this conversation.
-   *
-   * Priority: live work > pending decisions > history > now (empty).
-   *
-   * Also auto-routes to surface fresh state changes: a new active run
-   * pulls focus to "now", and freshly-landed unapplied results pull focus
-   * to "inbox" — even if the user picked another tab earlier.
-   */
-  selectAutoMode(): void {
-    const conversationId = this.currentConversationId;
-    if (conversationId !== this.#lastAutoRoutedConversationId) {
-      this.#lastAutoRoutedConversationId = conversationId;
-      this.manualModeSelection = false;
-      this.#lastUnappliedResultCount = 0;
-      this.#lastActiveRunId = null;
-    }
-
-    const unappliedCount = operationsStore.unappliedResultOperations.length;
-    const newResultsLanded = unappliedCount > this.#lastUnappliedResultCount;
-    this.#lastUnappliedResultCount = unappliedCount;
-
-    const activeRunId = this.activeRun?.id ?? null;
-    const newRunStarted = !!activeRunId && activeRunId !== this.#lastActiveRunId;
-    this.#lastActiveRunId = activeRunId;
-
-    // Always route to live state when a run kicks off — the agent doing
-    // something new is the most attention-worthy event in the system.
-    if (newRunStarted) {
-      this.inspectorMode = 'now';
-      this.manualModeSelection = false;
-      return;
-    }
-
-    // Surface fresh decisions even over a manual selection.
-    if (newResultsLanded && unappliedCount > 0) {
-      this.inspectorMode = 'inbox';
-      this.manualModeSelection = false;
-      return;
-    }
-
-    if (this.manualModeSelection) return;
-
-    if (this.activeRun || aiStore.isProcessing || aiStore.isStreaming || aiStore.isRouting) {
-      this.inspectorMode = 'now';
-      return;
-    }
-    if (unappliedCount > 0) {
-      this.inspectorMode = 'inbox';
-      return;
-    }
-    if (this.runs.length > 0) {
-      this.inspectorMode = 'history';
-      return;
-    }
-    this.inspectorMode = 'now';
   }
 
   handleConversationDeleted(conversationId: string): void {
@@ -715,7 +591,6 @@ class CommandCenterStore {
 
     if (this.selectedRunId && deletedRunIds.has(this.selectedRunId)) {
       this.selectedRunId = null;
-      this.inspectorMode = 'now';
     }
     if (this.selectedAgentTarget && deletedRunIds.has(this.selectedAgentTarget.runId)) {
       this.selectedAgentTarget = null;
@@ -726,32 +601,18 @@ class CommandCenterStore {
   }
 
   reset(): void {
-    this.inspectorMode = 'now';
     this.selectedRunId = null;
     this.selectedAgentTarget = null;
     this.selectedResultOperationId = null;
     this.pendingUserTurns = [];
     this.collapsedRunIds = [];
     this.deletedConversationIds = [];
-    this.workIndexFilters = {
-      kind: 'threads',
-      query: '',
-      status: 'all',
-      datePreset: 'all',
-      dateFrom: '',
-      dateTo: '',
-      cursor: null,
-      pageSize: 80,
-    };
     this.historyCollapsed = false;
     this.inspectorCollapsed = false;
     this.resourceLocks = resourceLock.snapshot();
     this.collaborationTelemetry = [];
-    this.manualModeSelection = false;
     this.conversationDetailVisible = true;
-    this.#lastAutoRoutedConversationId = null;
-    this.#lastUnappliedResultCount = 0;
-    this.#lastActiveRunId = null;
+    this.templatesOpen = false;
     this.#lastSurfacePressure.clear();
   }
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fade } from 'svelte/transition';
   import {
     Copy,
     Download,
@@ -7,7 +8,6 @@
     ImagePlus,
     Info,
     Trash2,
-    X,
   } from '@lucide/svelte';
   import type { ImageBlockToolbarRequest } from '$lib/adapters/prosemirror/views/BlockNodeView';
 
@@ -22,7 +22,9 @@
     onCopyAttribution: () => void;
     onReveal: () => void;
     onRemove: () => void;
-    onClose: () => void;
+    onPointerEnter: () => void;
+    onPointerLeave: () => void;
+    onMenuOpenChange: (open: boolean) => void;
   }
 
   let {
@@ -36,21 +38,60 @@
     onCopyAttribution,
     onReveal,
     onRemove,
-    onClose,
+    onPointerEnter,
+    onPointerLeave,
+    onMenuOpenChange,
   }: Props = $props();
 
   let menuOpen = $state(false);
 
+  function setMenu(open: boolean): void {
+    menuOpen = open;
+    onMenuOpenChange(open);
+  }
+
+  function runMenuItem(action: () => void): void {
+    setMenu(false);
+    action();
+  }
+
+  // Close the More menu on Escape; keep the listener scoped to when it is open.
+  $effect(() => {
+    if (!menuOpen) return;
+    function onKey(event: KeyboardEvent): void {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      setMenu(false);
+    }
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  });
+
+  // Pin the toolbar to the image's top-right corner, just inside the edge.
   function toolbarStyle(): string {
+    const margin = 10;
     const viewportWidth = typeof window === 'undefined' ? 1024 : window.innerWidth;
-    const width = 190;
-    const left = Math.min(Math.max(image.rect.left + image.rect.width / 2 - width / 2, 12), Math.max(12, viewportWidth - width - 12));
-    const top = Math.max(12, image.rect.top - 38);
-    return `top: ${top}px; left: ${left}px; width: ${width}px;`;
+    const right = Math.max(8, viewportWidth - image.rect.right + margin);
+    const top = Math.max(8, image.rect.top + margin);
+    return `top: ${top}px; right: ${right}px;`;
   }
 </script>
 
-<div class="image-toolbar" style={toolbarStyle()} role="toolbar" aria-label="Image actions">
+{#if menuOpen}
+  <div class="image-toolbar-menu-backdrop" role="presentation" onclick={() => setMenu(false)}></div>
+{/if}
+
+<div
+  class="image-toolbar"
+  style={toolbarStyle()}
+  role="toolbar"
+  tabindex="-1"
+  aria-label="Image actions"
+  transition:fade={{ duration: 90 }}
+  onpointerenter={onPointerEnter}
+  onpointerleave={onPointerLeave}
+>
   <button type="button" onclick={onReplace} aria-label="Replace image" title="Replace image">
     <ImagePlus size={15} strokeWidth={2} aria-hidden="true" />
   </button>
@@ -64,7 +105,7 @@
     <button
       type="button"
       class:active={menuOpen}
-      onclick={() => { menuOpen = !menuOpen; }}
+      onclick={() => setMenu(!menuOpen)}
       aria-label="More image actions"
       aria-expanded={menuOpen}
       title="More"
@@ -72,32 +113,37 @@
       <Ellipsis size={16} strokeWidth={2} aria-hidden="true" />
     </button>
     {#if menuOpen}
-      <div class="image-toolbar-menu" role="menu">
-        <button type="button" role="menuitem" onclick={() => { menuOpen = false; onCopyPath(); }}>
+      <div class="image-toolbar-menu" role="menu" transition:fade={{ duration: 80 }}>
+        <button type="button" role="menuitem" onclick={() => runMenuItem(onCopyPath)}>
           <Copy size={14} strokeWidth={2} aria-hidden="true" />
           <span>Copy Markdown path</span>
         </button>
-        <button type="button" role="menuitem" disabled={!hasAttribution} onclick={() => { menuOpen = false; onCopyAttribution(); }}>
+        <button type="button" role="menuitem" disabled={!hasAttribution} onclick={() => runMenuItem(onCopyAttribution)}>
           <Copy size={14} strokeWidth={2} aria-hidden="true" />
           <span>Copy attribution</span>
         </button>
-        <button type="button" role="menuitem" disabled={!canReveal} onclick={() => { menuOpen = false; onReveal(); }}>
+        <button type="button" role="menuitem" disabled={!canReveal} onclick={() => runMenuItem(onReveal)}>
           <FolderSearch size={14} strokeWidth={2} aria-hidden="true" />
           <span>Show in Finder</span>
         </button>
-        <button type="button" role="menuitem" class="danger" onclick={() => { menuOpen = false; onRemove(); }}>
+        <div class="image-toolbar-menu-sep" role="separator"></div>
+        <button type="button" role="menuitem" class="danger" onclick={() => runMenuItem(onRemove)}>
           <Trash2 size={14} strokeWidth={2} aria-hidden="true" />
           <span>Remove image block</span>
         </button>
       </div>
     {/if}
   </div>
-  <button type="button" onclick={onClose} aria-label="Close image toolbar" title="Close">
-    <X size={15} strokeWidth={2} aria-hidden="true" />
-  </button>
 </div>
 
 <style>
+  .image-toolbar-menu-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: var(--z-popover);
+    background: transparent;
+  }
+
   .image-toolbar {
     position: fixed;
     z-index: calc(var(--z-popover) + 1);
@@ -105,11 +151,13 @@
     align-items: center;
     gap: 2px;
     height: 32px;
-    padding: 2px;
-    border: 1px solid var(--border-light);
+    padding: 3px;
+    border: 1px solid color-mix(in srgb, var(--text-primary) 10%, transparent);
     border-radius: var(--radius-md);
-    background: var(--bg-elevated);
+    background: color-mix(in srgb, var(--bg-elevated) 82%, transparent);
     box-shadow: var(--shadow-md);
+    -webkit-backdrop-filter: blur(10px) saturate(1.4);
+    backdrop-filter: blur(10px) saturate(1.4);
   }
 
   .image-toolbar button {
@@ -117,13 +165,14 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 28px;
-    height: 28px;
+    width: 26px;
+    height: 26px;
     border: 0;
     border-radius: var(--radius-sm);
     background: transparent;
     color: var(--text-secondary);
     cursor: pointer;
+    transition: background 120ms ease, color 120ms ease;
   }
 
   .image-toolbar button:hover,
@@ -144,13 +193,14 @@
 
   .image-toolbar-menu-wrap {
     position: relative;
+    display: inline-flex;
   }
 
   .image-toolbar-menu {
     position: absolute;
     top: 34px;
     right: 0;
-    width: 190px;
+    width: 200px;
     padding: 4px;
     border: 1px solid var(--border-light);
     border-radius: var(--radius-md);
@@ -173,11 +223,18 @@
     text-overflow: ellipsis;
   }
 
+  .image-toolbar-menu-sep {
+    height: 1px;
+    margin: 4px 6px;
+    background: var(--border-light);
+  }
+
   .image-toolbar-menu button.danger {
     color: var(--color-error);
   }
 
   .image-toolbar-menu button.danger:hover {
     background: var(--color-error-bg);
+    color: var(--color-error);
   }
 </style>

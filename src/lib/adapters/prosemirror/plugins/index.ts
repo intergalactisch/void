@@ -111,6 +111,23 @@ export {
 } from './aiBlock';
 export type { AIBlockState, AIBlockMeta, AIBlockLock, AIBlockPhase } from './aiBlock';
 
+// Generic final-block continuation affordance
+export {
+  createFinalBlockContinuationPlugin,
+  createFinalBlockContinuationWidget,
+  insertFinalBlockContinuation,
+  insertFinalBlockContinuationForBlockId,
+  resolveFinalBlockContinuationTargetForBlockId,
+  resolveFinalBlockContinuationTargetForDocumentEnd,
+  resolveFinalBlockContinuationTargetForRange,
+  resolveFinalBlockContinuationTargetForSelection,
+  shouldActivateFinalBlockContinuationFromKey,
+  isDefaultFinalBlockContinuationTarget,
+  type FinalBlockContinuationPluginOptions,
+  type FinalBlockContinuationTarget,
+  type FinalBlockContinuationWidgetOptions,
+} from './finalBlockContinuation';
+
 // Block Selection plugin for gutter-click multi-select
 export {
   blockSelectionKey,

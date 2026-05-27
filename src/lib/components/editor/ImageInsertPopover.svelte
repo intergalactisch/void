@@ -1,8 +1,11 @@
 <script lang="ts">
+  import { fade, scale } from 'svelte/transition';
   import { ImagePlus, Link2, Upload, X } from '@lucide/svelte';
+  import type { ImageBlockToolbarRequest } from '$lib/adapters/prosemirror/views/BlockNodeView';
 
   interface Props {
     mode?: 'insert' | 'replace';
+    rect?: ImageBlockToolbarRequest['rect'] | null;
     busy?: boolean;
     error?: string | null;
     onClose: () => void;
@@ -13,6 +16,7 @@
 
   let {
     mode = 'insert',
+    rect = null,
     busy = false,
     error = null,
     onClose,
@@ -27,6 +31,40 @@
 
   const title = $derived(mode === 'replace' ? 'Replace image' : 'Add image');
   const submitLabel = $derived(mode === 'replace' ? 'Replace' : 'Add');
+
+  // Close on Escape (capture so the editor's key handling stays out of the way).
+  $effect(() => {
+    function onKey(event: KeyboardEvent): void {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      onClose();
+    }
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  });
+
+  function scrimStyle(): string {
+    if (!rect) return '';
+    return `top: ${rect.top}px; left: ${rect.left}px; width: ${rect.width}px; height: ${rect.height}px;`;
+  }
+
+  // When replacing, center the panel over the image; otherwise center on screen.
+  function cardStyle(): string {
+    if (!rect) return '';
+    const viewportWidth = typeof window === 'undefined' ? 1024 : window.innerWidth;
+    const viewportHeight = typeof window === 'undefined' ? 768 : window.innerHeight;
+    const halfWidth = 180;
+    const left = Math.min(
+      Math.max(rect.left + rect.width / 2, halfWidth + 16),
+      Math.max(halfWidth + 16, viewportWidth - halfWidth - 16),
+    );
+    const top = Math.min(
+      Math.max(rect.top + rect.height / 2, 130),
+      Math.max(130, viewportHeight - 130),
+    );
+    return `left: ${left}px; top: ${top}px;`;
+  }
 
   function submitUrl(event?: SubmitEvent): void {
     event?.preventDefault();
@@ -71,15 +109,21 @@
   }
 </script>
 
-<div class="image-popover-backdrop" role="presentation" onclick={onClose}></div>
+<div class="image-popover-backdrop" role="presentation" onclick={onClose} transition:fade={{ duration: 110 }}></div>
+{#if rect}
+  <div class="image-popover-scrim" style={scrimStyle()} aria-hidden="true" transition:fade={{ duration: 110 }}></div>
+{/if}
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   class="image-insert-popover"
   class:is-dragging={isDragging}
+  class:is-overlay={rect}
+  style={cardStyle()}
   role="dialog"
   aria-modal="true"
   aria-label={title}
   tabindex="-1"
+  transition:scale={{ duration: 120, start: 0.96 }}
   onpaste={handlePaste}
   ondragenter={(event) => { event.preventDefault(); isDragging = true; }}
   ondragover={(event) => { event.preventDefault(); isDragging = true; }}
@@ -135,7 +179,19 @@
     position: fixed;
     inset: 0;
     z-index: var(--z-popover);
-    background: transparent;
+    background: color-mix(in srgb, var(--bg-primary) 35%, transparent);
+  }
+
+  /* Highlights the image being replaced; clicks fall through to the backdrop. */
+  .image-popover-scrim {
+    position: fixed;
+    z-index: var(--z-popover);
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--bg-primary) 55%, transparent);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-primary) 45%, transparent);
+    -webkit-backdrop-filter: blur(3px);
+    backdrop-filter: blur(3px);
+    pointer-events: none;
   }
 
   .image-insert-popover {

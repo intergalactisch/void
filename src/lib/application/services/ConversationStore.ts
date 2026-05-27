@@ -264,6 +264,13 @@ export class ConversationStore {
     }
   }
 
+  /** Deselect the active conversation (return to a no-conversation state). */
+  clearCurrent(): void {
+    if (this.currentConversationId === null) return;
+    this.currentConversationId = null;
+    this.notifyChanged();
+  }
+
   async clear(id: string): Promise<void> {
     const conversation = this.conversations.get(id);
     if (!conversation) return;

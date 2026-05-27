@@ -715,6 +715,16 @@ class AIStore {
   }
 
   /**
+   * Deselect the current conversation, returning the command center to its
+   * placeholder/no-conversation state.
+   */
+  async deselectConversation(): Promise<void> {
+    if (!this.#service) return;
+    await this.#service.clearCurrentConversation();
+    this.error = null;
+  }
+
+  /**
    * Create a new conversation and switch to it.
    *
    * @returns The new conversation

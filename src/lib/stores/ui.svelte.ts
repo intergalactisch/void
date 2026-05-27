@@ -11,6 +11,7 @@
  */
 
 export type SettingsSection = 'updates';
+export type ForegroundWorkspace = 'tasks' | 'trash' | 'workspaces';
 
 class UIStore {
   // Modals / sheets
@@ -22,7 +23,7 @@ class UIStore {
 
   // Panels
   aiSidebarVisible = $state(false);
-  tasksWorkspaceOpen = $state(false);
+  foregroundWorkspace = $state<ForegroundWorkspace | null>(null);
   relationsPanelVisible = $state(false);
   provenancePanelVisible = $state(false);
   lineageWorkspaceOpen = $state(false);
@@ -39,9 +40,29 @@ class UIStore {
   findBarOpen = $state(false);
   findBarMode = $state<'find' | 'replace'>('find');
 
-  // Bookkeeping for tasks-workspace return path
-  notePathBeforeTasks = $state<string | null>(null);
-  aiSidebarWasOpenBeforeTasks = $state(false);
+  // Bookkeeping for foreground-workspace return path
+  notePathBeforeForegroundWorkspace = $state<string | null>(null);
+  aiSidebarWasOpenBeforeForegroundWorkspace = $state(false);
+
+  get tasksWorkspaceOpen() {
+    return this.foregroundWorkspace === 'tasks';
+  }
+
+  get trashWorkspaceOpen() {
+    return this.foregroundWorkspace === 'trash';
+  }
+
+  get workspacesWorkspaceOpen() {
+    return this.foregroundWorkspace === 'workspaces';
+  }
+
+  get notePathBeforeTasks() {
+    return this.notePathBeforeForegroundWorkspace;
+  }
+
+  get aiSidebarWasOpenBeforeTasks() {
+    return this.aiSidebarWasOpenBeforeForegroundWorkspace;
+  }
 
   // Pending destructive-action confirmations
   pendingNoteDelete = $state<{ path: string; title: string } | null>(null);
@@ -208,17 +229,31 @@ class UIStore {
     this.clipboardPickerOpen = !this.clipboardPickerOpen;
   }
 
-  // ---------- Tasks workspace ----------
+  // ---------- Foreground workspaces ----------
+  openForegroundWorkspace(workspace: ForegroundWorkspace, notePathBefore: string | null, aiSidebarWasOpen: boolean) {
+    if (this.foregroundWorkspace === null) {
+      this.notePathBeforeForegroundWorkspace = notePathBefore;
+      this.aiSidebarWasOpenBeforeForegroundWorkspace = aiSidebarWasOpen;
+    }
+    this.foregroundWorkspace = workspace;
+    this.settingsOpen = false;
+    this.quickSwitcherOpen = false;
+  }
+
+  closeForegroundWorkspace() {
+    this.foregroundWorkspace = null;
+    this.notePathBeforeForegroundWorkspace = null;
+    this.aiSidebarWasOpenBeforeForegroundWorkspace = false;
+  }
+
   openTasksWorkspace(notePathBefore: string | null, aiSidebarWasOpen: boolean) {
-    this.notePathBeforeTasks = notePathBefore;
-    this.aiSidebarWasOpenBeforeTasks = aiSidebarWasOpen;
-    this.tasksWorkspaceOpen = true;
+    this.openForegroundWorkspace('tasks', notePathBefore, aiSidebarWasOpen);
   }
 
   closeTasksWorkspace() {
-    this.tasksWorkspaceOpen = false;
-    this.notePathBeforeTasks = null;
-    this.aiSidebarWasOpenBeforeTasks = false;
+    if (this.foregroundWorkspace === 'tasks') {
+      this.closeForegroundWorkspace();
+    }
   }
 
   // ---------- Focus mode ----------

@@ -94,6 +94,11 @@ import {
 } from './plugins/quickJump';
 import { createAIBlockPlugin, aiBlockKey, AI_BYPASS } from './plugins/aiBlock';
 import type { AIBlockMeta } from './plugins/aiBlock';
+import {
+  createFinalBlockContinuationPlugin,
+  isDefaultFinalBlockContinuationTarget,
+  type FinalBlockContinuationTarget,
+} from './plugins/finalBlockContinuation';
 import { createAIShortcutKeymap } from './plugins/aiShortcutKeymap';
 import { createCodeHighlightPlugin } from './plugins/codeHighlight';
 import {
@@ -1126,6 +1131,16 @@ export class ProseMirrorAdapter implements EditorPort {
     // ---- Quick-Jump plugin (Mod+Shift+J → 2-letter block navigation) ----
     plugins.push(createQuickJumpPlugin());
 
+    // ---- Final-block continuation (image/hr/protected-block escape hatch) ----
+    plugins.push(
+      createFinalBlockContinuationPlugin({
+        shouldShowWidget: (target, state) =>
+          isDefaultFinalBlockContinuationTarget(target) || this.isLockedProtectedContinuationTarget(target, state),
+        shouldHandleKey: (target, state) =>
+          isDefaultFinalBlockContinuationTarget(target) || this.isLockedProtectedContinuationTarget(target, state),
+      })
+    );
+
     // ---- 6. List keymap (Tab/Shift-Tab/Enter/Backspace in lists) ----
     const listItemType = voidSchema.nodes.listItem;
     if (listItemType) {
@@ -1284,6 +1299,13 @@ export class ProseMirrorAdapter implements EditorPort {
     }
 
     return plugins;
+  }
+
+  private isLockedProtectedContinuationTarget(
+    target: FinalBlockContinuationTarget,
+    _state: EditorState
+  ): boolean {
+    return target.nodeType === 'protectedBlock' && target.node.attrs.lockState !== 'unlocked';
   }
 
   /**

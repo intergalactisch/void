@@ -174,16 +174,33 @@ export class MediaAttachmentServiceImpl implements MediaAttachmentService {
     return this.assets.list(this.notesDir);
   }
 
+  async findReferencingNotePaths(relativePath: string): Promise<Result<string[], Error>> {
+    const target = normalizeAssetReference(relativePath);
+    for (const note of flattenNotes(this.notes.getState().items)) {
+      const refs = await this.referencedAssetsForNote(note.path);
+      if (refs.includes(target)) {
+        // The first referencing note is enough to open the asset's source.
+        return ok([note.path]);
+      }
+    }
+    return ok([]);
+  }
+
+  /** Workspace-relative `assets/...` references contained in a note's markdown. */
+  private async referencedAssetsForNote(notePath: string): Promise<string[]> {
+    const content = await this.documents.readContent(notePath);
+    if (!content.ok) return [];
+    return extractImageReferences(content.value, notePath).map(normalizeAssetReference);
+  }
+
   async cleanupOrphans(options?: { dryRun?: boolean }): Promise<Result<MediaOrphanReport, Error>> {
     const assets = await this.assets.list(this.notesDir);
     if (!assets.ok) return assets;
 
     const referenced = new Set<string>();
     for (const note of flattenNotes(this.notes.getState().items)) {
-      const content = await this.documents.readContent(note.path);
-      if (!content.ok) continue;
-      for (const ref of extractImageReferences(content.value, note.path)) {
-        referenced.add(normalizeAssetReference(ref));
+      for (const ref of await this.referencedAssetsForNote(note.path)) {
+        referenced.add(ref);
       }
     }
 

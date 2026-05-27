@@ -31,12 +31,18 @@
     /** The message to display */
     message: Message;
     /** Callback when user confirms a tool invocation */
-    onConfirmTool?: (invocationId: string) => void;
+    onConfirmTool?: ((invocationId: string) => void) | undefined;
     /** Callback when user rejects a tool invocation */
-    onRejectTool?: (invocationId: string) => void;
+    onRejectTool?: ((invocationId: string) => void) | undefined;
+    /**
+     * Hide inline tool invocations. The narrative stream renders each
+     * invocation as its own chronological entry, so the message bubble shows
+     * text only and avoids double-rendering tools.
+     */
+    suppressToolInvocations?: boolean;
   }
 
-  let { message, onConfirmTool, onRejectTool }: Props = $props();
+  let { message, onConfirmTool, onRejectTool, suppressToolInvocations = false }: Props = $props();
 
   let activityExpanded = $state(false);
 
@@ -112,7 +118,7 @@
     {/if}
   </div>
 
-  {#if message.toolInvocations.length > 0}
+  {#if message.toolInvocations.length > 0 && !suppressToolInvocations}
     <div class="tool-invocations">
       {#each message.toolInvocations as invocation (invocation.id)}
         <ToolExecution

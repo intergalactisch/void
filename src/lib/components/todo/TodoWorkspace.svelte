@@ -73,6 +73,26 @@
     });
   }
 
+  export function handleEscape(): boolean {
+    if (openPopover) {
+      openPopover = null;
+      return true;
+    }
+    if (inspectorPeekOpen) {
+      inspectorPeekOpen = false;
+      return true;
+    }
+    if (selectionSet.size > 0) {
+      clearSelection();
+      return true;
+    }
+    if (todoStore.selectedTodoId) {
+      todoStore.selectTodo(null);
+      return true;
+    }
+    return false;
+  }
+
   // ─── Local state ────────────────────────────────────────────────────────
   let capture = $state('');
   let captureExpanded = $state(false);
@@ -515,23 +535,7 @@
       return;
     }
     if (event.key === 'Escape') {
-      if (openPopover) {
-        openPopover = null;
-        event.preventDefault();
-        return;
-      }
-      if (inspectorPeekOpen) {
-        inspectorPeekOpen = false;
-        event.preventDefault();
-        return;
-      }
-      if (selectionSet.size > 0) {
-        clearSelection();
-        event.preventDefault();
-        return;
-      }
-      if (todoStore.selectedTodoId) {
-        todoStore.selectTodo(null);
+      if (handleEscape()) {
         event.preventDefault();
         return;
       }

@@ -17,6 +17,8 @@
   import { logStore } from '$lib/stores';
   import { AICommandCenter } from '$lib/components/ai-command';
   import { TodoWorkspace } from '$lib/components/todo';
+  import { TrashWorkspace } from '$lib/components/trash';
+  import { WorkspacesWorkspace } from '$lib/components/workspaces';
   import { AlertCircle, Copy, FileText, FolderOpen, FolderSearch, Hash, History, Image as ImageIcon, MoreHorizontal, Star, Trash2, Upload, X } from '@lucide/svelte';
   import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
   import { listenToMenuBarCommands, type MenuBarCommand } from '$lib/desktop/menuBar';
@@ -40,14 +42,11 @@
   import { createFocusTrap } from '$lib/utils/focusTrap';
   import { TOKENS } from '$lib/core';
   import { getAppContext } from '$lib/bootstrap';
-  import {
-    attachGlobalKeymapBinder,
-    buildScopeSnapshot,
-    type GlobalKeymapBinder,
-  } from '$lib/keymap';
+  import { buildScopeSnapshot } from '$lib/keymap';
   import { formatChord, type KeyChord } from '$lib/domain/values/KeyChord';
   import { AI_UNAVAILABLE_MESSAGE, buildRefId, deriveTextNoteTitle, type NotePaneDirection, type NotePaneDropIntent, type NoteWorkspaceTab } from '$lib/domain/values';
   import { copyTextToClipboard } from '$lib/utils/clipboard';
+  import type { FolderImage } from '$lib/stores/notes.svelte';
   import type { CommandService } from '$lib/ports/inbound/CommandService';
   import type { DocumentService } from '$lib/ports/inbound/DocumentService';
   import type { KeymapService } from '$lib/ports/inbound/KeymapService';
@@ -87,6 +86,7 @@
   let quickSwitcherOpen = $derived(uiStore.quickSwitcherOpen);
   let settingsOpen = $derived(uiStore.settingsOpen);
   let focusMode = $derived(uiStore.focusMode);
+  let foregroundWorkspace = $derived(uiStore.foregroundWorkspace);
   let tasksWorkspaceOpen = $derived(uiStore.tasksWorkspaceOpen);
   let externalDropPreview = $state<ExternalFileDropSummary | null>(null);
   let pasteCreateInFlight = false;
@@ -167,9 +167,6 @@
   let deleteConfirmButton: HTMLButtonElement | null = $state(null);
   let deleteFocusTrapCleanup: (() => void) | null = null;
 
-  // Global keymap binder (attached in onMount, disposed in onDestroy)
-  let keymapBinder: GlobalKeymapBinder | null = null;
-
   // Cached app context — set in onMount once bootstrap has resolved.
   let appCommands: CommandService | null = $state(null);
   let appKeymap: KeymapService | null = $state(null);
@@ -235,6 +232,8 @@
   let isMounted = $state(false);
 
   let todoWorkspace: TodoWorkspace | undefined = $state(undefined);
+  let trashWorkspace: TrashWorkspace | undefined = $state(undefined);
+  let workspacesWorkspace: WorkspacesWorkspace | undefined = $state(undefined);
   let noteActionsMenuOpen = $state(false);
 
   // Derived typography style from settings
@@ -793,7 +792,7 @@
     if (notesStore.selectedPath !== null || editorStore.activePath !== null) return;
 
     const snapshot = buildScopeSnapshot();
-    if (snapshot.modalOpen || snapshot.paletteOpen || snapshot.tasksWorkspaceOpen) return;
+    if (snapshot.modalOpen || snapshot.paletteOpen || uiStore.foregroundWorkspace !== null) return;
     if (isEditablePasteTarget(getPasteTarget(event))) return;
 
     const text = event.clipboardData?.getData('text/plain') ?? '';
@@ -814,30 +813,54 @@
     return settingsStore.settings?.taskDefaultView ?? DEFAULT_TODO_VIEW;
   }
 
-  function openTasksWorkspace() {
-    if (!tasksWorkspaceOpen) {
-      uiStore.openTasksWorkspace(notesStore.selectedPath, aiSidebarVisible);
+  function openForegroundWorkspace(workspace: 'tasks' | 'trash' | 'workspaces') {
+    if (foregroundWorkspace !== workspace) {
+      uiStore.openForegroundWorkspace(workspace, notesStore.selectedPath, aiSidebarVisible);
     }
-    uiStore.closeAISidebar();
-    todoStore.openWorkspace(getTaskStartupView());
+
+    if (workspace === 'tasks') {
+      todoStore.openWorkspace(getTaskStartupView());
+    } else {
+      todoStore.closeWorkspace();
+    }
+
     notesStore.hideSidebar();
+    uiStore.closeAISidebar();
     notesStore.selectNote(null);
     notesStore.selectTagView(null);
+    error = null;
   }
 
-  function closeTasksWorkspace() {
-    const noteToRestore = uiStore.notePathBeforeTasks;
-    const restoreAISidebar = uiStore.aiSidebarWasOpenBeforeTasks;
-    uiStore.closeTasksWorkspace();
+  function openTasksWorkspace() {
+    openForegroundWorkspace('tasks');
+  }
+
+  function openTrashWorkspace() {
+    openForegroundWorkspace('trash');
+  }
+
+  function openWorkspacesWorkspace() {
+    openForegroundWorkspace('workspaces');
+  }
+
+  function closeForegroundWorkspace(options: { restorePrevious?: boolean } = {}) {
+    const restorePrevious = options.restorePrevious ?? true;
+    const noteToRestore = uiStore.notePathBeforeForegroundWorkspace;
+    const restoreAISidebar = uiStore.aiSidebarWasOpenBeforeForegroundWorkspace;
+    uiStore.closeForegroundWorkspace();
     todoStore.closeWorkspace();
     notesStore.showSidebar();
 
-    if (noteToRestore) {
+    if (restorePrevious && noteToRestore) {
       notesStore.selectNote(noteToRestore);
     }
-    if (restoreAISidebar) {
+    if (restorePrevious && restoreAISidebar) {
       uiStore.openAISidebar();
     }
+  }
+
+  function closeTasksWorkspace() {
+    closeForegroundWorkspace();
   }
 
   function toggleTasksWorkspace() {
@@ -849,8 +872,8 @@
   }
 
   function navigateToTodoSource(filePath: string) {
-    const restoreAISidebar = uiStore.aiSidebarWasOpenBeforeTasks;
-    uiStore.closeTasksWorkspace();
+    const restoreAISidebar = uiStore.aiSidebarWasOpenBeforeForegroundWorkspace;
+    uiStore.closeForegroundWorkspace();
     todoStore.closeWorkspace();
     notesStore.showSidebar();
     notesStore.selectNoteByAnyPath(filePath);
@@ -860,7 +883,7 @@
   }
 
   function openHomeScreen() {
-    uiStore.closeTasksWorkspace();
+    uiStore.closeForegroundWorkspace();
     todoStore.closeWorkspace();
     notesStore.showSidebar();
     notesStore.selectNote(null);
@@ -869,7 +892,7 @@
   }
 
   function openTagView(tag: string) {
-    uiStore.closeTasksWorkspace();
+    uiStore.closeForegroundWorkspace();
     todoStore.closeWorkspace();
     notesStore.selectTagView(tag);
     error = null;
@@ -926,7 +949,7 @@
   }
 
   function prepareNoteWorkspace() {
-    uiStore.closeTasksWorkspace();
+    uiStore.closeForegroundWorkspace();
     todoStore.closeWorkspace();
     notesStore.showSidebar();
   }
@@ -1171,7 +1194,7 @@
         if (byModified !== 0) return byModified;
         return a.title.localeCompare(b.title);
       })
-      .slice(0, 6)
+      .slice(0, 8)
       .map((note) => note.path);
   }
 
@@ -1190,6 +1213,119 @@
 
   function openFolderOverview(path: string) {
     notesStore.selectFolderView(path);
+  }
+
+  /** Resolve the image assets stored directly inside a folder (for the overview gallery). */
+  async function loadFolderImages(folderPath: string): Promise<FolderImage[]> {
+    const ctx = getAppContext();
+    if (!ctx) return [];
+    const result = await ctx.mediaAttachments.listAssets();
+    if (!result.ok) return [];
+
+    const prefix = folderPath ? `${folderPath}/` : '';
+    const direct = result.value.filter((asset) => {
+      if (!asset.relativePath.startsWith(prefix)) return false;
+      const rest = asset.relativePath.slice(prefix.length);
+      return rest.length > 0 && !rest.includes('/');
+    });
+    direct.sort((a, b) =>
+      (a.originalName ?? a.fileName).localeCompare(b.originalName ?? b.fileName, undefined, { numeric: true }),
+    );
+
+    return Promise.all(
+      direct.map(async (asset) => {
+        const url = await ctx.mediaAttachments.resolveRenderUrl(asset.relativePath);
+        return {
+          relativePath: asset.relativePath,
+          fileName: asset.originalName ?? asset.fileName,
+          url: url.ok ? url.value : asset.relativePath,
+          width: asset.width ?? null,
+          height: asset.height ?? null,
+          size: asset.size,
+        } satisfies FolderImage;
+      }),
+    );
+  }
+
+  async function revealFolderImage(relativePath: string): Promise<void> {
+    const ctx = getAppContext();
+    if (!ctx) {
+      toastStore.error('Void is still starting up');
+      return;
+    }
+    const list = await ctx.mediaAttachments.listAssets();
+    if (!list.ok) {
+      toastStore.error(`Show in Finder failed: ${list.error.message}`);
+      return;
+    }
+    const asset = list.value.find((item) => item.relativePath === relativePath);
+    if (!asset?.absolutePath) {
+      toastStore.error('Asset file path is unavailable');
+      return;
+    }
+    try {
+      const { revealItemInDir } = await import('@tauri-apps/plugin-opener');
+      await revealItemInDir(asset.absolutePath);
+    } catch (error) {
+      toastStore.error(`Show in Finder failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  async function saveFolderImageAs(relativePath: string): Promise<void> {
+    const ctx = getAppContext();
+    if (!ctx) {
+      toastStore.error('Void is still starting up');
+      return;
+    }
+    try {
+      const fileName = relativePath.split('/').pop() || 'image';
+      const destination = await saveDialog({ defaultPath: fileName });
+      if (!destination) return;
+      const result = await ctx.mediaAttachments.saveAssetAs(relativePath, destination);
+      if (!result.ok) toastStore.error(`Save failed: ${result.error.message}`);
+      else toastStore.success('Image saved');
+    } catch (error) {
+      toastStore.error(`Save failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  async function copyFolderImagePath(relativePath: string): Promise<void> {
+    const copied = await copyTextToClipboard(relativePath);
+    if (copied) toastStore.info('Path copied');
+    else toastStore.error('Failed to copy path');
+  }
+
+  async function deleteFolderImage(relativePath: string): Promise<boolean> {
+    const ctx = getAppContext();
+    if (!ctx) {
+      toastStore.error('Void is still starting up');
+      return false;
+    }
+    const confirmed =
+      typeof window === 'undefined' ||
+      window.confirm(`Delete this image?\n\n${relativePath}\n\nThis permanently removes the file from disk.`);
+    if (!confirmed) return false;
+    const result = await ctx.mediaAttachments.deleteAsset(relativePath);
+    if (!result.ok) {
+      toastStore.error(`Delete failed: ${result.error.message}`);
+      return false;
+    }
+    toastStore.success('Image deleted');
+    return true;
+  }
+
+  async function openImageSourceNote(relativePath: string): Promise<void> {
+    const ctx = getAppContext();
+    if (!ctx) {
+      toastStore.error('Void is still starting up');
+      return;
+    }
+    const result = await ctx.mediaAttachments.findReferencingNotePaths(relativePath);
+    if (!result.ok || result.value.length === 0) {
+      toastStore.info("Couldn't find a note using this image");
+      return;
+    }
+    openFolderNote(result.value[0]!);
   }
 
   async function reorderFolderFromOverview(
@@ -1311,17 +1447,20 @@
     document.addEventListener('contextmenu', contextMenuHandler);
     document.addEventListener('paste', handleEmptyWorkspacePaste);
 
-    // Escape inside the tasks workspace closes it. This stays a route-level
-    // handler because Escape semantics are highly contextual (modal-aware,
-    // scope-sensitive) and cheap to express directly.
+    // Escape inside foreground workspaces closes local transient state first,
+    // then returns to the notes workspace.
     const escapeHandler = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key !== 'Escape') return;
-      if (!uiStore.tasksWorkspaceOpen) return;
+      if (!uiStore.foregroundWorkspace) return;
+      if (buildScopeSnapshot().modalOpen) return;
       const target = e.target as HTMLElement | null;
       if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
       e.preventDefault();
-      closeTasksWorkspace();
+      if (uiStore.foregroundWorkspace === 'tasks' && todoWorkspace?.handleEscape()) return;
+      if (uiStore.foregroundWorkspace === 'trash' && trashWorkspace?.handleEscape()) return;
+      if (uiStore.foregroundWorkspace === 'workspaces' && workspacesWorkspace?.handleEscape()) return;
+      closeForegroundWorkspace();
     };
     window.addEventListener('keydown', escapeHandler);
 
@@ -1341,17 +1480,13 @@
     };
     window.addEventListener('keydown', paneCycleHandler);
 
-    // Power-user command spine: every other shortcut is now resolved by
-    // the global keymap binder against the registered command set.
+    // Palette support: the global keymap binder now lives in the root layout,
+    // while this route still needs the command services for palette rows.
     const ctx = getAppContext();
     if (ctx) {
       appCommands = ctx.commands;
       appKeymap = ctx.keymap;
       appFrecency = ctx.frecency;
-      keymapBinder = attachGlobalKeymapBinder({
-        keymap: ctx.keymap,
-        commands: ctx.commands,
-      });
     }
     // Re-render palette commands when frecency mutates so recently-used
     // entries surface to the top.
@@ -1363,20 +1498,20 @@
     const handleAppNavigate = (event: EventMap['app:navigate']) => {
       switch (event.view) {
         case 'home':
-          uiStore.closeTasksWorkspace();
+          uiStore.closeForegroundWorkspace();
           todoStore.closeWorkspace();
           notesStore.showSidebar();
           notesStore.selectNote(null);
           notesStore.selectTagView(null);
           break;
         case 'note':
-          uiStore.closeTasksWorkspace();
+          uiStore.closeForegroundWorkspace();
           todoStore.closeWorkspace();
           notesStore.showSidebar();
           notesStore.selectNote(event.path);
           break;
         case 'folder':
-          uiStore.closeTasksWorkspace();
+          uiStore.closeForegroundWorkspace();
           todoStore.closeWorkspace();
           notesStore.showSidebar();
           notesStore.selectFolderByAnyPath(event.path);
@@ -1400,6 +1535,12 @@
           } else {
             openTasksWorkspace();
           }
+          break;
+        case 'trash':
+          openTrashWorkspace();
+          break;
+        case 'workspaces':
+          openWorkspacesWorkspace();
           break;
         case 'actions':
           uiStore.openAISidebar();
@@ -1517,8 +1658,6 @@
       window.removeEventListener('keydown', escapeHandler);
       window.removeEventListener('keydown', paneCycleHandler);
       window.removeEventListener('resize', handleViewportResize);
-      keymapBinder?.dispose();
-      keymapBinder = null;
       events.off('app:navigate', handleAppNavigate);
       events.off('app:note-context-menu', handleNoteContextMenuEvent);
       events.off('app:request-open-markdown-file', handleOpenMarkdownRequest);
@@ -1546,8 +1685,8 @@
       previousSelectedPath = selectedPath;
 
       if (selectedPath) {
-        const restoreAISidebar = uiStore.tasksWorkspaceOpen && uiStore.aiSidebarWasOpenBeforeTasks;
-        uiStore.closeTasksWorkspace();
+        const restoreAISidebar = uiStore.foregroundWorkspace !== null && uiStore.aiSidebarWasOpenBeforeForegroundWorkspace;
+        uiStore.closeForegroundWorkspace();
         todoStore.closeWorkspace();
         if (restoreAISidebar) {
           uiStore.openAISidebar();
@@ -1565,7 +1704,7 @@
         });
       } else if (oldPath !== null) {
         untrack(() => {
-          if (!uiStore.tasksWorkspaceOpen && !activeTagView && !activeFolderOverview) {
+          if (!uiStore.foregroundWorkspace && !activeTagView && !activeFolderOverview) {
             noteWorkspaceStore.closeActiveTab();
           }
           editorStore.closeDocument();
@@ -1676,6 +1815,8 @@
     onOpenSettings={() => { uiStore.openSettings(); }}
     onOpenQuickSwitcher={() => { uiStore.openQuickSwitcher(); }}
     onOpenTasks={toggleTasksWorkspace}
+    onOpenTrash={openTrashWorkspace}
+    onOpenWorkspaces={openWorkspacesWorkspace}
     onRequestDeleteNote={requestNoteDelete}
     onNoteContextMenu={(path, title, position, isFolder = false) => { noteContextMenu = { path, title, isFolder, position }; }}
     onRequestCreateFolder={openCreateFolderModal}
@@ -1912,8 +2053,19 @@
 
     <!-- Content area -->
     <main id="main-content" class="app-content">
-      {#if tasksWorkspaceOpen}
+      {#if foregroundWorkspace === 'tasks'}
         <TodoWorkspace bind:this={todoWorkspace} onClose={closeTasksWorkspace} onNavigateToFile={navigateToTodoSource} />
+      {:else if foregroundWorkspace === 'trash'}
+        <TrashWorkspace
+          bind:this={trashWorkspace}
+          onClose={() => closeForegroundWorkspace()}
+          onRestored={() => closeForegroundWorkspace({ restorePrevious: false })}
+        />
+      {:else if foregroundWorkspace === 'workspaces'}
+        <WorkspacesWorkspace
+          bind:this={workspacesWorkspace}
+          onClose={() => closeForegroundWorkspace()}
+        />
       {:else if activeTagView}
         <TagDetailView
           tag={activeTagView}
@@ -1933,6 +2085,12 @@
           onNoteContextMenu={(path, title, position, isFolder = false) => {
             noteContextMenu = { path, title, isFolder, position };
           }}
+          onLoadFolderImages={loadFolderImages}
+          onOpenImageSourceNote={openImageSourceNote}
+          onRevealImage={revealFolderImage}
+          onSaveImageAs={saveFolderImageAs}
+          onCopyImagePath={copyFolderImagePath}
+          onDeleteImage={deleteFolderImage}
         />
       {:else if error}
         <!-- Error state -->

@@ -2,17 +2,24 @@
   import {
     Clock3,
     Copy,
+    Download,
+    Ellipsis,
+    ExternalLink,
     FileText,
     Folder,
     FolderOpen,
+    FolderSearch,
     GripVertical,
+    Image as ImageIcon,
     Plus,
     Search,
     Sparkles,
+    Trash2,
   } from '@lucide/svelte';
   import type { FolderDropPosition } from '$lib/ports/inbound';
   import { createSortableState, type SortableState } from '$lib/components/dnd/sortable';
-  import type { FolderOverview as FolderOverviewModel } from '$lib/stores/notes.svelte';
+  import type { FolderOverview as FolderOverviewModel, FolderImage } from '$lib/stores/notes.svelte';
+  import ImageLightbox from './ImageLightbox.svelte';
   import { createFolderReorderDnd } from './folderReorderDnd';
   import { noteSource } from '$lib/components/dnd/paneDnd.svelte';
   import { buildRefId } from '$lib/domain/values';
@@ -28,6 +35,14 @@
     onSearch: () => void;
     onSummarize: () => void;
     onNoteContextMenu?: (path: string, title: string, position: { x: number; y: number }, isFolder?: boolean) => void;
+    /** Resolve the image assets that live directly in a folder (for the gallery). */
+    onLoadFolderImages?: (folderPath: string) => Promise<FolderImage[]>;
+    onOpenImageSourceNote?: (relativePath: string) => void;
+    onRevealImage?: (relativePath: string) => void;
+    onSaveImageAs?: (relativePath: string) => void;
+    onCopyImagePath?: (relativePath: string) => void;
+    /** Delete an asset; resolve true when removed so the gallery can refresh. */
+    onDeleteImage?: (relativePath: string) => boolean | Promise<boolean>;
   }
 
   let {
@@ -39,6 +54,12 @@
     onSearch,
     onSummarize,
     onNoteContextMenu,
+    onLoadFolderImages,
+    onOpenImageSourceNote,
+    onRevealImage,
+    onSaveImageAs,
+    onCopyImagePath,
+    onDeleteImage,
   }: Props = $props();
 
   function handleItemContextMenu(event: MouseEvent, path: string, title: string, isFolder = false) {
@@ -102,6 +123,92 @@
     if (success) toastStore.info('Ref copied');
     else toastStore.error('Failed to copy ref');
   }
+
+  // --- Image gallery -------------------------------------------------------
+
+  let images = $state<FolderImage[]>([]);
+  let lightboxIndex = $state(-1);
+  let menuPath = $state<string | null>(null);
+  // Non-reactive guard so a slow load for a previous folder can't overwrite a newer one.
+  let loadToken = 0;
+
+  function applyImages(token: number, next: FolderImage[]): void {
+    if (token === loadToken) images = next;
+  }
+
+  function runImageLoad(folderPath: string, load: (folderPath: string) => Promise<FolderImage[]>): void {
+    const token = ++loadToken;
+    void (async () => {
+      try {
+        applyImages(token, await load(folderPath));
+      } catch {
+        applyImages(token, []);
+      }
+    })();
+  }
+
+  // Reload images only when the folder path actually changes. `overview` is
+  // recreated on unrelated store updates, so guarding on the path avoids
+  // needless refetches and thumbnail flicker while viewing one folder.
+  let lastLoadedPath: string | null = null;
+  $effect(() => {
+    const folderPath = overview.path;
+    const load = onLoadFolderImages;
+    if (folderPath === lastLoadedPath) return;
+    lastLoadedPath = folderPath;
+    images = [];
+    lightboxIndex = -1;
+    menuPath = null;
+    loadToken++;
+    if (load) runImageLoad(folderPath, load);
+  });
+
+  // Close the open action menu on Escape or an outside click.
+  $effect(() => {
+    if (!menuPath) return;
+    function onPointerDown(event: PointerEvent): void {
+      if ((event.target as HTMLElement | null)?.closest('.image-menu-wrap')) return;
+      menuPath = null;
+    }
+    function onKey(event: KeyboardEvent): void {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      menuPath = null;
+    }
+    window.addEventListener('pointerdown', onPointerDown, true);
+    window.addEventListener('keydown', onKey, true);
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown, true);
+      window.removeEventListener('keydown', onKey, true);
+    };
+  });
+
+  function imageDimensions(image: FolderImage): string {
+    return image.width && image.height ? `${image.width} × ${image.height}` : '';
+  }
+
+  function toggleImageMenu(relativePath: string): void {
+    menuPath = menuPath === relativePath ? null : relativePath;
+  }
+
+  function handleImageContextMenu(event: MouseEvent, relativePath: string): void {
+    event.preventDefault();
+    event.stopPropagation();
+    menuPath = relativePath;
+  }
+
+  function runImageAction(relativePath: string, action?: (relativePath: string) => void): void {
+    menuPath = null;
+    action?.(relativePath);
+  }
+
+  async function deleteImage(relativePath: string): Promise<void> {
+    menuPath = null;
+    if (!onDeleteImage) return;
+    const removed = await onDeleteImage(relativePath);
+    if (!removed) return;
+    if (onLoadFolderImages) runImageLoad(overview.path, onLoadFolderImages);
+  }
 </script>
 
 <section class="folder-overview" aria-labelledby="folder-overview-title">
@@ -146,19 +253,26 @@
         <Folder size={15} strokeWidth={1.7} aria-hidden="true" />
         <span>{overview.subfolderCount} subfolder{overview.subfolderCount === 1 ? '' : 's'}</span>
       </div>
+      {#if images.length > 0}
+        <div class="stat">
+          <ImageIcon size={15} strokeWidth={1.7} aria-hidden="true" />
+          <span>{images.length} image{images.length === 1 ? '' : 's'}</span>
+        </div>
+      {/if}
       <div class="stat">
         <Clock3 size={15} strokeWidth={1.7} aria-hidden="true" />
         <span>{formatModified(overview.latestModifiedAt)}</span>
       </div>
     </div>
 
-    {#if overview.directFolders.length === 0 && overview.directNotes.length === 0}
+    {#if overview.directFolders.length === 0 && overview.directNotes.length === 0 && images.length === 0}
       <div class="empty-folder">
         <FolderOpen size={24} strokeWidth={1.6} aria-hidden="true" />
         <strong>This folder is empty</strong>
         <span>Create a note here, or use search to jump elsewhere.</span>
       </div>
     {:else}
+      {#if overview.directFolders.length > 0 || overview.directNotes.length > 0}
       <div class="overview-grid">
         <section class="overview-section" aria-labelledby="subfolders-heading">
           <div class="section-heading">
@@ -237,6 +351,83 @@
           {/if}
         </section>
       </div>
+      {/if}
+
+      {#if images.length > 0}
+        <section class="overview-section images-section" aria-labelledby="images-heading">
+          <div class="section-heading">
+            <h2 id="images-heading">Images</h2>
+            <span>{images.length}</span>
+          </div>
+          <div class="image-grid">
+            {#each images as image, index (image.relativePath)}
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <div
+                class="image-cell"
+                class:menu-open={menuPath === image.relativePath}
+                oncontextmenu={(event) => handleImageContextMenu(event, image.relativePath)}
+                role="group"
+                aria-label={image.fileName}
+              >
+                <button
+                  type="button"
+                  class="image-thumb"
+                  onclick={() => (lightboxIndex = index)}
+                  title={image.fileName}
+                  aria-label={`Preview ${image.fileName}`}
+                >
+                  <img src={image.url} alt={image.fileName} loading="lazy" />
+                </button>
+                <div class="image-meta">
+                  <span class="image-name" title={image.fileName}>{image.fileName}</span>
+                  {#if imageDimensions(image)}
+                    <span class="image-dims">{imageDimensions(image)}</span>
+                  {/if}
+                </div>
+                <div class="image-menu-wrap">
+                  <button
+                    type="button"
+                    class="image-menu-button"
+                    class:active={menuPath === image.relativePath}
+                    onclick={() => toggleImageMenu(image.relativePath)}
+                    aria-label="Image actions"
+                    aria-expanded={menuPath === image.relativePath}
+                    aria-haspopup="menu"
+                    title="More actions"
+                  >
+                    <Ellipsis size={15} strokeWidth={2} aria-hidden="true" />
+                  </button>
+                  {#if menuPath === image.relativePath}
+                    <div class="image-menu" role="menu">
+                      <button type="button" role="menuitem" onclick={() => runImageAction(image.relativePath, onOpenImageSourceNote)}>
+                        <ExternalLink size={14} strokeWidth={2} aria-hidden="true" />
+                        <span>Open source note</span>
+                      </button>
+                      <button type="button" role="menuitem" onclick={() => runImageAction(image.relativePath, onRevealImage)}>
+                        <FolderSearch size={14} strokeWidth={2} aria-hidden="true" />
+                        <span>Show in Finder</span>
+                      </button>
+                      <button type="button" role="menuitem" onclick={() => runImageAction(image.relativePath, onCopyImagePath)}>
+                        <Copy size={14} strokeWidth={2} aria-hidden="true" />
+                        <span>Copy path</span>
+                      </button>
+                      <button type="button" role="menuitem" onclick={() => runImageAction(image.relativePath, onSaveImageAs)}>
+                        <Download size={14} strokeWidth={2} aria-hidden="true" />
+                        <span>Save as…</span>
+                      </button>
+                      <div class="image-menu-sep" role="separator"></div>
+                      <button type="button" role="menuitem" class="danger" onclick={() => deleteImage(image.relativePath)}>
+                        <Trash2 size={14} strokeWidth={2} aria-hidden="true" />
+                        <span>Delete</span>
+                      </button>
+                    </div>
+                  {/if}
+                </div>
+              </div>
+            {/each}
+          </div>
+        </section>
+      {/if}
 
       {#if nestedNotes.length > 0}
         <section class="overview-section nested-section" aria-labelledby="nested-heading">
@@ -263,6 +454,15 @@
     {/if}
   </div>
 </section>
+
+{#if lightboxIndex >= 0 && lightboxIndex < images.length}
+  <ImageLightbox
+    {images}
+    index={lightboxIndex}
+    onClose={() => (lightboxIndex = -1)}
+    onIndexChange={(index) => (lightboxIndex = index)}
+  />
+{/if}
 
 <style>
   .folder-overview {
@@ -636,6 +836,177 @@
   .empty-folder span {
     color: var(--text-tertiary);
     font-size: var(--text-small);
+  }
+
+  .images-section {
+    margin-top: 30px;
+  }
+
+  .image-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 14px;
+    padding-top: 12px;
+  }
+
+  .image-cell {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  /* Raise the active cell so its absolute action menu paints over neighbours. */
+  .image-cell.menu-open {
+    z-index: 5;
+  }
+
+  .image-thumb {
+    position: relative;
+    display: block;
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    padding: 0;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-md);
+    background: var(--bg-card);
+    cursor: pointer;
+    overflow: hidden;
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+  }
+
+  .image-thumb:hover,
+  .image-thumb:focus-visible {
+    border-color: var(--border-medium);
+    box-shadow: var(--shadow-sm);
+    outline: none;
+  }
+
+  .image-thumb img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  .image-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+    padding: 0 2px;
+  }
+
+  .image-name {
+    overflow: hidden;
+    color: var(--text-secondary);
+    font-size: var(--text-caption);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .image-dims {
+    color: var(--text-tertiary);
+    font-size: var(--text-caption);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .image-menu-wrap {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+  }
+
+  .image-menu-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border: 1px solid color-mix(in srgb, var(--text-primary) 8%, transparent);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--bg-elevated) 80%, transparent);
+    color: var(--text-secondary);
+    cursor: pointer;
+    opacity: 0;
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+    transition: opacity var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
+  }
+
+  .image-cell:hover .image-menu-button,
+  .image-menu-button:focus-visible,
+  .image-menu-button.active {
+    opacity: 1;
+  }
+
+  .image-menu-button:hover,
+  .image-menu-button.active {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .image-menu {
+    position: absolute;
+    top: 30px;
+    right: 0;
+    z-index: var(--z-popover);
+    width: 190px;
+    padding: 4px;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-md);
+    background: var(--bg-elevated);
+    box-shadow: var(--shadow-lg);
+  }
+
+  .image-menu button {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 8px;
+    width: 100%;
+    height: 30px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-secondary);
+    font: inherit;
+    font-size: var(--text-caption);
+    text-align: left;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .image-menu button:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .image-menu button :global(svg) {
+    flex-shrink: 0;
+    color: var(--text-tertiary);
+  }
+
+  .image-menu button:hover :global(svg) {
+    color: var(--text-primary);
+  }
+
+  .image-menu-sep {
+    height: 1px;
+    margin: 4px 6px;
+    background: var(--border-light);
+  }
+
+  .image-menu button.danger,
+  .image-menu button.danger :global(svg) {
+    color: var(--color-error);
+  }
+
+  .image-menu button.danger:hover {
+    background: var(--color-error-bg);
+    color: var(--color-error);
   }
 
   /* Tablet landscape & compact desktop: tighten outer padding,

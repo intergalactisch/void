@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { fade, scale } from 'svelte/transition';
   import { RotateCcw, SlidersHorizontal, X } from '@lucide/svelte';
   import type { ImageBlockAttrsUpdate, ImageBlockToolbarRequest } from '$lib/adapters/prosemirror/views/BlockNodeView';
 
@@ -22,6 +23,18 @@
     width = image.width ? String(image.width) : '';
   });
 
+  // Close on Escape, captured so the editor's own key handling doesn't run.
+  $effect(() => {
+    function onKey(event: KeyboardEvent): void {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      onClose();
+    }
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  });
+
   function submit(event: SubmitEvent): void {
     event.preventDefault();
     const parsedWidth = Number.parseInt(width, 10);
@@ -33,19 +46,36 @@
     });
   }
 
-  function popoverStyle(): string {
-    const viewportWidth = typeof window === 'undefined' ? 360 : window.innerWidth;
-    const left = Math.min(Math.max(image.rect.left, 16), Math.max(16, viewportWidth - 336));
-    return `top: ${image.rect.bottom + 8}px; left: ${left}px;`;
+  function scrimStyle(): string {
+    const r = image.rect;
+    return `top: ${r.top}px; left: ${r.left}px; width: ${r.width}px; height: ${r.height}px;`;
+  }
+
+  function cardStyle(): string {
+    const viewportWidth = typeof window === 'undefined' ? 1024 : window.innerWidth;
+    const viewportHeight = typeof window === 'undefined' ? 768 : window.innerHeight;
+    const halfWidth = 160;
+    const left = Math.min(
+      Math.max(image.rect.left + image.rect.width / 2, halfWidth + 16),
+      Math.max(halfWidth + 16, viewportWidth - halfWidth - 16),
+    );
+    const top = Math.min(
+      Math.max(image.rect.top + image.rect.height / 2, 130),
+      Math.max(130, viewportHeight - 130),
+    );
+    return `left: ${left}px; top: ${top}px;`;
   }
 </script>
 
-<div class="image-details-backdrop" role="presentation" onclick={onClose}></div>
+<div class="image-overlay-backdrop" role="presentation" onclick={onClose} transition:fade={{ duration: 110 }}></div>
+<div class="image-overlay-scrim" style={scrimStyle()} aria-hidden="true" transition:fade={{ duration: 110 }}></div>
 <div
   class="image-details-popover"
-  style={popoverStyle()}
+  style={cardStyle()}
   role="dialog"
+  aria-modal="true"
   aria-label="Image details"
+  transition:scale={{ duration: 120, start: 0.96 }}
 >
   <form onsubmit={submit}>
     <header>
@@ -91,23 +121,38 @@
 </div>
 
 <style>
-  .image-details-backdrop {
+  .image-overlay-backdrop {
     position: fixed;
     inset: 0;
     z-index: var(--z-popover);
-    background: transparent;
+    background: color-mix(in srgb, var(--bg-primary) 35%, transparent);
+  }
+
+  /* Highlights the image being edited; clicks fall through to the backdrop. */
+  .image-overlay-scrim {
+    position: fixed;
+    z-index: var(--z-popover);
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--bg-primary) 55%, transparent);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-primary) 45%, transparent);
+    -webkit-backdrop-filter: blur(3px);
+    backdrop-filter: blur(3px);
+    pointer-events: none;
   }
 
   .image-details-popover {
     position: fixed;
     z-index: calc(var(--z-popover) + 1);
     width: min(320px, calc(100vw - 32px));
+    max-height: calc(100vh - 32px);
+    overflow: auto;
     padding: 12px;
     border: 1px solid var(--border-light);
     border-radius: var(--radius-md);
     background: var(--bg-elevated);
     box-shadow: var(--shadow-lg);
     color: var(--text-primary);
+    transform: translate(-50%, -50%);
   }
 
   .image-details-popover header,
