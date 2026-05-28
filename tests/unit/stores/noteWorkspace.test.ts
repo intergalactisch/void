@@ -269,6 +269,8 @@ describe('noteWorkspaceStore split pane operations', () => {
       'epsilon.md',
       'zeta.md',
       'eta.md',
+      'theta.md',
+      'iota.md',
     ]);
 
     expect(noteWorkspaceStore.tabs).toHaveLength(1);
@@ -279,6 +281,8 @@ describe('noteWorkspaceStore split pane operations', () => {
       'delta.md',
       'epsilon.md',
       'zeta.md',
+      'eta.md',
+      'theta.md',
     ]);
     expect(new Set(allWorkspaceNotePaths()).size).toBe(allWorkspaceNotePaths().length);
   });
