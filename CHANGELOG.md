@@ -13,6 +13,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 ### Security
 
+## [0.2.1] - 2026-06-01
+
+### Added
+- Todo due dates & scheduling — set due and scheduled dates on tasks through a calendar date picker (quick presets, ranges, and keyboard shortcuts). Dates persist in the markdown todo file. New reusable `DatePicker` component and date-picker helpers.
+- Asset-folder image gallery — folders containing images now render a thumbnail grid with a full-size lightbox and per-image actions (open the referencing note, reveal in Finder, copy path, save as, delete) instead of an "empty folder" state. Adds `MediaAttachmentService.findReferencingNotePaths` to map an asset back to the note that references it.
+
+### Changed
+- AI command center reworked around a streaming model (`CommandStream`, `StreamEntry`, conversation detail), replacing the previous history/inspector panels. Adds a ProseMirror plugin for AI continuation from the final block.
+- "Open folder as layout" now opens up to 8 notes (was 6).
+- Empty paragraphs (blank lines) inserted in a note now round-trip through markdown as real blank lines instead of being collapsed away on reload.
+- Trash and workspace views refactored.
+
+### Fixed
+- Date labels now render in a consistent format regardless of the operating system's locale.
+
 ## [0.2.0] - 2026-05-26
 
 ### Added
@@ -106,7 +121,9 @@ Initial public alpha release.
 - URL scheme allowlist on `openUrl` (http, https, mailto only).
 - Concurrent-process cap on CLI spawns.
 
-[Unreleased]: https://github.com/intergalactisch/void/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/intergalactisch/void/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/intergalactisch/void/releases/tag/v0.2.1
+[0.2.0]: https://github.com/intergalactisch/void/releases/tag/v0.2.0
 [0.1.4]: https://github.com/intergalactisch/void/releases/tag/v0.1.4
 [0.1.3]: https://github.com/intergalactisch/void/releases/tag/v0.1.3
 [0.1.2]: https://github.com/intergalactisch/void/releases/tag/v0.1.2
