@@ -86,6 +86,9 @@ export type {
 export type {
   TodoService,
   CreateTodoOptions,
+  TodoMoveTarget,
+  TodoSection,
+  TodoSectionMovePosition,
   TodoUpdatePatch,
   TodoStats,
   TodoListFile,

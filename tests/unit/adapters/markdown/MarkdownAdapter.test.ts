@@ -4,6 +4,9 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { MemoryFileSystemAdapter } from '$lib/adapters/memory';
 import { MarkdownAdapter } from '$lib/adapters/markdown/MarkdownAdapter';
+import { parseMarkdown } from '$lib/adapters/markdown/parser';
+import { serializeToMarkdown } from '$lib/adapters/markdown/serializer';
+import { voidSchema } from '$lib/adapters/prosemirror/schema';
 
 describe('MarkdownAdapter', () => {
   let fs: MemoryFileSystemAdapter;
@@ -485,5 +488,153 @@ describe('MarkdownAdapter', () => {
       expect(fileResult.value).toContain('| Name | Status |');
       expect(fileResult.value).toContain('| Void | Ready |');
     });
+  });
+
+  describe('empty-line round-trip fidelity', () => {
+    it('preserves an empty line between two paragraphs (the reported bug)', async () => {
+      fs.seed({ '/notes/gap.md': '---\ntitle: Gap\n---\nLine A\n\n\nLine B' });
+
+      const load1 = await adapter.load('gap.md');
+      expect(load1.ok).toBe(true);
+      if (!load1.ok) return;
+
+      // The user-inserted blank line becomes an empty paragraph between the two lines.
+      expect(load1.value.blocks.map((b) => b.content)).toEqual(['Line A', '', 'Line B']);
+      expect(load1.value.blocks[1]?.type).toBe('paragraph');
+
+      const save1 = await adapter.save(load1.value);
+      expect(save1.ok).toBe(true);
+
+      const file = await fs.readFile('/notes/gap.md');
+      expect(file.ok).toBe(true);
+      if (!file.ok) return;
+      // Stored as a real blank line — no marker, no NUL sentinel leaks to disk.
+      expect(file.value).toContain('Line A\n\n\nLine B');
+      expect(file.value).not.toContain('void-empty-paragraph');
+      expect(file.value).not.toContain(String.fromCharCode(0));
+
+      // Reopening is idempotent: still three blocks, middle still empty.
+      const load2 = await adapter.load('gap.md');
+      expect(load2.ok).toBe(true);
+      if (!load2.ok) return;
+      expect(load2.value.blocks.map((b) => b.content)).toEqual(['Line A', '', 'Line B']);
+    });
+
+    it('preserves multiple consecutive empty lines', async () => {
+      fs.seed({ '/notes/gaps.md': '---\ntitle: Gaps\n---\nA\n\n\n\nB' });
+
+      const load = await adapter.load('gaps.md');
+      expect(load.ok).toBe(true);
+      if (!load.ok) return;
+      expect(load.value.blocks.map((b) => b.content)).toEqual(['A', '', '', 'B']);
+
+      const save = await adapter.save(load.value);
+      expect(save.ok).toBe(true);
+      const file = await fs.readFile('/notes/gaps.md');
+      if (!file.ok) return;
+      expect(file.value).toContain('A\n\n\n\nB');
+    });
+
+    it('leaves a normal single blank line untouched (no spurious empty paragraph)', async () => {
+      fs.seed({ '/notes/normal.md': '---\ntitle: Normal\n---\nA\n\nB' });
+
+      const load = await adapter.load('normal.md');
+      expect(load.ok).toBe(true);
+      if (!load.ok) return;
+      expect(load.value.blocks.map((b) => b.content)).toEqual(['A', 'B']);
+
+      const save = await adapter.save(load.value);
+      expect(save.ok).toBe(true);
+      const file = await fs.readFile('/notes/normal.md');
+      if (!file.ok) return;
+      expect(file.value).toContain('A\n\nB');
+      expect(file.value).not.toContain('A\n\n\nB');
+    });
+
+    it('preserves an empty line between a paragraph and a heading', async () => {
+      fs.seed({ '/notes/ph.md': '---\ntitle: PH\n---\nA\n\n\n# Heading' });
+
+      const load = await adapter.load('ph.md');
+      expect(load.ok).toBe(true);
+      if (!load.ok) return;
+      expect(load.value.blocks.map((b) => b.type)).toEqual(['paragraph', 'paragraph', 'heading1']);
+      expect(load.value.blocks.map((b) => b.content)).toEqual(['A', '', 'Heading']);
+    });
+
+    it('drops a trailing empty line (cannot round-trip; matches standard tooling)', async () => {
+      fs.seed({ '/notes/trail.md': '---\ntitle: Trail\n---\nA\n\n\n' });
+
+      const load = await adapter.load('trail.md');
+      expect(load.ok).toBe(true);
+      if (!load.ok) return;
+      expect(load.value.blocks.map((b) => b.content)).toEqual(['A']);
+    });
+
+    it('is structurally stable across repeated load/save cycles (no widening or doubling)', async () => {
+      fs.seed({ '/notes/stable.md': '---\ntitle: Stable\n---\nA\n\n\nB\n\n\n\nC' });
+
+      const load1 = await adapter.load('stable.md');
+      if (!load1.ok) return;
+      await adapter.save(load1.value);
+      const file1 = await fs.readFile('/notes/stable.md');
+      if (!file1.ok) return;
+      expect(file1.value).toContain('A\n\n\nB\n\n\n\nC');
+
+      const load2 = await adapter.load('stable.md');
+      if (!load2.ok) return;
+      await adapter.save(load2.value);
+      const file2 = await fs.readFile('/notes/stable.md');
+      if (!file2.ok) return;
+
+      expect(file2.value).toContain('A\n\n\nB\n\n\n\nC');
+      expect(load2.value.blocks.map((b) => b.content)).toEqual(['A', '', 'B', '', '', 'C']);
+    });
+  });
+});
+
+describe('empty-paragraph markdown round-trip (serializer + parser)', () => {
+  const para = voidSchema.nodes.paragraph;
+  const docOf = (children: ReturnType<typeof para.create>[]) =>
+    voidSchema.nodes.doc.create(null, children);
+
+  it('serializeToMarkdown renders an interior empty paragraph as one extra blank line', () => {
+    const doc = docOf([
+      para.create(null, voidSchema.text('A')),
+      para.create(null),
+      para.create(null, voidSchema.text('B')),
+    ]);
+    expect(serializeToMarkdown(doc)).toBe('A\n\n\nB');
+  });
+
+  it('serializeToMarkdown renders two empty paragraphs as two extra blank lines', () => {
+    const doc = docOf([
+      para.create(null, voidSchema.text('A')),
+      para.create(null),
+      para.create(null),
+      para.create(null, voidSchema.text('B')),
+    ]);
+    expect(serializeToMarkdown(doc)).toBe('A\n\n\n\nB');
+  });
+
+  it('serializeToMarkdown drops a trailing empty paragraph', () => {
+    const doc = docOf([para.create(null, voidSchema.text('A')), para.create(null)]);
+    expect(serializeToMarkdown(doc)).toBe('A');
+  });
+
+  it('parseMarkdown reconstructs an empty paragraph from a double blank line', () => {
+    const doc = parseMarkdown('A\n\n\nB');
+    expect(doc.childCount).toBe(3);
+    expect(doc.child(1).type.name).toBe('paragraph');
+    expect(doc.child(1).content.size).toBe(0);
+  });
+
+  it('parseMarkdown does not invent an empty paragraph for a normal single blank line', () => {
+    const doc = parseMarkdown('A\n\nB');
+    expect(doc.childCount).toBe(2);
+  });
+
+  it('round-trips empty paragraphs through serialize then parse', () => {
+    expect(serializeToMarkdown(parseMarkdown('A\n\n\nB'))).toBe('A\n\n\nB');
+    expect(serializeToMarkdown(parseMarkdown('A\n\n\n\nB'))).toBe('A\n\n\n\nB');
   });
 });

@@ -112,6 +112,9 @@ pub enum VoidError {
 
     #[error("GitHub request failed: {0}")]
     GitHub(String),
+
+    #[error("Clipboard operation failed: {0}")]
+    Clipboard(String),
 }
 
 // Implement Serialize for Tauri command error handling

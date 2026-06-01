@@ -17,7 +17,14 @@
 
 import type { Result } from '$lib/core';
 import { ok, err, toError } from '$lib/core';
-import type { Todo, CreateTodoParams, TodoUpdatePatch } from '$lib/domain/entities/Todo';
+import type {
+  Todo,
+  CreateTodoParams,
+  TodoMoveTarget,
+  TodoSection,
+  TodoSectionMovePosition,
+  TodoUpdatePatch,
+} from '$lib/domain/entities/Todo';
 import { applyTodoPatch, toggleTodo } from '$lib/domain/entities/Todo';
 import type { TodoId } from '$lib/domain/values/TodoId';
 import { parseTodoId } from '$lib/domain/values/TodoId';
@@ -235,6 +242,13 @@ export class TodoServiceImpl implements TodoService {
    */
   async getTodoLists(): Promise<Result<TodoListFile[], Error>> {
     return this.repository.getTodoLists();
+  }
+
+  /**
+   * Get markdown sections from a dedicated todo-list file.
+   */
+  async getSections(filePath: string): Promise<Result<TodoSection[], Error>> {
+    return this.repository.getSections(filePath);
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -498,6 +512,63 @@ export class TodoServiceImpl implements TodoService {
   }
 
   /**
+   * Create a markdown section in a dedicated todo-list file.
+   */
+  async createSection(filePath: string, title: string): Promise<Result<TodoSection, Error>> {
+    const result = await resourceLock.withLock(this.todoSaveLockKey(filePath), () => {
+      this.markWrite(filePath);
+      return this.repository.createSection(filePath, title);
+    });
+
+    if (result.ok) {
+      await this.notifySubscribersForFile(filePath);
+    }
+
+    return result;
+  }
+
+  /**
+   * Rename a markdown section in a dedicated todo-list file.
+   */
+  async renameSection(
+    filePath: string,
+    fromTitle: string,
+    toTitle: string,
+  ): Promise<Result<TodoSection, Error>> {
+    const result = await resourceLock.withLock(this.todoSaveLockKey(filePath), () => {
+      this.markWrite(filePath);
+      return this.repository.renameSection(filePath, fromTitle, toTitle);
+    });
+
+    if (result.ok) {
+      await this.notifySubscribersForFile(filePath);
+    }
+
+    return result;
+  }
+
+  /**
+   * Move a markdown section in a dedicated todo-list file.
+   */
+  async moveSection(
+    filePath: string,
+    fromTitle: string,
+    targetTitle: string,
+    position: TodoSectionMovePosition,
+  ): Promise<Result<TodoSection[], Error>> {
+    const result = await resourceLock.withLock(this.todoSaveLockKey(filePath), () => {
+      this.markWrite(filePath);
+      return this.repository.moveSection(filePath, fromTitle, targetTitle, position);
+    });
+
+    if (result.ok) {
+      await this.notifySubscribersForFile(filePath);
+    }
+
+    return result;
+  }
+
+  /**
    * Update the content of an existing todo.
    */
   async update(id: TodoId, content: string): Promise<Result<Todo, Error>> {
@@ -563,6 +634,29 @@ export class TodoServiceImpl implements TodoService {
           extractRawTodoContent(result.value.rawLine),
           previousRawContent,
         );
+        await this.notifySubscribersForFile(filePath);
+      }
+
+      return result;
+    });
+  }
+
+  /**
+   * Move a dedicated todo-list task within its markdown file.
+   */
+  async move(id: TodoId, target: TodoMoveTarget): Promise<Result<Todo, Error>> {
+    const { filePath } = parseTodoId(id);
+    return resourceLock.withLock(this.todoItemLockKey(id), async () => {
+      const before = await this.repository.getById(id);
+      const expected = before.ok && before.value ? toTodoLineReference(before.value) : undefined;
+
+      const result = await resourceLock.withLock(this.todoSaveLockKey(filePath), () => {
+        this.markWrite(filePath);
+        return this.repository.move(id, target, expected);
+      });
+
+      if (result.ok) {
+        this.emitTodoUpdated(result.value);
         await this.notifySubscribersForFile(filePath);
       }
 

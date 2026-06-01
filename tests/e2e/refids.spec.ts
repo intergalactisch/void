@@ -52,7 +52,7 @@ test.describe('Copy Ref', () => {
     await createQuickNote(page, 'First tab');
     await createQuickNote(page, 'Second tab');
 
-    const activeTab = page.locator('.editor-tab.active').first();
+    const activeTab = page.getByRole('tab', { selected: true }).first();
     await expect(activeTab).toBeVisible();
     await activeTab.click({ button: 'right' });
     await page.getByRole('menuitem', { name: 'Copy Ref' }).click();
@@ -87,8 +87,24 @@ test.describe('Copy Ref', () => {
 
     const inspector = page.locator('.inspector');
     await expect(inspector).toBeVisible();
-    await inspector.getByRole('button', { name: 'Copy Ref' }).click();
+    await inspector.getByRole('button', { name: 'Copy task ref' }).click();
 
     await expect.poll(() => copiedRef(page)).toMatch(/^void:\/\/todo\/.+/);
+  });
+
+  test('copies a todo ref from row right-click', async ({ page }) => {
+    await page.keyboard.press('Meta+Shift+t');
+    await expect(page.getByRole('heading', { name: 'All' })).toBeVisible();
+
+    const title = `Todo row ref ${Date.now()}`;
+    await page.locator('input[name="task-capture"]').fill(title);
+    await page.keyboard.press('Enter');
+
+    const row = page.locator('.task-row').filter({ hasText: title }).first();
+    await expect(row).toBeVisible();
+    await row.click({ button: 'right' });
+
+    await expect.poll(() => copiedRef(page)).toMatch(/^void:\/\/todo\/.+/);
+    await expect(page.getByText('Failed to copy ref')).toBeHidden();
   });
 });

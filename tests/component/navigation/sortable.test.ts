@@ -97,14 +97,15 @@ function setupSortable() {
     zetaAction,
     alpha,
     zeta,
-    destroy() {
-      alphaAction.destroy?.();
-      zetaAction.destroy?.();
-      listAction.destroy?.();
-      list.remove();
-    },
-  };
-}
+	    destroy() {
+	      alphaAction.destroy?.();
+	      zetaAction.destroy?.();
+	      listAction.destroy?.();
+	      list.remove();
+	      window.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+	    },
+	  };
+	}
 
 describe('sortable dnd primitive', () => {
   it('resolves before and after positions from a row midpoint', () => {
@@ -156,6 +157,45 @@ describe('sortable dnd primitive', () => {
         position: 'before',
       },
     ]);
+
+    ctx.destroy();
+  });
+
+  it('suppresses the immediate click after a threshold-crossing drag', () => {
+    const ctx = setupSortable();
+    const onClick = vi.fn();
+    ctx.zeta.item.addEventListener('click', onClick);
+
+    ctx.zeta.handle.dispatchEvent(pointerEvent('pointerdown', { clientX: 8, clientY: 36 }));
+    window.dispatchEvent(pointerEvent('pointermove', { clientX: 8, clientY: 4 }));
+    window.dispatchEvent(pointerEvent('pointerup', { clientX: 8, clientY: 4 }));
+
+    const syntheticClick = new MouseEvent('click', { bubbles: true, cancelable: true });
+    ctx.zeta.item.dispatchEvent(syntheticClick);
+    expect(onClick).not.toHaveBeenCalled();
+    expect(syntheticClick.defaultPrevented).toBe(true);
+
+    const nextClick = new MouseEvent('click', { bubbles: true, cancelable: true });
+    ctx.zeta.item.dispatchEvent(nextClick);
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(nextClick.defaultPrevented).toBe(false);
+
+    ctx.destroy();
+  });
+
+  it('does not suppress clicks when pointer movement stays below the drag threshold', () => {
+    const ctx = setupSortable();
+    const onClick = vi.fn();
+    ctx.alpha.item.addEventListener('click', onClick);
+
+    ctx.alpha.handle.dispatchEvent(pointerEvent('pointerdown', { clientX: 5, clientY: 5 }));
+    window.dispatchEvent(pointerEvent('pointermove', { clientX: 6, clientY: 6 }));
+    window.dispatchEvent(pointerEvent('pointerup', { clientX: 6, clientY: 6 }));
+
+    const click = new MouseEvent('click', { bubbles: true, cancelable: true });
+    ctx.alpha.item.dispatchEvent(click);
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(click.defaultPrevented).toBe(false);
 
     ctx.destroy();
   });

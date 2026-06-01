@@ -11,6 +11,7 @@
     ChevronRight,
     Clock3,
     Edit3,
+    GripVertical,
     Inbox,
     Layers,
     ListChecks,
@@ -41,7 +42,21 @@
     type TodoSortMode,
     type TodoView,
   } from '$lib/stores/todo.svelte';
-  import { InfoPopover, SelectShell, VirtualList } from '$lib/components/shared';
+  import {
+    DatePicker,
+    InfoPopover,
+    SelectShell,
+    VirtualList,
+    parseDateInputLocal,
+    type DatePickerRangeChange,
+    type DatePickerRangePreset,
+  } from '$lib/components/shared';
+  import {
+    createSortableDnd,
+    createSortableState,
+    type ReorderIntent,
+    type SortableState,
+  } from '$lib/components/dnd/sortable';
   import TodoInspector from './TodoInspector.svelte';
   import TodoTaskRow from './TodoTaskRow.svelte';
 
@@ -98,6 +113,8 @@
   let captureExpanded = $state(false);
   let captureDueDate = $state('');
   let capturePriority = $state<'none' | TodoPriority>('none');
+  let captureForm = $state<HTMLFormElement | null>(null);
+  let lastCapturePointerDownAt = 0;
   let captureInput = $state<HTMLInputElement | null>(null);
   let searchInput = $state<HTMLInputElement | null>(null);
   let listRegion = $state<HTMLElement | null>(null);
@@ -128,6 +145,33 @@
   let listDraftNote = $state('');
   let listTitleInput = $state<HTMLInputElement | null>(null);
   let deleteListTarget = $state<TodoListFile | null>(null);
+
+  /** Section creation / rename state for dedicated todo-list files. */
+  let sectionDraftOpen = $state(false);
+	  let sectionDraftTitle = $state('');
+	  let sectionDraftInput = $state<HTMLInputElement | null>(null);
+	  let editingSectionTitle = $state<string | null>(null);
+	  let sectionCommitInFlight = $state(false);
+
+  /** Source-order drag/drop state for active todo-list files. */
+  let todoDndState = $state<SortableState>(createSortableState());
+  const todoDnd = createSortableDnd({
+    canDrop: (source, target) => {
+      const sourceRef = parseTodoDndId(source.id);
+      const targetRef = parseTodoDndId(target.id);
+      if (!sourceRef || !targetRef) return false;
+      if (sourceRef.kind === 'section') return targetRef.kind === 'section';
+      return targetRef.kind === 'todo' || targetRef.kind === 'section';
+    },
+    onStateChange: (state) => {
+      todoDndState = state;
+    },
+    onCommit: (intent) => {
+      void handleTodoReorder(intent);
+    },
+  });
+  const todoListAction = todoDnd.listAction;
+  const todoItemAction = todoDnd.itemAction;
 
   // ─── Navigation taxonomy (left rail) ────────────────────────────────────
   const navSections: Array<{ label: string; views: TodoView[] }> = [
@@ -179,9 +223,19 @@
     return out;
   });
 
-  const activeListsCount = $derived(todoStore.todoLists.length);
-  const selectionCount = $derived(selectionSet.size);
-  const hasMultiSelection = $derived(selectionCount > 0);
+	  const activeListsCount = $derived(todoStore.todoLists.length);
+	  const selectionCount = $derived(selectionSet.size);
+	  const hasMultiSelection = $derived(selectionCount > 0);
+	  const reorderGroupId = $derived(todoStore.activeListPath ?? '__no-active-todo-list__');
+	  const canEditSections = $derived(!!todoStore.activeListPath && activeTab === 'open');
+	  const canReorder = $derived.by(() => (
+	    !!todoStore.activeListPath &&
+    activeTab === 'open' &&
+    selectionSet.size === 0 &&
+    tabFilterCount === 0 &&
+    (getSortMode() === 'viewDefault' || getSortMode() === 'sourceOrder') &&
+    (getGroupMode() === 'viewDefault' || getGroupMode() === 'section')
+  ));
 
   // ─── Initialization ────────────────────────────────────────────────────
   onMount(() => {
@@ -216,6 +270,12 @@
   $effect(() => {
     if (viewportIsNarrow && todoStore.selectedTodoId) inspectorPeekOpen = true;
     if (!todoStore.selectedTodoId) inspectorPeekOpen = false;
+  });
+
+  $effect(() => {
+    if (todoStore.activeListPath) {
+      void todoStore.refreshSections(todoStore.activeListPath);
+    }
   });
 
   // ─── Density persistence (presentation only — localStorage) ─────────────
@@ -263,6 +323,20 @@
     captureDueDate = '';
     capturePriority = 'none';
     captureExpanded = false;
+  }
+
+  function handleCaptureBlur() {
+    requestAnimationFrame(() => {
+      const active = document.activeElement;
+      if (active instanceof Node && captureForm?.contains(active)) return;
+      if (performance.now() - lastCapturePointerDownAt < 250) return;
+      if (!capture && !captureDueDate && capturePriority === 'none') captureExpanded = false;
+    });
+  }
+
+  function handleCapturePointerDown() {
+    captureExpanded = true;
+    lastCapturePointerDownAt = performance.now();
   }
 
   function getCaptureTargetList(view: TodoView): TodoList | undefined {
@@ -320,6 +394,8 @@
     selectionSet = new Set();
     lastClickedId = null;
     openPopover = null;
+    cancelSectionEdit();
+    todoDnd.cancel();
   }
 
   function getWorkspaceTitle(): string {
@@ -379,6 +455,130 @@
     else collapsedOpenGroups = next;
   }
 
+  type TodoDndRef =
+    | { kind: 'todo'; id: TodoId }
+    | { kind: 'section'; title: string };
+
+  function todoTargetId(id: TodoId): string {
+    return `todo:${id}`;
+  }
+
+  function sectionTargetId(title: string): string {
+    return `section:${title}`;
+  }
+
+  function parseTodoDndId(id: string): TodoDndRef | null {
+    if (id.startsWith('todo:')) {
+      const todoId = id.slice('todo:'.length);
+      return todoId ? { kind: 'todo', id: todoId as TodoId } : null;
+    }
+    if (id.startsWith('section:')) {
+      const title = id.slice('section:'.length);
+      return title ? { kind: 'section', title } : null;
+    }
+    return null;
+  }
+
+  function getDropPosition(id: string): 'before' | 'after' | null {
+    const target = todoDndState.dropTarget;
+    if (!target || target.id !== id || target.groupId !== reorderGroupId) return null;
+    return target.position;
+  }
+
+  function isDraggingTodo(id: TodoId): boolean {
+    const dragging = todoDndState.dragging;
+    return !!dragging && dragging.id === todoTargetId(id) && dragging.groupId === reorderGroupId;
+  }
+
+	  function isDraggingSection(title: string): boolean {
+	    const dragging = todoDndState.dragging;
+	    return !!dragging && dragging.id === sectionTargetId(title) && dragging.groupId === reorderGroupId;
+	  }
+
+	  function sectionForTodoDropOnHeader(title: string, position: 'before' | 'after'): string {
+	    if (position === 'after') return title;
+
+	    const headers = entries.filter((entry): entry is Extract<Entry, { kind: 'header' }> => entry.kind === 'header');
+	    const index = headers.findIndex((entry) => entry.label === title);
+	    if (index > 0) return headers[index - 1]!.label;
+	    return title;
+	  }
+
+	  async function handleTodoReorder(intent: ReorderIntent) {
+	    if (!canReorder || !todoStore.activeListPath) return;
+	    const source = parseTodoDndId(intent.sourceId);
+    const target = parseTodoDndId(intent.targetId);
+    if (!source || !target) return;
+
+    if (source.kind === 'section') {
+      if (target.kind !== 'section') return;
+      await todoStore.moveSection(todoStore.activeListPath, source.title, target.title, intent.position);
+      return;
+    }
+
+	    if (target.kind === 'section') {
+	      await todoStore.move(source.id, {
+	        kind: 'section',
+	        filePath: todoStore.activeListPath,
+	        section: sectionForTodoDropOnHeader(target.title, intent.position),
+	      });
+	      return;
+	    }
+
+    await todoStore.move(source.id, {
+      kind: 'todo',
+      targetId: target.id,
+      position: intent.position,
+    });
+  }
+
+  function openSectionDraft() {
+    if (!todoStore.activeListPath) return;
+    editingSectionTitle = null;
+    sectionDraftTitle = '';
+    sectionDraftOpen = true;
+    requestAnimationFrame(() => sectionDraftInput?.focus());
+  }
+
+  function startRenameSection(title: string, event: MouseEvent) {
+    event.stopPropagation();
+    if (!todoStore.activeListPath) return;
+    editingSectionTitle = title;
+    sectionDraftTitle = title;
+    sectionDraftOpen = false;
+    requestAnimationFrame(() => sectionDraftInput?.focus());
+  }
+
+  function cancelSectionEdit() {
+    sectionDraftOpen = false;
+    editingSectionTitle = null;
+    sectionDraftTitle = '';
+  }
+
+	  async function commitSectionEdit() {
+	    if (sectionCommitInFlight) return;
+	    const title = sectionDraftTitle.trim();
+	    const filePath = todoStore.activeListPath;
+	    if (!filePath || !title) {
+	      cancelSectionEdit();
+	      return;
+	    }
+
+	    sectionCommitInFlight = true;
+	    try {
+	      if (editingSectionTitle) {
+	        if (title !== editingSectionTitle) {
+	          await todoStore.renameSection(filePath, editingSectionTitle, title);
+	        }
+	      } else {
+	        await todoStore.createSection(filePath, title);
+	      }
+	      cancelSectionEdit();
+	    } finally {
+	      sectionCommitInFlight = false;
+	    }
+	  }
+
   // ─── Sort / group / filter mutations ────────────────────────────────────
   async function setSort(mode: TodoSortMode) {
     if (activeTab === 'completed') await todoStore.setCompletedSortMode(mode);
@@ -400,6 +600,15 @@
   async function updateFilters(patch: Partial<typeof currentFilters>) {
     if (activeTab === 'completed') await todoStore.updateCompletedAdvancedFilters(patch);
     else await todoStore.updateAdvancedFilters(patch);
+  }
+
+  async function updateDateRangeFilter(next: DatePickerRangeChange) {
+    const isCustom = next.preset === 'custom';
+    await updateFilters({
+      datePreset: next.preset as TodoDateFilterPreset,
+      dateFrom: isCustom ? next.from : '',
+      dateTo: isCustom ? next.to : '',
+    });
   }
 
   async function resetPreferences() {
@@ -495,8 +704,7 @@
     clearSelection();
   }
 
-  async function bulkSetDeadline(event: Event) {
-    const value = (event.currentTarget as HTMLInputElement).value;
+  async function bulkSetDeadline(value: string) {
     if (!value) return;
     const ids = Array.from(selectionSet);
     for (const id of ids) {
@@ -663,8 +871,7 @@
 
   // ─── Utilities ──────────────────────────────────────────────────────────
   function parseDateInput(value: string): Date {
-    const [year, month, day] = value.split('-').map(Number);
-    return new Date(year!, month! - 1, day);
+    return parseDateInputLocal(value) ?? startOfToday();
   }
 
   function startOfToday(): Date {
@@ -704,6 +911,7 @@
   function groupLabel(mode: TodoGroupMode): string {
     const map: Record<TodoGroupMode, string> = {
       viewDefault: 'Default',
+      section: 'Section',
       smartDate: 'Smart date',
       completedDate: 'Completed date',
       createdDate: 'Created date',
@@ -906,7 +1114,13 @@
         </span>
       </div>
 
-      <form class="capture" class:expanded={captureExpanded || capture.length > 0} onsubmit={createTask}>
+      <form
+        bind:this={captureForm}
+        class="capture"
+        class:expanded={captureExpanded || capture.length > 0}
+        onsubmit={createTask}
+        onpointerdown={handleCapturePointerDown}
+      >
         <Plus size={15} strokeWidth={2.2} />
         <input
           bind:this={captureInput}
@@ -916,10 +1130,23 @@
           bind:value={capture}
           aria-label="Add a task"
           onfocus={() => { captureExpanded = true; }}
-          onblur={() => { if (!capture && !captureDueDate && capturePriority === 'none') captureExpanded = false; }}
+          onblur={handleCaptureBlur}
         />
         {#if captureExpanded}
-          <input type="date" name="task-capture-due" bind:value={captureDueDate} aria-label="Due date" class="capture-date" />
+          <DatePicker
+            mode="single"
+            name="task-capture-due"
+            label="Due date"
+            placeholder="Due date"
+            value={captureDueDate}
+            class="capture-date-picker"
+            onChange={(next: unknown) => {
+              if (typeof next === 'string') {
+                captureDueDate = next;
+                captureExpanded = true;
+              }
+            }}
+          />
           <SelectShell class="capture-prio-shell">
             <select name="task-capture-priority" bind:value={capturePriority} aria-label="Priority">
               <option value="none">Priority</option>
@@ -1019,6 +1246,18 @@
           {#if tabFilterCount > 0}<span class="rail-badge tabular-nums">{tabFilterCount}</span>{/if}
         </button>
 
+	        {#if canEditSections}
+          <button
+            type="button"
+            class="rail-button"
+            onclick={openSectionDraft}
+            title="New section"
+          >
+            <Plus size={13} strokeWidth={2} />
+            <span class="rail-button-label">New section</span>
+          </button>
+        {/if}
+
         <button
           type="button"
           class="rail-button rail-button-icon"
@@ -1051,6 +1290,24 @@
         </div>
       {/if}
 
+      {#if sectionDraftOpen}
+        <form class="section-draft" onsubmit={(event) => { event.preventDefault(); void commitSectionEdit(); }}>
+          <input
+            bind:this={sectionDraftInput}
+            type="text"
+            name="todo-section-title"
+            bind:value={sectionDraftTitle}
+            placeholder="Section title"
+            aria-label="Section title"
+            onkeydown={(event) => { if (event.key === 'Escape') cancelSectionEdit(); }}
+          />
+          <button type="submit" disabled={!sectionDraftTitle.trim()}>Add</button>
+          <button type="button" aria-label="Cancel section" onclick={cancelSectionEdit}>
+            <X size={12} strokeWidth={2.2} />
+          </button>
+        </form>
+      {/if}
+
       <!-- ── Sort popover ── -->
       {#if openPopover === 'sort'}
         <div class="popover popover-sort" role="menu" aria-label="Sort">
@@ -1066,7 +1323,7 @@
       <!-- ── Group popover ── -->
       {#if openPopover === 'group'}
         <div class="popover popover-group" role="menu" aria-label="Group">
-          {#each ['viewDefault', 'smartDate', 'planningDate', 'createdDate', 'completedDate', 'sourceFile', 'priority', 'tag', 'none'] as TodoGroupMode[] as mode (mode)}
+          {#each ['viewDefault', 'section', 'smartDate', 'planningDate', 'createdDate', 'completedDate', 'sourceFile', 'priority', 'tag', 'none'] as TodoGroupMode[] as mode (mode)}
             <button type="button" role="menuitemradio" aria-checked={getGroupMode() === mode} class="menu-item" onclick={() => setGroup(mode)}>
               <span class="menu-check">{#if getGroupMode() === mode}<Check size={13} strokeWidth={2.4} />{/if}</span>
               <span>{groupLabel(mode)}</span>
@@ -1162,28 +1419,18 @@
               </select>
             </SelectShell>
           </label>
-          <label class="filter-field">
+          <div class="filter-field filter-date-range">
             <span>Date range</span>
-            <SelectShell class="popover-select-shell">
-              <select value={tabFilters.datePreset ?? 'any'} onchange={(e) => updateFilters({ datePreset: (e.currentTarget as HTMLSelectElement).value as never, dateFrom: '', dateTo: '' })}>
-                <option value="any">Any date</option>
-                <option value="today">Today</option>
-                <option value="yesterday">Yesterday</option>
-                <option value="last7Days">Last 7 days</option>
-                <option value="last30Days">Last 30 days</option>
-                <option value="custom">Custom</option>
-              </select>
-            </SelectShell>
-          </label>
-          <div class="filter-field date-range-pair">
-            <label>
-              <span>From</span>
-              <input type="date" value={tabFilters.dateFrom ?? ''} onchange={(e) => updateFilters({ dateFrom: (e.currentTarget as HTMLInputElement).value, datePreset: 'custom' })} />
-            </label>
-            <label>
-              <span>To</span>
-              <input type="date" value={tabFilters.dateTo ?? ''} onchange={(e) => updateFilters({ dateTo: (e.currentTarget as HTMLInputElement).value, datePreset: 'custom' })} />
-            </label>
+            <DatePicker
+              mode="range"
+              name="task-filter-date-range"
+              label="Date range"
+              placeholder="Any date"
+              value={{ from: tabFilters.dateFrom ?? '', to: tabFilters.dateTo ?? '' }}
+              preset={(tabFilters.datePreset ?? 'any') as DatePickerRangePreset}
+              class="filter-date-picker"
+              onChange={(next: unknown) => { void updateDateRangeFilter(next as DatePickerRangeChange); }}
+            />
           </div>
         </div>
         <div class="popover-footer">
@@ -1228,7 +1475,7 @@
     </div>
 
     <!-- ── List region (virtualized) ── -->
-    <div class="list-region" bind:this={listRegion} aria-live="polite">
+    <div class="list-region" bind:this={listRegion} aria-live="polite" use:todoListAction={{ groupId: reorderGroupId }}>
       {#if todoStore.loading}
         <div class="state-line">Loading tasks…</div>
       {:else if todoStore.error}
@@ -1247,33 +1494,113 @@
           {/if}
         </div>
       {:else}
-        <VirtualList items={entries} itemHeight={rowHeight} ariaLabel={activeTab === 'completed' ? 'Completed tasks' : 'Open tasks'}>
+        <VirtualList
+          items={entries}
+          itemHeight={rowHeight}
+          ariaLabel={activeTab === 'completed' ? 'Completed tasks' : 'Open tasks'}
+          getKey={(item) => (item as Entry).key}
+        >
           {#snippet row(item, _index)}
             {@const entry = item as Entry}
             {#if entry.kind === 'header'}
-              <button
-                type="button"
-                class="group-header"
-                class:collapsed={entry.collapsed}
-                onclick={() => toggleGroup(entry.label)}
-                aria-expanded={!entry.collapsed}
-              >
-                <span class="group-caret" aria-hidden="true">
-                  {#if entry.collapsed}<ChevronRight size={12} strokeWidth={2.4} />{:else}<ChevronDown size={12} strokeWidth={2.4} />{/if}
-                </span>
-                <span class="group-label">{entry.label}</span>
-                <span class="group-count tabular-nums">{entry.count}</span>
-              </button>
-            {:else}
-              <TodoTaskRow
-                todo={entry.todo}
-                {density}
-                hideSource={!showSourceInRow}
-                selected={todoStore.selectedTodoId === entry.todo.id}
-                multiSelected={selectionSet.has(entry.todo.id)}
-                onSelect={(t, event) => handleRowSelect(t, event)}
-                onNavigateToFile={navigateToFile}
-              />
+	              {@const headerId = sectionTargetId(entry.label)}
+	              {@const headerDrop = getDropPosition(headerId)}
+	              <div
+	                class="group-header"
+	                class:collapsed={entry.collapsed}
+	                class:dragging={isDraggingSection(entry.label)}
+	                class:drop-before={headerDrop === 'before'}
+	                class:drop-after={headerDrop === 'after'}
+	                onclick={() => toggleGroup(entry.label)}
+	                ondblclick={(event) => startRenameSection(entry.label, event)}
+	                onkeydown={(event) => {
+	                  if (event.key === 'Enter' || event.key === ' ') {
+	                    event.preventDefault();
+                    toggleGroup(entry.label);
+                  }
+                }}
+	                aria-expanded={!entry.collapsed}
+	                role="button"
+	                tabindex="0"
+	                use:todoItemAction={{
+	                  id: headerId,
+	                  groupId: reorderGroupId,
+	                  handle: '[data-todo-section-drag-handle]',
+	                  disabled: !canReorder,
+	                }}
+	              >
+	                {#if canReorder}
+	                  <button
+	                    type="button"
+	                    class="section-drag-handle"
+	                    data-todo-section-drag-handle
+	                    title="Drag section to reorder"
+	                    aria-label={`Drag ${entry.label} section to reorder`}
+	                    onclick={(event) => event.stopPropagation()}
+	                  >
+	                    <GripVertical size={13} strokeWidth={1.8} aria-hidden="true" />
+	                  </button>
+	                {/if}
+	                <span class="group-caret" aria-hidden="true">
+	                  {#if entry.collapsed}<ChevronRight size={12} strokeWidth={2.4} />{:else}<ChevronDown size={12} strokeWidth={2.4} />{/if}
+	                </span>
+                {#if editingSectionTitle === entry.label}
+                  <input
+                    bind:this={sectionDraftInput}
+                    class="section-title-input"
+                    type="text"
+                    name="todo-section-rename"
+                    bind:value={sectionDraftTitle}
+                    aria-label="Rename section"
+                    onclick={(event) => event.stopPropagation()}
+                    onkeydown={(event) => {
+                      event.stopPropagation();
+                      if (event.key === 'Enter') { event.preventDefault(); void commitSectionEdit(); }
+                      if (event.key === 'Escape') { event.preventDefault(); cancelSectionEdit(); }
+                    }}
+                    onblur={() => { void commitSectionEdit(); }}
+                  />
+	                {:else}
+	                  <span class="group-label" title="Double-click to rename">{entry.label}</span>
+	                  {#if canEditSections}
+	                    <button
+	                      type="button"
+	                      class="section-title-action"
+	                      title="Rename section"
+	                      aria-label={`Rename ${entry.label} section`}
+	                      onclick={(event) => startRenameSection(entry.label, event)}
+	                    >
+	                      <Edit3 size={12} strokeWidth={2} aria-hidden="true" />
+	                    </button>
+	                  {/if}
+	                {/if}
+	                <span class="group-count tabular-nums">{entry.count}</span>
+	              </div>
+	            {:else}
+	              {@const rowDrop = getDropPosition(todoTargetId(entry.todo.id))}
+	              <div
+	                class="task-dnd-row"
+	                class:dragging={isDraggingTodo(entry.todo.id)}
+	                class:drop-before={rowDrop === 'before'}
+	                class:drop-after={rowDrop === 'after'}
+	                use:todoItemAction={{
+	                  id: todoTargetId(entry.todo.id),
+	                  groupId: reorderGroupId,
+	                  handle: '[data-todo-drag-handle]',
+	                  disabled: !canReorder,
+	                }}
+	              >
+                <TodoTaskRow
+                  todo={entry.todo}
+                  {density}
+                  hideSource={!showSourceInRow}
+                  reorderable={canReorder}
+                  selected={todoStore.selectedTodoId === entry.todo.id}
+                  multiSelected={selectionSet.has(entry.todo.id)}
+                  onSelect={(t, event) => handleRowSelect(t, event)}
+                  onNavigateToFile={navigateToFile}
+                />
+              </div>
             {/if}
           {/snippet}
         </VirtualList>
@@ -1290,10 +1617,15 @@
           <button type="button" onclick={() => bulkMoveTo('today')}>Today</button>
           <button type="button" onclick={() => bulkMoveTo('anytime')}>Anytime</button>
           <button type="button" onclick={() => bulkMoveTo('someday')}>Someday</button>
-          <label class="bulk-deadline">
-            <span>Deadline</span>
-            <input type="date" onchange={bulkSetDeadline} aria-label="Set deadline for selection" />
-          </label>
+          <DatePicker
+            mode="single"
+            label="Set deadline for selection"
+            placeholder="Deadline"
+            value=""
+            allowClear={false}
+            class="bulk-deadline-picker"
+            onChange={(next: unknown) => { if (typeof next === 'string') void bulkSetDeadline(next); }}
+          />
           <button type="button" class="bulk-complete" onclick={bulkComplete}>
             <CheckCircle2 size={13} strokeWidth={2} />
             <span>Complete</span>
@@ -1730,7 +2062,7 @@
   }
 
   .capture input[type='text'],
-  .capture input[type='date'],
+  .capture :global(.capture-date-picker),
   .capture :global(.capture-prio-shell) {
     min-width: 0;
     border: 0;
@@ -1746,9 +2078,26 @@
     color: var(--text-placeholder);
   }
 
-  .capture input[type='date'],
+  .capture :global(.capture-date-picker),
   .capture :global(.capture-prio-shell) {
     border-left: 1px solid var(--border-faint);
+  }
+
+  .capture :global(.capture-date-picker .date-picker-trigger) {
+    min-height: 24px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    padding: 4px 6px;
+    font-size: var(--text-small);
+    box-shadow: none;
+  }
+
+  .capture :global(.capture-date-picker .date-picker-trigger:hover),
+  .capture :global(.capture-date-picker .date-picker-trigger[aria-expanded='true']),
+  .capture :global(.capture-date-picker .date-picker-trigger:focus-visible) {
+    background: var(--bg-hover);
+    box-shadow: none;
   }
 
   .capture :global(.capture-prio-shell) {
@@ -1802,7 +2151,8 @@
     border-bottom: 1px solid var(--border-faint);
   }
 
-  .rail:has(.chips) {
+  .rail:has(.chips),
+  .rail:has(.section-draft) {
     grid-template-columns: auto minmax(0, 1fr);
     grid-template-rows: auto auto;
   }
@@ -1866,7 +2216,7 @@
 
   .search-cluster {
     display: grid;
-    grid-template-columns: minmax(180px, 1fr) auto auto auto auto;
+    grid-template-columns: minmax(180px, 1fr) repeat(5, auto);
     align-items: center;
     gap: 6px;
     min-width: 0;
@@ -2100,6 +2450,52 @@
     color: var(--text-primary);
   }
 
+  .section-draft {
+    grid-column: 1 / -1;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    padding-top: 4px;
+  }
+
+  .section-draft input {
+    width: min(260px, 100%);
+    min-height: 28px;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-md);
+    background: var(--bg-app);
+    color: var(--text-primary);
+    font: inherit;
+    font-size: var(--text-small);
+    padding: 0 9px;
+    outline: none;
+  }
+
+  .section-draft input:focus {
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+
+  .section-draft button {
+    display: inline-grid;
+    place-items: center;
+    min-height: 28px;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-md);
+    background: var(--bg-app);
+    color: var(--text-secondary);
+    padding: 0 9px;
+    font: inherit;
+    font-size: var(--text-caption);
+    cursor: pointer;
+  }
+
+  .section-draft button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
   .menu-item[aria-checked='true'] {
     color: var(--text-primary);
   }
@@ -2131,8 +2527,7 @@
     font-weight: 600;
   }
 
-  .filter-field input[type='text'],
-  .filter-field input[type='date'] {
+  .filter-field input[type='text'] {
     min-height: 30px;
     border: 1px solid var(--border-light);
     border-radius: var(--radius-md);
@@ -2156,6 +2551,16 @@
     --select-padding-x: 8px;
     --select-padding-y: 4px;
     width: 100%;
+  }
+
+  :global(.filter-date-picker) {
+    width: 100%;
+  }
+
+  :global(.filter-date-picker .date-picker-trigger) {
+    min-height: 30px;
+    background: var(--bg-app);
+    padding: 4px 8px;
   }
 
   .priority-field {
@@ -2195,21 +2600,6 @@
     width: 13px;
     height: 13px;
     accent-color: var(--accent-primary);
-  }
-
-  .date-range-pair {
-    grid-column: 1 / -1;
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 8px;
-  }
-
-  .date-range-pair label {
-    display: grid;
-    gap: 4px;
-    color: var(--text-tertiary);
-    font-size: var(--text-caption);
-    font-weight: 600;
   }
 
   .popover-footer {
@@ -2367,23 +2757,147 @@
     color: var(--text-primary);
   }
 
-  :global(.virtual-row) :global(.group-caret) {
-    display: grid;
-    place-items: center;
+	  :global(.virtual-row) :global(.group-header:focus-visible) {
+	    background: var(--bg-hover);
+	    color: var(--text-primary);
+	    outline: none;
+	    box-shadow: inset 0 0 0 1px var(--accent-primary);
+	  }
+
+	  :global(.virtual-row) :global(.group-header.dragging) {
+	    opacity: 0.56;
+	  }
+
+	  :global(.virtual-row) :global(.section-drag-handle) {
+	    display: grid;
+	    place-items: center;
+	    flex: 0 0 18px;
+	    width: 18px;
+	    height: 22px;
+	    margin-left: -2px;
+	    border: 0;
+	    border-radius: 4px;
+	    background: transparent;
+	    color: var(--text-tertiary);
+	    cursor: grab;
+	    opacity: 0;
+	    transition: opacity var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
+	  }
+
+	  :global(.virtual-row) :global(.section-drag-handle:active) {
+	    cursor: grabbing;
+	  }
+
+	  :global(.virtual-row) :global(.group-header:hover .section-drag-handle),
+	  :global(.virtual-row) :global(.group-header:focus-within .section-drag-handle),
+	  :global(.virtual-row) :global(.group-header.dragging .section-drag-handle) {
+	    opacity: 1;
+	  }
+
+	  :global(.virtual-row) :global(.section-drag-handle:hover),
+	  :global(.virtual-row) :global(.section-drag-handle:focus-visible) {
+	    background: var(--bg-active);
+	    color: var(--text-primary);
+	  }
+
+	  :global(.virtual-row) :global(.group-caret) {
+	    display: grid;
+	    place-items: center;
     color: var(--text-tertiary);
     transition: transform var(--transition-fast);
   }
 
-  :global(.virtual-row) :global(.group-label) {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
+	  :global(.virtual-row) :global(.group-label) {
+	    overflow: hidden;
+	    text-overflow: ellipsis;
+	    white-space: nowrap;
+	  }
 
-  :global(.virtual-row) :global(.group-count) {
-    color: var(--text-tertiary);
+	  :global(.virtual-row) :global(.section-title-action) {
+	    display: grid;
+	    place-items: center;
+	    flex: 0 0 20px;
+	    width: 20px;
+	    height: 20px;
+	    border: 0;
+	    border-radius: 4px;
+	    background: transparent;
+	    color: var(--text-tertiary);
+	    cursor: pointer;
+	    opacity: 0;
+	    transition: opacity var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
+	  }
+
+	  :global(.virtual-row) :global(.group-header:hover .section-title-action),
+	  :global(.virtual-row) :global(.group-header:focus-within .section-title-action) {
+	    opacity: 1;
+	  }
+
+	  :global(.virtual-row) :global(.section-title-action:hover),
+	  :global(.virtual-row) :global(.section-title-action:focus-visible) {
+	    background: var(--bg-active);
+	    color: var(--text-primary);
+	  }
+
+	  :global(.virtual-row) :global(.group-count) {
+	    color: var(--text-tertiary);
     font-weight: 500;
     font-size: 11px;
+  }
+
+  :global(.virtual-row) :global(.section-title-input) {
+    min-width: 0;
+    flex: 1;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    background: var(--bg-editor);
+    color: var(--text-primary);
+    font: inherit;
+    font-size: var(--text-caption);
+    padding: 2px 6px;
+    outline: none;
+  }
+
+  :global(.virtual-row) :global(.task-dnd-row) {
+    position: relative;
+    width: 100%;
+    height: 100%;
+  }
+
+  :global(.virtual-row) :global(.task-dnd-row.dragging) {
+    opacity: 0.56;
+  }
+
+  :global(.virtual-row) :global(.task-dnd-row.drop-before),
+  :global(.virtual-row) :global(.task-dnd-row.drop-after),
+  :global(.virtual-row) :global(.group-header.drop-before),
+  :global(.virtual-row) :global(.group-header.drop-after) {
+    position: relative;
+  }
+
+  :global(.virtual-row) :global(.task-dnd-row.drop-before::before),
+  :global(.virtual-row) :global(.task-dnd-row.drop-after::before),
+  :global(.virtual-row) :global(.group-header.drop-before::before),
+  :global(.virtual-row) :global(.group-header.drop-after::before) {
+    content: '';
+    position: absolute;
+    left: 8px;
+    right: 8px;
+    height: 2px;
+    border-radius: var(--radius-full);
+    background: var(--accent-primary);
+    pointer-events: none;
+    z-index: 1;
+  }
+
+  :global(.virtual-row) :global(.task-dnd-row.drop-before::before),
+  :global(.virtual-row) :global(.group-header.drop-before::before) {
+    top: -2px;
+  }
+
+  :global(.virtual-row) :global(.task-dnd-row.drop-after::before),
+  :global(.virtual-row) :global(.group-header.drop-after::before) {
+    bottom: 4px;
   }
 
   /* ─── States ─────────────────────────────────────────────────────────── */
@@ -2473,7 +2987,7 @@
   }
 
   .bulk-actions button,
-  .bulk-deadline {
+  .bulk-actions :global(.bulk-deadline-picker .date-picker-trigger) {
     display: inline-flex;
     align-items: center;
     gap: 5px;
@@ -2489,28 +3003,20 @@
     transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
   }
 
-  .bulk-actions button:hover {
+  .bulk-actions button:hover,
+  .bulk-actions :global(.bulk-deadline-picker .date-picker-trigger:hover),
+  .bulk-actions :global(.bulk-deadline-picker .date-picker-trigger[aria-expanded='true']) {
     border-color: var(--border-medium);
     background: var(--bg-hover);
     color: var(--text-primary);
   }
 
-  .bulk-deadline {
-    padding: 0 10px 0 10px;
+  .bulk-actions :global(.bulk-deadline-picker) {
+    min-width: 112px;
   }
 
-  .bulk-deadline span {
+  .bulk-actions :global(.bulk-deadline-picker .date-picker-trigger.placeholder) {
     color: var(--text-tertiary);
-  }
-
-  .bulk-deadline input {
-    border: 0;
-    background: transparent;
-    color: var(--text-primary);
-    font: inherit;
-    font-size: var(--text-caption);
-    padding: 2px 0;
-    outline: none;
   }
 
   .bulk-complete {
@@ -2773,7 +3279,7 @@
     }
 
     .search-cluster {
-      grid-template-columns: minmax(140px, 1fr) auto auto auto auto;
+      grid-template-columns: minmax(140px, 1fr) repeat(5, auto);
     }
 
     .bulk-bar {

@@ -4,6 +4,7 @@
     CheckCircle2,
     FileText,
     Flag,
+    GripVertical,
     Repeat,
     Tag,
   } from '@lucide/svelte';
@@ -23,6 +24,8 @@
     hideSource?: boolean;
     /** Single-line vs. multi-line title. Compact density implies single-line. */
     compact?: boolean;
+    /** Show a drag handle for manual source-order reordering. */
+    reorderable?: boolean;
     onSelect?: (todo: Todo, event?: MouseEvent | KeyboardEvent) => void;
     onNavigateToFile?: (filePath: string) => void;
   }
@@ -34,44 +37,17 @@
     density = 'compact',
     hideSource = false,
     compact = false,
+    reorderable = false,
     onSelect,
     onNavigateToFile,
   }: Props = $props();
 
-  let editing = $state(false);
-  let draft = $state('');
-  let editInput = $state<HTMLInputElement | null>(null);
-
-  $effect(() => { if (!editing) draft = todo.content; });
-  $effect(() => {
-    if (editing && editInput) {
-      editInput.focus();
-      editInput.select();
-    }
-  });
-
   async function toggle(event?: Event) {
     event?.stopPropagation();
     await todoStore.toggle(todo.id);
-  }
-
-  function startEditing(event: Event) {
-    event.stopPropagation();
-    editing = true;
-    draft = todo.content;
-  }
-
-  async function saveEdit() {
-    const content = draft.trim();
-    if (content && content !== todo.content) {
-      await todoStore.updatePatch(todo.id, { content });
+    if (todoStore.selectedTodoId === todo.id) {
+      todoStore.selectTodo(null);
     }
-    editing = false;
-  }
-
-  function cancelEdit() {
-    draft = todo.content;
-    editing = false;
   }
 
   function navigateSource(event: MouseEvent) {
@@ -137,12 +113,10 @@
   }
 
   function handleClick(event: MouseEvent) {
-    if (editing) return;
     onSelect?.(todo, event);
   }
 
   function handleKeydown(event: KeyboardEvent) {
-    if (editing) return;
     if (event.key === 'Enter') {
       event.preventDefault();
       onSelect?.(todo, event);
@@ -172,8 +146,9 @@
   class="task-row"
   class:selected
   class:multi-selected={multiSelected}
-  class:completed={todo.isCompleted}
-  class:density-compact={density === 'compact'}
+	  class:completed={todo.isCompleted}
+	  class:reorderable
+	  class:density-compact={density === 'compact'}
   class:density-comfortable={density === 'comfortable'}
   class:overdue={dueState === 'overdue'}
   class:today={dueState === 'today'}
@@ -183,29 +158,34 @@
   onkeydown={handleKeydown}
   role="button"
   tabindex="0"
-  aria-pressed={selected}
->
-  <label class="check-wrap" aria-label={todo.isCompleted ? 'Mark incomplete' : 'Mark complete'}>
-    <input type="checkbox" checked={todo.isCompleted} onchange={toggle} onclick={(e) => e.stopPropagation()} />
-    <span class="check-shell" class:multi={multiSelected} aria-hidden="true"></span>
-  </label>
+	  aria-pressed={selected}
+	>
+	  {#if reorderable}
+	    <button
+	      type="button"
+	      class="drag-handle"
+	      data-todo-drag-handle
+	      title="Drag to reorder"
+	      aria-label={`Drag ${todo.content} to reorder`}
+	      onclick={(event) => event.stopPropagation()}
+	    >
+	      <GripVertical size={13} strokeWidth={1.8} aria-hidden="true" />
+	    </button>
+	  {/if}
 
-  {#if editing}
-    <input
-      bind:this={editInput}
-      class="inline-edit"
-      bind:value={draft}
-      aria-label="Task title"
-      onkeydown={(event) => {
-        if (event.key === 'Enter') saveEdit();
-        if (event.key === 'Escape') cancelEdit();
-      }}
-      onblur={saveEdit}
+	  <span class="check-wrap">
+	    <input
+	      type="checkbox"
+      checked={todo.isCompleted}
+      aria-label={todo.isCompleted ? 'Mark incomplete' : 'Mark complete'}
+      onchange={toggle}
       onclick={(event) => event.stopPropagation()}
+      onpointerdown={(event) => event.stopPropagation()}
     />
-  {:else}
-    <div class="title" class:single-line={isSingleLine}>{todo.content}</div>
-  {/if}
+    <span class="check-shell" class:multi={multiSelected} aria-hidden="true"></span>
+  </span>
+
+  <div class="title" class:single-line={isSingleLine}>{todo.content}</div>
 
   <div class="meta" aria-label="Task metadata">
     {#if todo.dates.dueDate && !todo.isCompleted}
@@ -257,21 +237,17 @@
       <button type="button" class="source" onclick={navigateSource} title={todo.sourceFile} aria-label={`Open ${getFileName(todo.sourceFile)}`}>
         <FileText size={11} strokeWidth={2} />
         <span>{getFileName(todo.sourceFile)}</span>
-      </button>
-    {/if}
-  </div>
-
-  <button type="button" class="row-edit" onclick={startEditing} title="Edit (e)" aria-label="Edit task">
-    <span aria-hidden="true">e</span>
-  </button>
-</div>
+	      </button>
+	    {/if}
+	  </div>
+	</div>
 
 <style>
-  .task-row {
-    display: grid;
-    grid-template-columns: 22px minmax(0, 1fr) auto auto;
-    align-items: center;
-    gap: 10px;
+	  .task-row {
+	    display: grid;
+	    grid-template-columns: 22px minmax(0, 1fr) auto;
+	    align-items: center;
+	    gap: 10px;
     width: 100%;
     height: 100%;
     border: 0;
@@ -280,8 +256,12 @@
     padding: 0 8px;
     cursor: default;
     transition: background var(--transition-fast);
-    outline: none;
-  }
+	    outline: none;
+	  }
+
+	  .task-row.reorderable {
+	    grid-template-columns: 18px 22px minmax(0, 1fr) auto;
+	  }
 
   .task-row:hover {
     background: var(--bg-hover);
@@ -323,17 +303,23 @@
 
   /* ─── Checkbox ───────────────────────────────────────────────────────── */
   .check-wrap {
+    position: relative;
     display: grid;
     place-items: center;
+    width: 18px;
+    height: 18px;
     cursor: pointer;
   }
 
   .check-wrap input {
     position: absolute;
-    width: 1px;
-    height: 1px;
+    inset: 0;
+    z-index: 1;
+    width: 100%;
+    height: 100%;
+    margin: 0;
     opacity: 0;
-    pointer-events: none;
+    cursor: pointer;
   }
 
   .check-shell {
@@ -400,23 +386,6 @@
     color: var(--text-muted);
     text-decoration: line-through;
     text-decoration-color: var(--border-medium);
-  }
-
-  .inline-edit {
-    width: 100%;
-    border: 1px solid var(--border-medium);
-    border-radius: var(--radius-sm);
-    background: var(--bg-editor);
-    color: var(--text-primary);
-    font: inherit;
-    font-size: var(--text-small);
-    padding: 4px 7px;
-    outline: none;
-  }
-
-  .inline-edit:focus {
-    border-color: var(--accent-primary);
-    box-shadow: 0 0 0 2px var(--accent-soft);
   }
 
   /* ─── Meta cluster ───────────────────────────────────────────────────── */
@@ -501,52 +470,62 @@
     background: var(--accent-light);
   }
 
-  /* ─── Inline edit affordance ─────────────────────────────────────────── */
-  .row-edit {
+  /* ─── Drag affordance ────────────────────────────────────────────────── */
+  .drag-handle {
     display: grid;
     place-items: center;
     width: 18px;
-    height: 18px;
-    border: 1px solid var(--border-faint);
+    height: 22px;
+    border: 0;
     border-radius: 4px;
     background: transparent;
     color: var(--text-tertiary);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    cursor: pointer;
+    cursor: grab;
     opacity: 0;
     transition: opacity var(--transition-fast), background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
   }
 
-  .task-row:hover .row-edit,
-  .task-row:focus-within .row-edit,
-  .task-row.selected .row-edit {
+  .drag-handle:active {
+    cursor: grabbing;
+  }
+
+  .task-row:hover .drag-handle,
+  .task-row:focus-within .drag-handle,
+  .task-row.selected .drag-handle {
     opacity: 1;
   }
 
-  .row-edit:hover {
-    border-color: var(--border-medium);
+  .drag-handle:hover,
+  .drag-handle:focus-visible {
     background: var(--bg-active);
     color: var(--text-primary);
   }
 
   /* ─── Responsive: at narrow widths the meta cluster wraps under the title ─── */
-  @media (max-width: 720px) {
-    .task-row {
-      grid-template-columns: 22px minmax(0, 1fr) auto;
-      grid-template-rows: auto auto;
-      row-gap: 2px;
-    }
+	  @media (max-width: 720px) {
+	    .task-row {
+	      grid-template-columns: 22px minmax(0, 1fr);
+	      grid-template-rows: auto auto;
+	      row-gap: 2px;
+	    }
 
-    .meta {
-      grid-column: 2;
-      grid-row: 2;
-      flex-wrap: wrap;
-    }
+	    .task-row.reorderable {
+	      grid-template-columns: 18px 22px minmax(0, 1fr);
+	    }
 
-    .row-edit {
-      grid-column: 3;
-      grid-row: 1 / -1;
-    }
-  }
+	    .meta {
+	      grid-column: 2;
+	      grid-row: 2;
+	      flex-wrap: wrap;
+	    }
+
+	    .task-row.reorderable .meta {
+	      grid-column: 3;
+	    }
+
+	    .drag-handle {
+	      grid-column: 1;
+	      grid-row: 1 / -1;
+	    }
+	  }
 </style>

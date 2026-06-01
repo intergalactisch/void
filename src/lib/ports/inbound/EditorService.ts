@@ -312,6 +312,12 @@ export interface EditorService {
   rangeIntersectsProtectedBlock(from: number, to: number): boolean;
 
   /**
+   * Replace an unlocked protected-lines block with normal markdown blocks.
+   * Returns false when the row is locked or no longer exists.
+   */
+  unprotectProtectedBlock(protectionId: string): boolean;
+
+  /**
    * Re-resolve an inline AI text anchor against the mounted editor.
    */
   resolveInlineAIRangeAnchor(input: EditorInlineAIRangeAnchorInput): EditorInlineAIRangeAnchorResult | null;

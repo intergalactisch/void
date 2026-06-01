@@ -384,6 +384,12 @@ export interface EditorPort {
   rangeIntersectsProtectedBlock(from: number, to: number): boolean;
 
   /**
+   * Replace an unlocked protected-lines block with its plaintext child blocks.
+   * Returns false when the block cannot be found or is still locked.
+   */
+  unprotectProtectedBlock(protectionId: string): boolean;
+
+  /**
    * Re-resolve an inline AI text anchor against the current editor document.
    * Returns null when the original text is gone or the match is ambiguous.
    */

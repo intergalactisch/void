@@ -50,6 +50,34 @@ export interface Todo {
 }
 
 /**
+ * Markdown heading section inside a dedicated todo-list file.
+ */
+export interface TodoSection {
+  /** Path to the todo-list markdown file */
+  filePath: string;
+  /** Section heading text without leading ## */
+  title: string;
+  /** Heading line number (0-indexed) */
+  lineNumber: number;
+  /** Number of todos currently under this section */
+  todoCount: number;
+}
+
+export type TodoMoveTarget =
+  | {
+      kind: 'todo';
+      targetId: TodoId;
+      position: 'before' | 'after';
+    }
+  | {
+      kind: 'section';
+      filePath: string;
+      section: string;
+    };
+
+export type TodoSectionMovePosition = 'before' | 'after';
+
+/**
  * Parameters for creating a new Todo.
  */
 export interface CreateTodoParams {
@@ -80,6 +108,8 @@ export interface TodoUpdatePatch {
   recurrence?: string | null;
   /** Move a dedicated TODO.md task to a top-level task list section */
   targetList?: TodoList;
+  /** Move a dedicated todo-list task to an arbitrary markdown heading section */
+  targetSection?: string;
   /** Override the parsed section heading; null clears it */
   section?: string | null;
 }
@@ -191,6 +221,11 @@ export function applyTodoPatch(todo: Todo, patch: TodoUpdatePatch): Todo {
 
   if ('targetList' in patch && patch.targetList !== undefined) {
     next.list = patch.targetList;
+  }
+
+  if ('targetSection' in patch && patch.targetSection !== undefined) {
+    const section = patch.targetSection.trim();
+    if (section) next.section = section;
   }
 
   return next;

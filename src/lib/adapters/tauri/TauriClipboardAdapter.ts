@@ -2,8 +2,8 @@
  * Tauri clipboard adapter
  *
  * Bridges the Rust-side `void://clipboard-changed` event to the frontend
- * `ClipboardService` and provides a `write` operation backed by the
- * browser's clipboard API (Tauri webview supports `navigator.clipboard`).
+ * `ClipboardService` and provides a `write` operation backed by the shared
+ * clipboard helper, including the native Tauri fallback.
  */
 
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -12,6 +12,7 @@ import type {
   ClipboardWatcherEvent,
   ClipboardWriter,
 } from '$lib/application/services/ClipboardServiceImpl';
+import { copyTextToClipboard } from '$lib/utils/clipboard';
 
 interface RustPayload {
   text: string;
@@ -47,9 +48,8 @@ export class TauriClipboardWatcher implements ClipboardWatcher {
 
 export class TauriClipboardWriter implements ClipboardWriter {
   async write(text: string): Promise<void> {
-    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-    }
+    const copied = await copyTextToClipboard(text);
+    if (!copied) throw new Error('Failed to write to clipboard');
   }
 }
 

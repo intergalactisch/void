@@ -687,6 +687,10 @@ class EditorStore {
     return this.#service?.rangeIntersectsProtectedBlock(from, to) ?? false;
   }
 
+  unprotectProtectedBlock(protectionId: string): boolean {
+    return this.#service?.unprotectProtectedBlock(protectionId) ?? false;
+  }
+
   getMarkdown() {
     if (!this.#service) throw new Error('EditorStore not initialized');
     return this.#service.getMarkdown();

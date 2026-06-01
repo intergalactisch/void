@@ -69,11 +69,17 @@ export class MarkdownTodoParser implements TodoParserPort {
     const lines = content.split('\n');
     const todos: Todo[] = [];
     let currentSection: string | undefined;
+    const source: TodoSource = options?.source ?? (isDedicatedTodoFile(filePath) ? 'dedicated' : 'inline');
 
     for (let i = 0; i < lines.length; i++) {
       const heading = parseHeading(lines[i]!);
       if (heading) {
-        currentSection = heading;
+        if (source === 'dedicated') {
+          if (heading.level === 2) currentSection = heading.title;
+          else if (heading.level === 1) currentSection = undefined;
+        } else {
+          currentSection = heading.title;
+        }
         continue;
       }
 
@@ -300,10 +306,13 @@ export class MarkdownTodoParser implements TodoParserPort {
   }
 }
 
-function parseHeading(line: string): string | undefined {
+function parseHeading(line: string): { level: number; title: string } | undefined {
   const match = /^(#{1,6})\s+(.+?)\s*$/.exec(line);
   if (!match?.[2]) return undefined;
-  return match[2].replace(/\s+#+\s*$/, '').trim();
+  return {
+    level: match[1]!.length,
+    title: match[2].replace(/\s+#+\s*$/, '').trim(),
+  };
 }
 
 /**

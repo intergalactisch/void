@@ -16,7 +16,10 @@ import type {
   TodoService,
   TodoStats,
   CreateTodoOptions,
-  TodoUpdatePatch,
+	  TodoMoveTarget,
+	  TodoSection,
+	  TodoSectionMovePosition,
+	  TodoUpdatePatch,
   TodoListFile,
   CreateTodoListFileParams,
   UpdateTodoListFileParams,
@@ -53,9 +56,11 @@ function createMockTodoService(): TodoService & {
   _listSubscribers: Set<(lists: TodoListFile[]) => void>;
   _todos: Todo[];
   _todoLists: TodoListFile[];
+  _sections: Record<string, TodoSection[]>;
 } {
   let todos: Todo[] = [];
   let todoLists: TodoListFile[] = [];
+  let sectionsByFile: Record<string, TodoSection[]> = {};
   const subscribers = new Set<(todos: Todo[]) => void>();
   const listSubscribers = new Set<(lists: TodoListFile[]) => void>();
 
@@ -64,6 +69,7 @@ function createMockTodoService(): TodoService & {
     _listSubscribers: listSubscribers,
     _todos: todos,
     _todoLists: todoLists,
+    _sections: sectionsByFile,
     initialize: vi.fn().mockResolvedValue(ok(undefined)),
     shutdown: vi.fn(),
     getAll: vi.fn().mockImplementation(async (filter?: TodoFilter) => ok(filter ? filterTodos(todos, filter) : todos)),
@@ -72,6 +78,7 @@ function createMockTodoService(): TodoService & {
       .mockImplementation(async (id: TodoId) => ok(todos.find((t) => t.id === id) ?? null)),
     getBySource: vi.fn().mockImplementation(async () => ok(todos)),
     getTodoLists: vi.fn().mockImplementation(async () => ok(todoLists)),
+    getSections: vi.fn().mockImplementation(async (filePath: string) => ok(sectionsByFile[filePath] ?? [])),
     toggle: vi.fn().mockImplementation(async (id: TodoId) => {
       const todo = todos.find((t) => t.id === id);
       if (!todo) return err(new Error('Not found'));
@@ -107,6 +114,14 @@ function createMockTodoService(): TodoService & {
         protected: false,
       };
       todoLists = [...todoLists, list];
+      sectionsByFile = {
+        ...sectionsByFile,
+        [list.path]: [
+          { filePath: list.path, title: 'Inbox', lineNumber: 7, todoCount: 0 },
+          { filePath: list.path, title: 'Anytime', lineNumber: 9, todoCount: 0 },
+          { filePath: list.path, title: 'Someday', lineNumber: 11, todoCount: 0 },
+        ],
+      };
       listSubscribers.forEach((cb) => cb([...todoLists]));
       return ok(list);
     }),
@@ -122,6 +137,16 @@ function createMockTodoService(): TodoService & {
         updatedAt: new Date(),
       };
       todoLists = todoLists.map((item) => (item.path === path ? updated : item));
+      if (updated.path !== path) {
+        sectionsByFile = {
+          ...sectionsByFile,
+          [updated.path]: (sectionsByFile[path] ?? []).map((section) => ({
+            ...section,
+            filePath: updated.path,
+          })),
+        };
+        delete sectionsByFile[path];
+      }
       listSubscribers.forEach((cb) => cb([...todoLists]));
       return ok(updated);
     }),
@@ -129,12 +154,64 @@ function createMockTodoService(): TodoService & {
       if (!todoLists.some((list) => list.path === path)) return err(new Error('Not found'));
       todoLists = todoLists.filter((list) => list.path !== path);
       todos = todos.filter((todo) => todo.sourceFile !== path);
+      delete sectionsByFile[path];
       listSubscribers.forEach((cb) => cb([...todoLists]));
       subscribers.forEach((cb) => cb([...todos]));
       return ok(undefined);
     }),
-    update: vi.fn().mockImplementation(async (id: TodoId, content: string) => {
-      const todo = todos.find((t) => t.id === id);
+    createSection: vi.fn().mockImplementation(async (filePath: string, title: string) => {
+      const section: TodoSection = {
+        filePath,
+        title: title.trim(),
+        lineNumber: (sectionsByFile[filePath]?.length ?? 0) + 10,
+        todoCount: 0,
+      };
+      sectionsByFile = {
+        ...sectionsByFile,
+        [filePath]: [...(sectionsByFile[filePath] ?? []), section],
+      };
+      return ok(section);
+    }),
+	    renameSection: vi.fn().mockImplementation(async (filePath: string, fromTitle: string, toTitle: string) => {
+	      const section = (sectionsByFile[filePath] ?? []).find((item) => item.title === fromTitle);
+	      if (!section) return err(new Error('Not found'));
+	      const updated = { ...section, title: toTitle.trim() };
+	      sectionsByFile = {
+        ...sectionsByFile,
+        [filePath]: (sectionsByFile[filePath] ?? []).map((item) => item.title === fromTitle ? updated : item),
+      };
+      todos = todos.map((todo) => todo.sourceFile === filePath && todo.section === fromTitle ? { ...todo, section: updated.title } : todo);
+	      subscribers.forEach((cb) => cb([...todos]));
+	      return ok(updated);
+	    }),
+	    moveSection: vi.fn().mockImplementation(async (
+	      filePath: string,
+	      fromTitle: string,
+	      targetTitle: string,
+	      position: TodoSectionMovePosition,
+	    ) => {
+	      if (fromTitle === targetTitle) return err(new Error('Cannot move a section relative to itself'));
+	      const sections = [...(sectionsByFile[filePath] ?? [])];
+	      const fromIndex = sections.findIndex((item) => item.title === fromTitle);
+	      if (fromIndex === -1) return err(new Error('Not found'));
+	      const [moved] = sections.splice(fromIndex, 1);
+	      const targetIndex = sections.findIndex((item) => item.title === targetTitle);
+	      if (targetIndex === -1 || !moved) return err(new Error('Not found'));
+	      const insertAt = position === 'before' ? targetIndex : targetIndex + 1;
+	      sections.splice(insertAt, 0, moved);
+	      const updated = sections.map((section, index) => ({
+	        ...section,
+	        lineNumber: 7 + index * 2,
+	      }));
+	      sectionsByFile = {
+	        ...sectionsByFile,
+	        [filePath]: updated,
+	      };
+	      subscribers.forEach((cb) => cb([...todos]));
+	      return ok(updated);
+	    }),
+	    update: vi.fn().mockImplementation(async (id: TodoId, content: string) => {
+	      const todo = todos.find((t) => t.id === id);
       if (!todo) return err(new Error('Not found'));
       const updated = { ...todo, content };
       todos = todos.map((t) => (t.id === id ? updated : t));
@@ -155,6 +232,22 @@ function createMockTodoService(): TodoService & {
           ...(patch.recurrence !== undefined ? { recurrence: patch.recurrence ?? undefined } : {}),
         },
       } as Todo;
+      todos = todos.map((t) => (t.id === id ? updated : t));
+      subscribers.forEach((cb) => cb([...todos]));
+      return ok(updated);
+    }),
+    move: vi.fn().mockImplementation(async (id: TodoId, target: TodoMoveTarget) => {
+      const todo = todos.find((t) => t.id === id);
+      if (!todo) return err(new Error('Not found'));
+      const section = target.kind === 'section'
+        ? target.section
+        : todos.find((item) => item.id === target.targetId)?.section;
+      const updated = {
+        ...todo,
+        id: `${todo.sourceFile}:${todo.lineNumber + 10}` as TodoId,
+        lineNumber: todo.lineNumber + 10,
+        ...(section ? { section } : {}),
+      };
       todos = todos.map((t) => (t.id === id ? updated : t));
       subscribers.forEach((cb) => cb([...todos]));
       return ok(updated);
@@ -334,6 +427,9 @@ describe('Todo Store Integration', () => {
       ]);
       expect(todoStore.showCompleted).toBe(false);
       expect(todoStore.visibleTodos.map((todo) => todo.content)).toEqual(['Open task']);
+      expect(todoStore.visibleCompletedTodos.map((todo) => todo.content)).toEqual([
+        'Previously completed',
+      ]);
 
       todoStore.setShowCompleted(true);
 
@@ -1119,7 +1215,9 @@ describe('Todo Store Integration', () => {
       todoStore.setActiveList(workList.path);
 
       expect(todoStore.activeTodoList?.title).toBe('Work');
+      expect(todoStore.showCompleted).toBe(false);
       expect(todoStore.visibleTodos.map((todo) => todo.content)).toEqual(['Work task']);
+      expect(todoStore.visibleCompletedTodos.map((todo) => todo.content)).toEqual(['Done work']);
       expect(todoStore.getTodoListCount(workList.path)).toBe(1);
 
       todoStore.setShowCompleted(true);
@@ -1165,6 +1263,118 @@ describe('Todo Store Integration', () => {
 
       expect(todoStore.activeListPath).toBeNull();
       expect(todoStore.todoLists).toEqual([]);
+    });
+
+    it('defaults active list presentation to source order grouped by section', async () => {
+      todoStore.init(mockService);
+
+      const list = await todoStore.createTodoList({ title: 'Work' });
+      expect(list).not.toBeNull();
+      if (!list) return;
+      await todoStore.createSection(list.path, 'Launch');
+
+      const inboxTask = createMockTodo({
+        content: 'Inbox task',
+        sourceFile: list.path,
+        lineNumber: 20,
+        section: 'Inbox',
+      });
+      const launchTask = createMockTodo({
+        content: 'Launch task',
+        sourceFile: list.path,
+        lineNumber: 30,
+        section: 'Launch',
+      });
+      mockService._subscribers.forEach((cb) => cb([launchTask, inboxTask]));
+
+      expect(todoStore.currentWorkspacePreference.sortMode).toBe('sourceOrder');
+      expect(todoStore.currentWorkspacePreference.groupMode).toBe('section');
+      expect(todoStore.visibleOpenTodos.map((todo) => todo.content)).toEqual(['Inbox task', 'Launch task']);
+      expect(todoStore.groupedVisibleOpenTodos.map((group) => group.label)).toEqual([
+        'Inbox',
+        'Anytime',
+        'Someday',
+        'Launch',
+      ]);
+    });
+
+    it('moves an active-list todo without selecting it when it was not selected', async () => {
+      todoStore.init(mockService);
+
+      const list = await todoStore.createTodoList({ title: 'Work' });
+      expect(list).not.toBeNull();
+      if (!list) return;
+      await todoStore.createSection(list.path, 'Launch');
+
+      await todoStore.create('Ship release', {
+        targetFile: list.path,
+        targetList: 'inbox',
+      });
+      const task = todoStore.visibleOpenTodos[0];
+      expect(task).toBeDefined();
+      if (!task) return;
+
+      await todoStore.move(task.id, {
+        kind: 'section',
+        filePath: list.path,
+        section: 'Launch',
+      });
+
+      expect(mockService.move).toHaveBeenCalledWith(task.id, {
+        kind: 'section',
+        filePath: list.path,
+        section: 'Launch',
+      });
+      expect(todoStore.selectedTodoId).toBeNull();
+      expect(todoStore.visibleOpenTodos[0]?.section).toBe('Launch');
+    });
+
+    it('moves an already selected active-list todo and rebases the selection id', async () => {
+      todoStore.init(mockService);
+
+      const list = await todoStore.createTodoList({ title: 'Work' });
+      expect(list).not.toBeNull();
+      if (!list) return;
+      await todoStore.createSection(list.path, 'Launch');
+
+      await todoStore.create('Ship release', {
+        targetFile: list.path,
+        targetList: 'inbox',
+      });
+      const task = todoStore.visibleOpenTodos[0];
+      expect(task).toBeDefined();
+      if (!task) return;
+      todoStore.selectTodo(task.id);
+
+      await todoStore.move(task.id, {
+        kind: 'section',
+        filePath: list.path,
+        section: 'Launch',
+      });
+
+      expect(todoStore.selectedTodoId).not.toBe(task.id);
+      expect(todoStore.selectedTodo?.section).toBe('Launch');
+    });
+
+    it('moves sections in active-list source order', async () => {
+      todoStore.init(mockService);
+
+      const list = await todoStore.createTodoList({ title: 'Work' });
+      expect(list).not.toBeNull();
+      if (!list) return;
+      await todoStore.createSection(list.path, 'Launch');
+      await todoStore.createSection(list.path, 'Ops');
+
+      await todoStore.moveSection(list.path, 'Launch', 'Inbox', 'before');
+
+      expect(mockService.moveSection).toHaveBeenCalledWith(list.path, 'Launch', 'Inbox', 'before');
+      expect(todoStore.activeTodoSections.map((section) => section.title)).toEqual([
+        'Launch',
+        'Inbox',
+        'Anytime',
+        'Someday',
+        'Ops',
+      ]);
     });
   });
 

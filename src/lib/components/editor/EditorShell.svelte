@@ -1077,6 +1077,81 @@
     await reloadDocument();
   }
 
+  async function handleDeleteProtectedLines(blockId: string) {
+    if (!blockId) {
+      toastStore.error('Could not find protected row');
+      return;
+    }
+    const confirmed = typeof window === 'undefined' || window.confirm(
+      'Delete this protected row?\n\nThis removes the encrypted protected content from the note.'
+    );
+    if (!confirmed) return;
+
+    focusShellPane();
+    editorStore.deleteBlock(blockId);
+    const saved = await editorStore.saveDocument();
+    if (!saved.ok) {
+      toastStore.error(saved.error.message);
+      return;
+    }
+    toastStore.info('Protected row deleted. Press Cmd+Z to undo');
+    editorStore.focus();
+  }
+
+  async function handleUnprotectProtectedLines(protectionId: string) {
+    if (!protectionId) {
+      toastStore.error('Could not find protected row');
+      return;
+    }
+
+    focusShellPane();
+    let unprotected = editorStore.unprotectProtectedBlock(protectionId);
+    if (!unprotected) {
+      const unlocked = await protectionStore.unlockWithRecoveryPrompt();
+      if (!unlocked) {
+        toastStore.error(protectionStore.error?.message ?? 'Could not unlock protected notes');
+        return;
+      }
+      toastStore.success('Protected notes unlocked');
+      await reloadDocument();
+      await tick();
+      focusShellPane();
+      unprotected = editorStore.unprotectProtectedBlock(protectionId);
+    }
+
+    if (!unprotected) {
+      toastStore.error('Could not unprotect protected row');
+      return;
+    }
+
+    const saved = await editorStore.saveDocument();
+    if (!saved.ok) {
+      toastStore.error(saved.error.message);
+      return;
+    }
+    toastStore.success('Protected row unprotected');
+    editorStore.focus();
+  }
+
+  async function handleProtectedLinesAction(button: HTMLElement) {
+    const action = button.dataset.protectedLinesAction;
+    const row = button.closest<HTMLElement>('.void-protected-lines');
+    const blockId = button.dataset.blockId ?? row?.dataset.blockId ?? '';
+    const protectionId = button.dataset.protectionId ?? row?.dataset.protectionId ?? '';
+
+    switch (action) {
+      case 'unlock':
+        await handleUnlockNote();
+        break;
+      case 'delete':
+        await handleDeleteProtectedLines(blockId);
+        break;
+      case 'unprotect':
+        await handleUnprotectProtectedLines(protectionId);
+        break;
+    }
+  }
+
   async function handleLockNotes() {
     const prepared = await editorStore.prepareProtectedDocumentsForLock();
     if (!prepared.ok) {
@@ -1522,6 +1597,13 @@
   async function handleEditorClick(event: MouseEvent) {
     handleEditorUserIntent(event);
     const target = event.target as HTMLElement | null;
+    const actionButton = target?.closest<HTMLElement>('[data-protected-lines-action]');
+    if (actionButton) {
+      event.preventDefault();
+      event.stopPropagation();
+      await handleProtectedLinesAction(actionButton);
+      return;
+    }
     if (!target?.closest('.void-protected-lines-locked')) return;
     event.preventDefault();
     event.stopPropagation();
@@ -2529,22 +2611,47 @@
     line-height: 1.25;
   }
 
+  :global(.void-protected-lines-actions) {
+    display: flex;
+    justify-self: end;
+    align-items: center;
+    gap: 6px;
+  }
+
   :global(.void-protected-lines-action) {
+    appearance: none;
+    cursor: pointer;
     justify-self: end;
     border: 1px solid var(--border-light);
     border-radius: 999px;
     padding: 4px 8px;
     background: var(--bg-subtle);
     color: var(--text-secondary);
+    font-family: inherit;
     font-size: 11px;
     font-weight: 650;
     line-height: 1;
     white-space: nowrap;
   }
 
-  :global(.void-protected-lines-locked:hover .void-protected-lines-action) {
+  :global(.void-protected-lines-locked:hover .void-protected-lines-action:not(.danger)) {
     border-color: color-mix(in srgb, var(--accent-primary) 38%, var(--border-light));
     color: var(--accent-primary);
+  }
+
+  :global(.void-protected-lines-action:not(.danger):hover),
+  :global(.void-protected-lines-action:not(.danger):focus-visible) {
+    border-color: color-mix(in srgb, var(--accent-primary) 38%, var(--border-light));
+    color: var(--accent-primary);
+    outline: none;
+  }
+
+  :global(.void-protected-lines-action.danger:hover),
+  :global(.void-protected-lines-action.danger:focus-visible) {
+    border-color: color-mix(in srgb, var(--color-error) 42%, var(--border-light));
+    background: var(--color-error-bg);
+    color: var(--color-error);
+    outline: none;
   }
 
   :global(.void-protected-lines-content) {

@@ -155,6 +155,8 @@ interface Token {
   block: boolean;
   hidden: boolean;
   attrs: [string, string][] | null;
+  /** Source line range [startLine, endLine) for block tokens; null for inline/closing tokens. */
+  map: [number, number] | null;
 }
 
 /**
@@ -202,7 +204,9 @@ function normalizeProtectedLineCapsules(markdown: string): string {
  */
 function parseTokens(tokens: Token[], schema: Schema): ProseMirrorNode[] {
   const blocks: ProseMirrorNode[] = [];
+  const paragraphType = schema.nodes['paragraph'];
   let i = 0;
+  let prevEndLine: number | null = null; // .map[1] (end line, exclusive) of the previous top-level block
 
   while (i < tokens.length) {
     const token = tokens[i];
@@ -210,11 +214,30 @@ function parseTokens(tokens: Token[], schema: Schema): ProseMirrorNode[] {
       i++;
       continue;
     }
+
+    // Reconstruct empty paragraphs the user inserted as blank lines. markdown-it emits
+    // no token for a blank line, but block tokens carry a source line range, so the gap
+    // to the previous block reveals them: adjacent blocks are 1 line apart (the single
+    // separating blank line), and each extra blank line is one empty paragraph. The first
+    // block's reference is its own start, so no leading empties are invented (the loader
+    // trims the body anyway). Top-level only — nested gaps are ambiguous and out of scope.
+    if (paragraphType && token.map) {
+      const reference = prevEndLine ?? token.map[0];
+      const emptyCount = Math.max(0, token.map[0] - reference - 1);
+      for (let k = 0; k < emptyCount; k++) {
+        blocks.push(paragraphType.create({ id: generateBlockId() }));
+      }
+    }
+
     const result = parseBlock(tokens, i, schema);
     if (result.nodes) {
       blocks.push(...result.nodes);
     } else if (result.node) {
       blocks.push(result.node);
+    }
+
+    if (token.map) {
+      prevEndLine = token.map[1];
     }
     i = result.nextIndex;
   }

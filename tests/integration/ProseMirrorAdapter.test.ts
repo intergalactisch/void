@@ -1268,6 +1268,129 @@ describe('ProseMirrorAdapter', () => {
       expect(adapter.rangeIntersectsProtectedBlock(publicFrom, secretFrom + 'secret'.length)).toBe(true);
     });
 
+    it('unprotects unlocked protected-line blocks into normal markdown', async () => {
+      const doc = createTestDocument({
+        blocks: [
+          {
+            id: 'p1',
+            type: 'paragraph',
+            content: 'Public intro',
+            marks: [],
+            children: [],
+            attrs: { type: 'paragraph' },
+          },
+          createProtectedBlock({
+            blockId: 'protected-row',
+            protectionId: 'pblk_secret',
+            lockState: 'unlocked',
+            text: 'secret line',
+          }),
+          {
+            id: 'p2',
+            type: 'paragraph',
+            content: 'Public outro',
+            marks: [],
+            children: [],
+            attrs: { type: 'paragraph' },
+          },
+        ],
+      });
+
+      await adapter.mount(container, doc);
+
+      expect(adapter.unprotectProtectedBlock('pblk_secret')).toBe(true);
+
+      expect(container.querySelector('.void-protected-lines')).toBeNull();
+      expect(adapter.getMarkdown()).toContain('Public intro');
+      expect(adapter.getMarkdown()).toContain('secret line');
+      expect(adapter.getMarkdown()).toContain('Public outro');
+      expect(adapter.getMarkdown()).not.toContain('void-protected-lines-v1');
+      expect(adapter.getMarkdown()).not.toContain('ciphertext-pblk_secret');
+    });
+
+    it('does not unprotect locked protected-line blocks', async () => {
+      const doc = createTestDocument({
+        blocks: [
+          createProtectedBlock({
+            blockId: 'protected-row',
+            protectionId: 'pblk_locked',
+            lockState: 'locked',
+            text: 'hidden secret',
+          }),
+        ],
+      });
+
+      await adapter.mount(container, doc);
+
+      expect(adapter.unprotectProtectedBlock('pblk_locked')).toBe(false);
+      expect(container.querySelector('.void-protected-lines')).not.toBeNull();
+      expect(adapter.getMarkdown()).toContain('void-protected-lines-v1');
+      expect(adapter.getMarkdown()).toContain('ciphertext-pblk_locked');
+      expect(adapter.getMarkdown()).not.toContain('hidden secret');
+    });
+
+    it('deletes protected-line blocks without leaking envelope or plaintext', async () => {
+      const doc = createTestDocument({
+        blocks: [
+          {
+            id: 'p1',
+            type: 'paragraph',
+            content: 'Public intro',
+            marks: [],
+            children: [],
+            attrs: { type: 'paragraph' },
+          },
+          createProtectedBlock({
+            blockId: 'protected-row',
+            protectionId: 'pblk_delete',
+            lockState: 'locked',
+            text: 'hidden secret',
+          }),
+          {
+            id: 'p2',
+            type: 'paragraph',
+            content: 'Public outro',
+            marks: [],
+            children: [],
+            attrs: { type: 'paragraph' },
+          },
+        ],
+      });
+
+      await adapter.mount(container, doc);
+
+      adapter.execute('deleteBlock', 'protected-row');
+
+      expect(container.querySelector('.void-protected-lines')).toBeNull();
+      expect(adapter.getMarkdown()).toContain('Public intro');
+      expect(adapter.getMarkdown()).toContain('Public outro');
+      expect(adapter.getMarkdown()).not.toContain('void-protected-lines-v1');
+      expect(adapter.getMarkdown()).not.toContain('ciphertext-pblk_delete');
+      expect(adapter.getMarkdown()).not.toContain('hidden secret');
+    });
+
+    it('unprotects by protection id rather than transient block id', async () => {
+      const doc = createTestDocument({
+        blocks: [
+          createProtectedBlock({
+            blockId: 'transient-block-id',
+            protectionId: 'pblk_stable',
+            lockState: 'unlocked',
+            text: 'stable secret',
+          }),
+        ],
+      });
+
+      await adapter.mount(container, doc);
+
+      expect(adapter.unprotectProtectedBlock('transient-block-id')).toBe(false);
+      expect(adapter.getMarkdown()).toContain('void-protected-lines-v1');
+
+      expect(adapter.unprotectProtectedBlock('pblk_stable')).toBe(true);
+      expect(adapter.getMarkdown()).toContain('stable secret');
+      expect(adapter.getMarkdown()).not.toContain('void-protected-lines-v1');
+    });
+
     it('replaces a multi-block partial range while preserving outside text', async () => {
       const doc = createTestDocument({
         blocks: [
@@ -2466,4 +2589,57 @@ function positionInText(view: EditorView, text: string): number {
   });
   if (found === -1) throw new Error(`Text not found: ${text}`);
   return found;
+}
+
+function createProtectedBlock(options: {
+  blockId: string;
+  protectionId: string;
+  lockState: 'locked' | 'unlocked';
+  text: string;
+}): Document['blocks'][number] {
+  const child = {
+    id: `${options.blockId}-child`,
+    type: 'paragraph' as const,
+    content: options.text,
+    marks: [],
+    children: [],
+    attrs: { type: 'paragraph' as const },
+  };
+
+  return {
+    id: options.blockId,
+    type: 'protectedBlock',
+    content: '',
+    marks: [],
+    children: options.lockState === 'unlocked' ? [child] : [],
+    attrs: {
+      type: 'protectedBlock',
+      protectionId: options.protectionId,
+      keyId: `pkey_${options.protectionId}`,
+      algorithm: 'AES-256-GCM',
+      envelopeVersion: 1,
+      protectedAt: '2026-05-24T00:00:00.000Z',
+      titleVisible: true,
+      lineCount: 1,
+      lockState: options.lockState,
+      envelope: JSON.stringify({
+        id: options.protectionId,
+        version: 1,
+        algorithm: 'AES-256-GCM',
+        keyId: `pkey_${options.protectionId}`,
+        nonce: 'nonce',
+        ciphertext: `ciphertext-${options.protectionId}`,
+        wrappedDek: {
+          version: 1,
+          algorithm: 'AES-256-GCM',
+          kdf: 'none',
+          nonce: 'dek-nonce',
+          ciphertext: `dek-${options.protectionId}`,
+        },
+        lineCount: 1,
+        protectedAt: '2026-05-24T00:00:00.000Z',
+        titleVisible: true,
+      }),
+    },
+  };
 }

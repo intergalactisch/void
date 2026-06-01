@@ -55,6 +55,7 @@ export type TodoSortMode =
 
 export type TodoGroupMode =
   | 'viewDefault'
+  | 'section'
   | 'smartDate'
   | 'completedDate'
   | 'createdDate'
@@ -119,6 +120,7 @@ export const TODO_SORT_MODES: TodoSortMode[] = [
 
 export const TODO_GROUP_MODES: TodoGroupMode[] = [
   'viewDefault',
+  'section',
   'smartDate',
   'completedDate',
   'createdDate',

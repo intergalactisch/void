@@ -18,6 +18,8 @@ use arboard::Clipboard;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
+use crate::error::VoidError;
+
 const POLL_INTERVAL_MS: u64 = 500;
 const MAX_TEXT_LEN: usize = 100_000; // 100 KB cap — anything bigger is probably not what the user wants in their history
 
@@ -30,6 +32,16 @@ pub struct ClipboardChangedPayload {
     pub hash: String,
     /// Approximate length in characters (clamped at MAX_TEXT_LEN).
     pub length: usize,
+}
+
+#[tauri::command]
+pub fn copy_to_clipboard(text: String) -> Result<(), VoidError> {
+    let mut clipboard = Clipboard::new()
+        .map_err(|err| VoidError::Clipboard(format!("could not open system clipboard: {err}")))?;
+    clipboard
+        .set_text(text)
+        .map_err(|err| VoidError::Clipboard(format!("could not write text: {err}")))?;
+    Ok(())
 }
 
 fn hash_text(text: &str) -> String {

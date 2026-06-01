@@ -769,6 +769,33 @@ export class ProseMirrorAdapter implements EditorPort {
     return intersects;
   }
 
+  unprotectProtectedBlock(protectionId: string): boolean {
+    if (!this.view) return false;
+    const normalizedId = protectionId.trim();
+    if (!normalizedId) return false;
+
+    const state = this.view.state;
+    const target = findProtectedBlockByProtectionId(state.doc, normalizedId);
+
+    if (!target || target.node.attrs.lockState !== 'unlocked') return false;
+
+    const paragraphType = state.schema.nodes.paragraph;
+    const replacement = target.node.childCount > 0
+      ? target.node.content
+      : paragraphType?.create({ id: generateBlockId() }) ?? null;
+    if (!replacement) return false;
+
+    let tr = state.tr.replaceWith(
+      target.pos,
+      target.pos + target.node.nodeSize,
+      replacement,
+    );
+    const selectionPos = Math.min(target.pos + 1, tr.doc.content.size);
+    tr = tr.setSelection(TextSelection.near(tr.doc.resolve(selectionPos)));
+    this.view.dispatch(tr.scrollIntoView());
+    return true;
+  }
+
   resolveInlineAIRangeAnchor(input: EditorInlineAIRangeAnchorInput): EditorInlineAIRangeAnchorResult | null {
     if (!this.view) return null;
     const originalText = input.originalText;
@@ -2267,6 +2294,21 @@ export class ProseMirrorAdapter implements EditorPort {
 
 function containsProtectedLinesCapsule(markdown: string): boolean {
   return new RegExp(`(^|\\n)\\s*\\\`\\\`\\\`${PROTECTED_LINES_FENCE}(\\s|\\n)`).test(markdown);
+}
+
+function findProtectedBlockByProtectionId(
+  doc: PmNode,
+  protectionId: string
+): { node: PmNode; pos: number } | null {
+  let target: { node: PmNode; pos: number } | null = null;
+  doc.descendants((node, pos) => {
+    if (target) return false;
+    if (node.type.name !== 'protectedBlock') return true;
+    if (node.attrs.protectionId !== protectionId) return true;
+    target = { node, pos };
+    return false;
+  });
+  return target;
 }
 
 interface InlineTextRangeCandidate {

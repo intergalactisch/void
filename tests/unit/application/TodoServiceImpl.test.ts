@@ -912,6 +912,87 @@ describe('TodoServiceImpl', () => {
       const exists = await fileSystem.exists('/notes/todo-house.md');
       expect(exists.ok && exists.value).toBe(false);
     });
+
+    it('creates, renames, and lists custom sections', async () => {
+      await service.initialize();
+      const created = await service.createTodoList({ title: 'Work' });
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+
+      const section = await service.createSection(created.value.path, 'Launch');
+      expect(section.ok).toBe(true);
+      const renamed = await service.renameSection(created.value.path, 'Launch', 'Shipped');
+      expect(renamed.ok).toBe(true);
+
+      const sections = await service.getSections(created.value.path);
+      expect(sections.ok).toBe(true);
+      if (sections.ok) {
+        expect(sections.value.map((item) => item.title)).toContain('Shipped');
+        expect(sections.value.map((item) => item.title)).not.toContain('Launch');
+      }
+    });
+
+    it('moves sections and notifies subscribers', async () => {
+      await service.initialize();
+      const callback = vi.fn();
+      service.subscribe(callback);
+
+      const created = await service.createTodoList({ title: 'Work' });
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+      await service.createSection(created.value.path, 'Launch');
+      await service.createSection(created.value.path, 'Ops');
+
+      callback.mockClear();
+      const moved = await service.moveSection(created.value.path, 'Launch', 'Inbox', 'before');
+
+      expect(moved.ok).toBe(true);
+      if (!moved.ok) return;
+      expect(moved.value.map((section) => section.title)).toEqual([
+        'Launch',
+        'Inbox',
+        'Anytime',
+        'Someday',
+        'Ops',
+      ]);
+      expect(callback).toHaveBeenCalled();
+    });
+
+    it('moves todos across sections, rebases line ids, and notifies subscribers', async () => {
+      await service.initialize();
+      const callback = vi.fn();
+      service.subscribe(callback);
+
+      const list = await service.createTodoList({ title: 'Work' });
+      expect(list.ok).toBe(true);
+      if (!list.ok) return;
+      await service.createSection(list.value.path, 'Launch');
+      const task = await service.create('Ship release', {
+        targetFile: list.value.path,
+        targetList: 'inbox',
+      });
+      expect(task.ok).toBe(true);
+      if (!task.ok) return;
+
+      callback.mockClear();
+      const moved = await service.move(task.value.id, {
+        kind: 'section',
+        filePath: list.value.path,
+        section: 'Launch',
+      });
+
+      expect(moved.ok).toBe(true);
+      if (!moved.ok) return;
+      expect(moved.value.section).toBe('Launch');
+      expect(moved.value.id).not.toBe(task.value.id);
+      expect(callback).toHaveBeenCalled();
+
+      const content = await fileSystem.readFile(list.value.path);
+      expect(content.ok).toBe(true);
+      if (content.ok) {
+        expect(content.value).toContain('## Launch\n\n- [ ] Ship release');
+      }
+    });
   });
 
   describe('delete', () => {

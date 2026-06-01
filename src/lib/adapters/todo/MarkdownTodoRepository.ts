@@ -16,7 +16,14 @@
 
 import type { FileEntry, Result } from '$lib/core';
 import { ok, err, toError } from '$lib/core';
-import type { Todo, CreateTodoParams, TodoUpdatePatch } from '$lib/domain/entities/Todo';
+import type {
+  Todo,
+  CreateTodoParams,
+  TodoMoveTarget,
+  TodoSection,
+  TodoSectionMovePosition,
+  TodoUpdatePatch,
+} from '$lib/domain/entities/Todo';
 import { applyTodoPatch, createTodo, toggleTodo } from '$lib/domain/entities/Todo';
 import type { TodoId } from '$lib/domain/values/TodoId';
 import { parseTodoId, generateTodoId } from '$lib/domain/values/TodoId';
@@ -60,6 +67,12 @@ interface TodoPlacement {
   content: string;
   lineNumber: number;
   section?: string;
+}
+
+interface TodoSectionRange {
+  title: string;
+  lineNumber: number;
+  endLineNumber: number;
 }
 
 /**
@@ -242,6 +255,25 @@ export class MarkdownTodoRepository implements TodoRepositoryPort {
     return ok(lists);
   }
 
+  /**
+   * List top-level task sections from a dedicated todo-list file.
+   */
+  async getSections(filePath: string): Promise<Result<TodoSection[], Error>> {
+    try {
+      const contentResult = await this.fileSystem.readFile(filePath);
+      if (!contentResult.ok) return contentResult;
+
+      const source = getTodoSourceForFile(filePath, contentResult.value);
+      if (source !== 'dedicated') {
+        return err(new Error(`Not a dedicated todo-list file: ${filePath}`));
+      }
+
+      return ok(parseTodoSections(contentResult.value, filePath, this.parser, source));
+    } catch (e) {
+      return err(toError(e));
+    }
+  }
+
   // ──────────────────────────────────────────────────────────────────────────
   // Write Operations
   // ──────────────────────────────────────────────────────────────────────────
@@ -405,6 +437,15 @@ export class MarkdownTodoRepository implements TodoRepositoryPort {
         updatedFileContent = placement.content;
         updatedLineNumber = placement.lineNumber;
         updatedSection = placement.section;
+      } else if (patch.targetSection && originalTodo.source === 'dedicated') {
+        const section = validateSectionTitle(patch.targetSection);
+        if (!section.ok) return section;
+        const withoutOriginal = deleteLineFromContent(fileContent, resolved.value.lineNumber);
+        const placement = insertTodoIntoNamedSection(withoutOriginal, newLine, section.value, { createIfMissing: false });
+        if (!placement.ok) return placement;
+        updatedFileContent = placement.value.content;
+        updatedLineNumber = placement.value.lineNumber;
+        updatedSection = placement.value.section;
       } else {
         updatedFileContent = updateLineInContent(fileContent, resolved.value.lineNumber, newLine);
       }
@@ -423,6 +464,94 @@ export class MarkdownTodoRepository implements TodoRepositoryPort {
         rawLine: newLine,
         ...(updatedSection !== undefined ? { section: updatedSection } : {}),
       });
+    } catch (e) {
+      return err(toError(e));
+    }
+  }
+
+  /**
+   * Move a todo line within its source file.
+   */
+  async move(
+    id: TodoId,
+    target: TodoMoveTarget,
+    expected?: TodoLineReference,
+  ): Promise<Result<Todo, Error>> {
+    try {
+      const { filePath, lineNumber } = parseTodoId(id);
+
+      const fileContentResult = await this.fileSystem.readFile(filePath);
+      if (!fileContentResult.ok) return fileContentResult;
+
+      const fileContent = fileContentResult.value;
+      const source = getTodoSourceForFile(filePath, fileContent);
+      if (source !== 'dedicated') {
+        return err(new Error('Only dedicated todo-list tasks can be moved'));
+      }
+
+      const lines = fileContent.split('\n');
+      const resolved = resolveTodoLine(lines, filePath, lineNumber, this.parser, source, expected);
+      if (!resolved.ok) return resolved;
+
+      const withoutSourceLines = [...lines];
+      withoutSourceLines.splice(resolved.value.lineNumber, 1);
+      let nextLines: string[];
+      let updatedLineNumber: number;
+
+      if (target.kind === 'todo') {
+        const targetRef = parseTodoId(target.targetId);
+        if (normalizePath(targetRef.filePath) !== normalizePath(filePath)) {
+          return err(new Error('Todos can only be reordered within the same file'));
+        }
+        if (target.targetId === id) {
+          return err(new Error('Cannot move a todo relative to itself'));
+        }
+
+        const targetResolved = resolveTodoLine(lines, filePath, targetRef.lineNumber, this.parser, source);
+        if (!targetResolved.ok) return targetResolved;
+
+        const targetLineAfterDelete =
+          targetResolved.value.lineNumber > resolved.value.lineNumber
+            ? targetResolved.value.lineNumber - 1
+            : targetResolved.value.lineNumber;
+        const insertAt = target.position === 'after' ? targetLineAfterDelete + 1 : targetLineAfterDelete;
+        nextLines = [...withoutSourceLines];
+        nextLines.splice(insertAt, 0, resolved.value.line);
+        updatedLineNumber = insertAt;
+      } else {
+        if (normalizePath(target.filePath) !== normalizePath(filePath)) {
+          return err(new Error('Todos can only be moved within the same file'));
+        }
+        const section = validateSectionTitle(target.section);
+        if (!section.ok) return section;
+        const placement = insertTodoLineIntoSectionLines(withoutSourceLines, resolved.value.line, section.value, {
+          createIfMissing: false,
+        });
+        if (!placement.ok) return placement;
+        nextLines = placement.value.lines;
+        updatedLineNumber = placement.value.lineNumber;
+      }
+
+      const updatedContent = nextLines.join('\n');
+      const writeResult = await this.fileSystem.writeFile(filePath, updatedContent);
+      if (!writeResult.ok) return writeResult;
+
+      this.cache.invalidate(filePath);
+      this.fileIndex.delete(filePath);
+
+      const section = findSectionTitleForLine(nextLines, updatedLineNumber);
+      const updatedTodo = this.parser.parseLine(
+        resolved.value.line,
+        updatedLineNumber,
+        filePath,
+        section ?? undefined,
+        { source },
+      );
+      if (!updatedTodo) {
+        return err(new Error('Moved line is no longer a valid todo'));
+      }
+
+      return ok(updatedTodo);
     } catch (e) {
       return err(toError(e));
     }
@@ -545,6 +674,153 @@ export class MarkdownTodoRepository implements TodoRepositoryPort {
       this.cache.invalidate(filePath);
 
       return ok(todo);
+    } catch (e) {
+      return err(toError(e));
+    }
+  }
+
+  /**
+   * Create a top-level task section in a dedicated todo-list file.
+   */
+  async createSection(filePath: string, title: string): Promise<Result<TodoSection, Error>> {
+    try {
+      const section = validateSectionTitle(title);
+      if (!section.ok) return section;
+
+      const contentResult = await this.fileSystem.readFile(filePath);
+      if (!contentResult.ok) return contentResult;
+      const source = getTodoSourceForFile(filePath, contentResult.value);
+      if (source !== 'dedicated') {
+        return err(new Error(`Not a dedicated todo-list file: ${filePath}`));
+      }
+
+      const existing = parseTodoSections(contentResult.value, filePath, this.parser, source);
+      if (existing.some((item) => sameSectionTitle(item.title, section.value))) {
+        return err(new Error(`Section already exists: ${section.value}`));
+      }
+
+      const trimmed = contentResult.value.trimEnd();
+      const prefix = trimmed.length > 0 ? `${trimmed}\n\n` : '';
+      const updatedContent = `${prefix}## ${section.value}\n`;
+      const writeResult = await this.fileSystem.writeFile(filePath, updatedContent);
+      if (!writeResult.ok) return writeResult;
+
+      this.cache.invalidate(filePath);
+      this.fileIndex.delete(filePath);
+
+      const sections = parseTodoSections(updatedContent, filePath, this.parser, source);
+      const created = sections.find((item) => sameSectionTitle(item.title, section.value));
+      if (!created) return err(new Error(`Failed to create section: ${section.value}`));
+      return ok(created);
+    } catch (e) {
+      return err(toError(e));
+    }
+  }
+
+  /**
+   * Rename a top-level task section in a dedicated todo-list file.
+   */
+  async renameSection(
+    filePath: string,
+    fromTitle: string,
+    toTitle: string,
+  ): Promise<Result<TodoSection, Error>> {
+    try {
+      const from = validateSectionTitle(fromTitle);
+      if (!from.ok) return from;
+      const to = validateSectionTitle(toTitle);
+      if (!to.ok) return to;
+
+      const contentResult = await this.fileSystem.readFile(filePath);
+      if (!contentResult.ok) return contentResult;
+      const source = getTodoSourceForFile(filePath, contentResult.value);
+      if (source !== 'dedicated') {
+        return err(new Error(`Not a dedicated todo-list file: ${filePath}`));
+      }
+
+      const lines = contentResult.value.split('\n');
+      const sections = parseTodoSections(contentResult.value, filePath, this.parser, source);
+      const current = sections.find((item) => sameSectionTitle(item.title, from.value));
+      if (!current) return err(new Error(`Section not found: ${from.value}`));
+      const duplicate = sections.find(
+        (item) => item.lineNumber !== current.lineNumber && sameSectionTitle(item.title, to.value),
+      );
+      if (duplicate) return err(new Error(`Section already exists: ${to.value}`));
+
+      lines[current.lineNumber] = `## ${to.value}`;
+      const updatedContent = lines.join('\n');
+      const writeResult = await this.fileSystem.writeFile(filePath, updatedContent);
+      if (!writeResult.ok) return writeResult;
+
+      this.cache.invalidate(filePath);
+      this.fileIndex.delete(filePath);
+
+      const updated = parseTodoSections(updatedContent, filePath, this.parser, source)
+        .find((item) => sameSectionTitle(item.title, to.value));
+      if (!updated) return err(new Error(`Failed to rename section: ${to.value}`));
+      return ok(updated);
+    } catch (e) {
+      return err(toError(e));
+    }
+  }
+
+  /**
+   * Move a top-level task section and its full markdown block.
+   */
+  async moveSection(
+    filePath: string,
+    fromTitle: string,
+    targetTitle: string,
+    position: TodoSectionMovePosition,
+  ): Promise<Result<TodoSection[], Error>> {
+    try {
+      const from = validateSectionTitle(fromTitle);
+      if (!from.ok) return from;
+      const target = validateSectionTitle(targetTitle);
+      if (!target.ok) return target;
+      if (sameSectionTitle(from.value, target.value)) {
+        return err(new Error('Cannot move a section relative to itself'));
+      }
+
+      const contentResult = await this.fileSystem.readFile(filePath);
+      if (!contentResult.ok) return contentResult;
+      const source = getTodoSourceForFile(filePath, contentResult.value);
+      if (source !== 'dedicated') {
+        return err(new Error(`Not a dedicated todo-list file: ${filePath}`));
+      }
+
+      const lines = contentResult.value.split('\n');
+      const ranges = parseTodoSectionRanges(lines);
+      const unique = ensureUniqueSectionTitles(ranges);
+      if (!unique.ok) return unique;
+
+      const sourceRange = findSectionRange(ranges, from.value);
+      if (!sourceRange.ok) return sourceRange;
+      const targetRange = findSectionRange(ranges, target.value);
+      if (!targetRange.ok) return targetRange;
+
+      const movedBlock = lines.slice(sourceRange.value.lineNumber, sourceRange.value.endLineNumber);
+      const blockLength = movedBlock.length;
+      const nextLines = [...lines];
+      nextLines.splice(sourceRange.value.lineNumber, blockLength);
+
+      const adjustedTargetStart = targetRange.value.lineNumber > sourceRange.value.lineNumber
+        ? targetRange.value.lineNumber - blockLength
+        : targetRange.value.lineNumber;
+      const adjustedTargetEnd = targetRange.value.lineNumber > sourceRange.value.lineNumber
+        ? targetRange.value.endLineNumber - blockLength
+        : targetRange.value.endLineNumber;
+      const insertAt = position === 'before' ? adjustedTargetStart : adjustedTargetEnd;
+      nextLines.splice(insertAt, 0, ...movedBlock);
+
+      const updatedContent = nextLines.join('\n');
+      const writeResult = await this.fileSystem.writeFile(filePath, updatedContent);
+      if (!writeResult.ok) return writeResult;
+
+      this.cache.invalidate(filePath);
+      this.fileIndex.delete(filePath);
+
+      return ok(parseTodoSections(updatedContent, filePath, this.parser, source));
     } catch (e) {
       return err(toError(e));
     }
@@ -896,6 +1172,122 @@ function findExpectedTodoLine(
   return matches[0]!;
 }
 
+function parseTodoSections(
+  content: string,
+  filePath: string,
+  parser: TodoParserPort,
+  source: TodoSource,
+): TodoSection[] {
+  const lines = content.split('\n');
+  const sections: TodoSection[] = [];
+  let current: TodoSection | null = null;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    const h2 = parseSectionHeading(line);
+    if (h2) {
+      current = {
+        filePath,
+        title: h2,
+        lineNumber: index,
+        todoCount: 0,
+      };
+      sections.push(current);
+      continue;
+    }
+
+    if (/^#\s+/.test(line.trim())) {
+      current = null;
+      continue;
+    }
+
+    if (current && parser.parseLine(line, index, filePath, current.title, { source })) {
+      current.todoCount += 1;
+    }
+  }
+
+  return sections;
+}
+
+function parseTodoSectionRanges(lines: string[]): TodoSectionRange[] {
+  const ranges: TodoSectionRange[] = [];
+  let current: TodoSectionRange | null = null;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    const h2 = parseSectionHeading(line);
+    if (h2) {
+      if (current) current.endLineNumber = index;
+      current = {
+        title: h2,
+        lineNumber: index,
+        endLineNumber: lines.length,
+      };
+      ranges.push(current);
+      continue;
+    }
+
+    if (current && /^#\s+/.test(line.trim())) {
+      current.endLineNumber = index;
+      current = null;
+    }
+  }
+
+  return ranges;
+}
+
+function ensureUniqueSectionTitles(ranges: TodoSectionRange[]): Result<void, Error> {
+  const seen = new Set<string>();
+  for (const range of ranges) {
+    const key = normalizeSectionTitleKey(range.title);
+    if (seen.has(key)) {
+      return err(new Error(`Duplicate section title: ${range.title}`));
+    }
+    seen.add(key);
+  }
+  return ok(undefined);
+}
+
+function findSectionRange(ranges: TodoSectionRange[], title: string): Result<TodoSectionRange, Error> {
+  const matches = ranges.filter((range) => sameSectionTitle(range.title, title));
+  if (matches.length === 0) return err(new Error(`Section not found: ${title}`));
+  if (matches.length > 1) return err(new Error(`Section title is ambiguous: ${title}`));
+  return ok(matches[0]!);
+}
+
+function parseSectionHeading(line: string): string | null {
+  const match = /^##(?!#)\s+(.+?)\s*$/.exec(line.trim());
+  if (!match?.[1]) return null;
+  const title = match[1].replace(/\s+#+\s*$/, '').trim();
+  return title || null;
+}
+
+function validateSectionTitle(title: string): Result<string, Error> {
+  const normalized = title.trim();
+  if (!normalized) return err(new Error('Section title cannot be empty'));
+  if (/[\r\n]/.test(normalized)) return err(new Error('Section title cannot contain newlines'));
+  if (/^#+\s*$/.test(normalized)) return err(new Error('Section title must contain text'));
+  return ok(normalized.replace(/\s+/g, ' '));
+}
+
+function sameSectionTitle(a: string, b: string): boolean {
+  return normalizeSectionTitleKey(a) === normalizeSectionTitleKey(b);
+}
+
+function normalizeSectionTitleKey(title: string): string {
+  return title.trim().toLocaleLowerCase();
+}
+
+function findSectionTitleForLine(lines: string[], lineNumber: number): string | null {
+  for (let index = Math.min(lineNumber, lines.length - 1); index >= 0; index -= 1) {
+    const line = lines[index]!;
+    const section = parseSectionHeading(line);
+    if (section) return section;
+    if (/^#\s+/.test(line.trim())) return null;
+  }
+  return null;
+}
+
 function appendTodoToContent(content: string, newLine: string): TodoPlacement {
   const trimmedContent = content.trimEnd();
   if (trimmedContent.length === 0) {
@@ -904,6 +1296,57 @@ function appendTodoToContent(content: string, newLine: string): TodoPlacement {
 
   const next = `${trimmedContent}\n${newLine}`;
   return { content: next, lineNumber: next.split('\n').length - 1 };
+}
+
+function insertTodoIntoNamedSection(
+  content: string,
+  newLine: string,
+  section: string,
+  options: { createIfMissing: boolean },
+): Result<TodoPlacement, Error> {
+  const lines = content.trimEnd().length > 0 ? content.trimEnd().split('\n') : ['# TODO'];
+  const inserted = insertTodoLineIntoSectionLines(lines, newLine, section, options);
+  if (!inserted.ok) return inserted;
+  return ok({
+    content: inserted.value.lines.join('\n'),
+    lineNumber: inserted.value.lineNumber,
+    section,
+  });
+}
+
+function insertTodoLineIntoSectionLines(
+  lines: string[],
+  newLine: string,
+  section: string,
+  options: { createIfMissing: boolean },
+): Result<{ lines: string[]; lineNumber: number }, Error> {
+  const next = [...lines];
+  let headingIndex = next.findIndex((line) => {
+    const heading = parseSectionHeading(line);
+    return heading ? sameSectionTitle(heading, section) : false;
+  });
+
+  if (headingIndex === -1) {
+    if (!options.createIfMissing) return err(new Error(`Section not found: ${section}`));
+    if (next.length > 0 && next[next.length - 1]!.trim() !== '') next.push('');
+    headingIndex = next.length;
+    next.push(`## ${section}`, '');
+  }
+
+  const nextSectionIndex = next.findIndex((line, index) => (
+    index > headingIndex && (/^#{1,2}\s+/.test(line.trim()))
+  ));
+  let insertAt = nextSectionIndex === -1 ? next.length : nextSectionIndex;
+
+  while (insertAt > headingIndex + 1 && next[insertAt - 1]!.trim() === '') {
+    insertAt -= 1;
+  }
+
+  const insertion = insertAt === headingIndex + 1 ? ['', newLine] : [newLine];
+  if (nextSectionIndex !== -1) insertion.push('');
+
+  next.splice(insertAt, 0, ...insertion);
+  return ok({ lines: next, lineNumber: insertAt + insertion.indexOf(newLine) });
 }
 
 function insertTodoIntoListSection(

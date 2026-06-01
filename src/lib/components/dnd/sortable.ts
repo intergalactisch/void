@@ -98,6 +98,7 @@ export function createSortableDnd(options: {
   const lists = new Map<string, ListRegistration>();
   let state = createSortableState();
   let session: PointerSession | null = null;
+  let clickSuppressAbort: AbortController | null = null;
 
   function key(ref: SortableRef): string {
     return `${ref.groupId}\u0000${ref.id}`;
@@ -175,6 +176,31 @@ export function createSortableDnd(options: {
     setState(createSortableState());
   }
 
+  function suppressNextClick() {
+    clickSuppressAbort?.abort();
+
+    const abort = new AbortController();
+    clickSuppressAbort = abort;
+    const clear = () => {
+      if (clickSuppressAbort === abort) {
+        clickSuppressAbort = null;
+      }
+      abort.abort();
+    };
+
+    window.addEventListener(
+      'click',
+      (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        clear();
+      },
+      { capture: true, once: true, signal: abort.signal },
+    );
+    window.setTimeout(clear, 250);
+  }
+
   function cancel() {
     finishSession();
   }
@@ -195,6 +221,9 @@ export function createSortableDnd(options: {
     const intent = resolveReorderIntent(session.source, state.dropTarget);
     const didStart = session.started;
     finishSession();
+    if (didStart) {
+      suppressNextClick();
+    }
     if (didStart && intent) {
       void options.onCommit(intent);
     }

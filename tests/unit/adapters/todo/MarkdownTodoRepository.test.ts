@@ -1086,6 +1086,246 @@ describe('MarkdownTodoRepository', () => {
       expect(deleted.ok).toBe(true);
       expect(exists.ok && exists.value).toBe(false);
     });
+
+    it('lists empty and populated markdown sections with todo counts', async () => {
+      fileSystem.seed({
+        '/notes/todo-work.md': [
+          '---',
+          'title: Work',
+          'void_type: todo-list',
+          '---',
+          '',
+          '# Work',
+          '',
+          '## Inbox',
+          '',
+          '- [ ] First task',
+          '## Launch',
+          '',
+          '## Ops',
+          '- [x] Done task',
+        ].join('\n'),
+      });
+
+      const sections = await repository.getSections('/notes/todo-work.md');
+
+      expect(sections.ok).toBe(true);
+      if (!sections.ok) return;
+      expect(sections.value.map((section) => ({
+        title: section.title,
+        todoCount: section.todoCount,
+      }))).toEqual([
+        { title: 'Inbox', todoCount: 1 },
+        { title: 'Launch', todoCount: 0 },
+        { title: 'Ops', todoCount: 1 },
+      ]);
+    });
+
+    it('creates and renames custom sections while rejecting invalid titles', async () => {
+      await fileSystem.createDirectory('/notes');
+      await repository.createTodoList({ title: 'Work' });
+
+      const created = await repository.createSection('/notes/todo-work.md', 'Launch');
+      const duplicate = await repository.createSection('/notes/todo-work.md', 'launch');
+      const empty = await repository.createSection('/notes/todo-work.md', '   ');
+      const renamed = await repository.renameSection('/notes/todo-work.md', 'Launch', 'Shipped');
+
+      expect(created.ok).toBe(true);
+      expect(duplicate.ok).toBe(false);
+      expect(empty.ok).toBe(false);
+      expect(renamed.ok).toBe(true);
+
+      const file = await fileSystem.readFile('/notes/todo-work.md');
+      expect(file.ok).toBe(true);
+      if (file.ok) {
+        expect(file.value).toContain('## Shipped');
+        expect(file.value).not.toContain('## Launch');
+      }
+    });
+
+    it('moves todos before and after other todos in source order', async () => {
+      fileSystem.seed({
+        '/notes/todo-work.md': [
+          '---',
+          'title: Work',
+          'void_type: todo-list',
+          '---',
+          '',
+          '# Work',
+          '',
+          '## Inbox',
+          '',
+          '- [ ] First task',
+          '- [ ] Second task',
+          '',
+          '## Launch',
+          '',
+          `- [ ] Third task ${DUE} 2026-06-01`,
+        ].join('\n'),
+      });
+
+      const moved = await repository.move(
+        generateTodoId('/notes/todo-work.md', 14),
+        {
+          kind: 'todo',
+          targetId: generateTodoId('/notes/todo-work.md', 9),
+          position: 'before',
+        },
+      );
+
+      expect(moved.ok).toBe(true);
+      if (!moved.ok) return;
+      expect(moved.value.lineNumber).toBe(9);
+      expect(moved.value.section).toBe('Inbox');
+
+      const file = await fileSystem.readFile('/notes/todo-work.md');
+      expect(file.ok).toBe(true);
+      if (file.ok) {
+        expect(file.value).toContain(`- [ ] Third task ${DUE} 2026-06-01\n- [ ] First task\n- [ ] Second task`);
+      }
+    });
+
+    it('moves todos into empty sections and preserves raw metadata', async () => {
+      fileSystem.seed({
+        '/notes/todo-work.md': [
+          '---',
+          'title: Work',
+          'void_type: todo-list',
+          '---',
+          '',
+          '# Work',
+          '',
+          '## Inbox',
+          '',
+          `- [ ] First task ${HIGH} #alpha`,
+          '',
+          '## Launch',
+        ].join('\n'),
+      });
+
+      const moved = await repository.move(
+        generateTodoId('/notes/todo-work.md', 9),
+        {
+          kind: 'section',
+          filePath: '/notes/todo-work.md',
+          section: 'Launch',
+        },
+      );
+
+      expect(moved.ok).toBe(true);
+      if (!moved.ok) return;
+      expect(moved.value.section).toBe('Launch');
+      expect(moved.value.priority).toBe('high');
+      expect(moved.value.tags).toEqual(['alpha']);
+
+      const file = await fileSystem.readFile('/notes/todo-work.md');
+      expect(file.ok).toBe(true);
+      if (file.ok) {
+        expect(file.value).toContain(`## Launch\n\n- [ ] First task ${HIGH} #alpha`);
+      }
+    });
+
+    it('moves whole sections before and after other sections while preserving content', async () => {
+      fileSystem.seed({
+        '/notes/todo-work.md': [
+          '---',
+          'title: Work',
+          'void_type: todo-list',
+          '---',
+          '',
+          '# Work',
+          '',
+          '## Inbox',
+          'Inbox note',
+          '- [ ] First task',
+          '',
+          '## Launch',
+          'Keep this prose.',
+          `- [ ] Ship release ${HIGH} #alpha`,
+          '',
+          '### Checklist',
+          '- [ ] Nested follow-up',
+          '',
+          '## Ops',
+          '- [x] Done task',
+        ].join('\n'),
+      });
+
+      const movedBefore = await repository.moveSection('/notes/todo-work.md', 'Launch', 'Inbox', 'before');
+
+      expect(movedBefore.ok).toBe(true);
+      if (!movedBefore.ok) return;
+      expect(movedBefore.value.map((section) => section.title)).toEqual(['Launch', 'Inbox', 'Ops']);
+
+      let file = await fileSystem.readFile('/notes/todo-work.md');
+      expect(file.ok).toBe(true);
+      if (!file.ok) return;
+      expect(file.value).toContain([
+        '## Launch',
+        'Keep this prose.',
+        `- [ ] Ship release ${HIGH} #alpha`,
+        '',
+        '### Checklist',
+        '- [ ] Nested follow-up',
+        '',
+        '## Inbox',
+      ].join('\n'));
+
+      const movedAfter = await repository.moveSection('/notes/todo-work.md', 'Launch', 'Ops', 'after');
+
+      expect(movedAfter.ok).toBe(true);
+      if (!movedAfter.ok) return;
+      expect(movedAfter.value.map((section) => section.title)).toEqual(['Inbox', 'Ops', 'Launch']);
+      file = await fileSystem.readFile('/notes/todo-work.md');
+      expect(file.ok).toBe(true);
+      if (!file.ok) return;
+      expect(file.value.trimEnd().endsWith([
+        '## Launch',
+        'Keep this prose.',
+        `- [ ] Ship release ${HIGH} #alpha`,
+        '',
+        '### Checklist',
+        '- [ ] Nested follow-up',
+      ].join('\n'))).toBe(true);
+    });
+
+    it('rejects invalid section moves', async () => {
+      fileSystem.seed({
+        '/notes/todo-work.md': [
+          '---',
+          'title: Work',
+          'void_type: todo-list',
+          '---',
+          '',
+          '# Work',
+          '',
+          '## Inbox',
+          '- [ ] First task',
+          '',
+          '## inbox',
+          '- [ ] Duplicate task',
+          '',
+          '## Launch',
+          '- [ ] Ship release',
+        ].join('\n'),
+        '/notes/regular.md': [
+          '# Regular',
+          '',
+          '## Inbox',
+          '- [ ] Inline task',
+        ].join('\n'),
+      });
+
+      const duplicate = await repository.moveSection('/notes/todo-work.md', 'Launch', 'Inbox', 'before');
+      const missing = await repository.moveSection('/notes/todo-work.md', 'Missing', 'Launch', 'before');
+      const self = await repository.moveSection('/notes/todo-work.md', 'Launch', 'Launch', 'after');
+      const inline = await repository.moveSection('/notes/regular.md', 'Inbox', 'Launch', 'before');
+
+      expect(duplicate.ok).toBe(false);
+      expect(missing.ok).toBe(false);
+      expect(self.ok).toBe(false);
+      expect(inline.ok).toBe(false);
+    });
   });
 
   describe('invalidate()', () => {

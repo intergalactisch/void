@@ -16,7 +16,13 @@
  */
 
 import type { Result } from '$lib/core';
-import type { Todo, TodoUpdatePatch } from '$lib/domain/entities/Todo';
+import type {
+  Todo,
+  TodoMoveTarget,
+  TodoSection,
+  TodoSectionMovePosition,
+  TodoUpdatePatch,
+} from '$lib/domain/entities/Todo';
 import type { TodoId } from '$lib/domain/values/TodoId';
 import type { TodoFilter } from '$lib/domain/values/TodoFilter';
 import type { TodoSource } from '$lib/domain/values/TodoSource';
@@ -64,7 +70,7 @@ export interface TodoStats {
   dueToday: number;
 }
 
-export type { TodoUpdatePatch };
+export type { TodoMoveTarget, TodoSection, TodoSectionMovePosition, TodoUpdatePatch };
 export type { TodoListFile, CreateTodoListFileParams, UpdateTodoListFileParams };
 
 /**
@@ -137,6 +143,11 @@ export interface TodoService {
    */
   getTodoLists(): Promise<Result<TodoListFile[], Error>>;
 
+  /**
+   * Get markdown sections in a dedicated todo-list file.
+   */
+  getSections(filePath: string): Promise<Result<TodoSection[], Error>>;
+
   // ──────────────────────────────────────────────────────────────────────────
   // Write Operations
   // ──────────────────────────────────────────────────────────────────────────
@@ -206,10 +217,35 @@ export interface TodoService {
   updatePatch(id: TodoId, patch: TodoUpdatePatch): Promise<Result<Todo, Error>>;
 
   /**
+   * Move a todo before/after another todo or to the end of a section.
+   */
+  move(id: TodoId, target: TodoMoveTarget): Promise<Result<Todo, Error>>;
+
+  /**
    * Delete a todo.
    * @param id - Todo ID to delete
    */
   delete(id: TodoId): Promise<Result<void, Error>>;
+
+  /**
+   * Create a new markdown section in a dedicated todo-list file.
+   */
+  createSection(filePath: string, title: string): Promise<Result<TodoSection, Error>>;
+
+  /**
+   * Rename an existing markdown section in a dedicated todo-list file.
+   */
+  renameSection(filePath: string, fromTitle: string, toTitle: string): Promise<Result<TodoSection, Error>>;
+
+  /**
+   * Move an existing markdown section before or after another section.
+   */
+  moveSection(
+    filePath: string,
+    fromTitle: string,
+    targetTitle: string,
+    position: TodoSectionMovePosition,
+  ): Promise<Result<TodoSection[], Error>>;
 
   // ──────────────────────────────────────────────────────────────────────────
   // File Management

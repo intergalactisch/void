@@ -6,6 +6,7 @@
     itemHeight: number;
     overscan?: number;
     ariaLabel?: string;
+    getKey?: (item: unknown, index: number) => string | number;
     row: Snippet<[unknown, number]>;
     empty?: Snippet;
   }
@@ -15,6 +16,7 @@
     itemHeight,
     overscan = 6,
     ariaLabel = 'Virtual list',
+    getKey,
     row,
     empty,
   }: Props = $props();
@@ -30,6 +32,7 @@
     items.slice(startIndex, endIndex).map((item, offset) => ({
       item,
       index: startIndex + offset,
+      key: getKey?.(item, startIndex + offset) ?? startIndex + offset,
     }))
   );
 
@@ -51,7 +54,7 @@
     {/if}
   {:else}
     <div class="virtual-spacer" style:height={`${totalHeight}px`}>
-      {#each visibleItems as visible (visible.index)}
+      {#each visibleItems as visible (visible.key)}
         <div
           class="virtual-row"
           role="listitem"

@@ -14,6 +14,15 @@ import { buildCodeFence } from '$lib/core/codeFence';
 const PROTECTED_LINES_FENCE = 'void-protected-lines-v1';
 
 /**
+ * Internal placeholder for a user-inserted empty top-level paragraph (a blank line).
+ * NUL bytes never appear in editor-produced text, so this can't collide with content.
+ * It survives the collapse/trim in serializeToMarkdown and is converted into exactly
+ * one extra newline as the final step, so an empty paragraph round-trips as a blank line.
+ */
+const NUL = String.fromCharCode(0);
+const EMPTY_PARAGRAPH_SENTINEL = `${NUL}void-empty-paragraph${NUL}`;
+
+/**
  * Serializer state for tracking context during serialization
  */
 interface SerializerState {
@@ -23,6 +32,9 @@ interface SerializerState {
   listDepth: number;
   /** Whether we're inside a tight list (no blank lines between items) */
   tightList: boolean;
+  /** Nested-block depth; >0 means we're inside a container (e.g. a toggle body),
+   *  where empty paragraphs are NOT turned into round-tripped blank lines. */
+  blockDepth: number;
 }
 
 /**
@@ -35,12 +47,27 @@ export function serializeToMarkdown(doc: ProseMirrorNode): string {
     output: '',
     listDepth: 0,
     tightList: false,
+    blockDepth: 0,
   };
 
   serializeNode(doc, state);
 
-  // Clean up trailing whitespace but preserve single trailing newline
-  return state.output.replace(/\n{3,}/g, '\n\n').trim();
+  // Normalize the inconsistent trailing-newline artifacts the block handlers emit.
+  let out = state.output.replace(/\n{3,}/g, '\n\n').trim();
+
+  // Leading/trailing empty paragraphs can't round-trip through markdown (markdown-it
+  // emits no token for edge blank lines and the loader trims the body), so drop them
+  // rather than leave a phantom blank line that silently vanishes on the next reload.
+  while (out.startsWith(EMPTY_PARAGRAPH_SENTINEL)) {
+    out = out.slice(EMPTY_PARAGRAPH_SENTINEL.length).replace(/^\s+/, '');
+  }
+  while (out.endsWith(EMPTY_PARAGRAPH_SENTINEL)) {
+    out = out.slice(0, -EMPTY_PARAGRAPH_SENTINEL.length).replace(/\s+$/, '');
+  }
+
+  // Each remaining sentinel marks one interior empty paragraph the user inserted;
+  // expand it into exactly one extra newline so it becomes a real blank line.
+  return out.split(EMPTY_PARAGRAPH_SENTINEL).join('\n');
 }
 
 /**
@@ -93,6 +120,15 @@ function serializeDoc(node: ProseMirrorNode, state: SerializerState): void {
  * Serialize a paragraph
  */
 function serializeParagraph(node: ProseMirrorNode, state: SerializerState): void {
+  // A truly-empty top-level paragraph is a blank line the user inserted with Enter.
+  // Emit a sentinel so the collapse/trim in serializeToMarkdown can't erase it; it is
+  // expanded back into a blank line at the end. content.size === 0 excludes paragraphs
+  // that hold a hardBreak or any text. Nested empty paragraphs (blockDepth > 0) keep
+  // the old behavior — round-tripped blank lines are a top-level-only contract.
+  if (node.content.size === 0 && state.blockDepth === 0) {
+    state.output += EMPTY_PARAGRAPH_SENTINEL;
+    return;
+  }
   serializeInlineContent(node, state);
   state.output += '\n\n';
 }
@@ -274,6 +310,9 @@ function serializeProtectedBlock(node: ProseMirrorNode, state: SerializerState):
       output: '',
       listDepth: 0,
       tightList: false,
+      // blockDepth 1: this is a nested serialization context (encrypted envelope),
+      // so empty paragraphs must not emit the sentinel and leak into the plaintext.
+      blockDepth: 1,
     };
     node.forEach((child) => serializeNode(child, childState));
     const plaintext = childState.output.trim();
@@ -354,7 +393,11 @@ function serializeToggle(node: ProseMirrorNode, state: SerializerState): void {
   state.output += `<details${open}>\n`;
   state.output += `<summary>${summary ? serializeInlineNodeToString(summary) : ''}</summary>\n\n`;
 
+  // Serialize the body as nested content so empty paragraphs inside the toggle don't
+  // emit a top-level sentinel (which would land inside the <details> HTML).
+  state.blockDepth++;
   body?.forEach((child) => serializeNode(child, state));
+  state.blockDepth--;
 
   state.output = state.output.replace(/\n*$/, '\n\n');
   state.output += '</details>\n\n';

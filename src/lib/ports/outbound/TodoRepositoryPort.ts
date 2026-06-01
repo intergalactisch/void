@@ -11,7 +11,14 @@
  */
 
 import type { Result } from '$lib/core';
-import type { Todo, CreateTodoParams, TodoUpdatePatch } from '$lib/domain/entities/Todo';
+import type {
+  Todo,
+  CreateTodoParams,
+  TodoMoveTarget,
+  TodoSection,
+  TodoSectionMovePosition,
+  TodoUpdatePatch,
+} from '$lib/domain/entities/Todo';
 import type { TodoId } from '$lib/domain/values/TodoId';
 import type { TodoFilter } from '$lib/domain/values/TodoFilter';
 import type {
@@ -82,6 +89,11 @@ export interface TodoRepositoryPort {
    */
   getTodoLists(): Promise<Result<TodoListFile[], Error>>;
 
+  /**
+   * List markdown sections from a dedicated todo-list file.
+   */
+  getSections(filePath: string): Promise<Result<TodoSection[], Error>>;
+
   // ──────────────────────────────────────────────────────────────────────────
   // Write Operations (modifies source files)
   // ──────────────────────────────────────────────────────────────────────────
@@ -112,6 +124,11 @@ export interface TodoRepositoryPort {
   updatePatch(id: TodoId, patch: TodoUpdatePatch, expected?: TodoLineReference): Promise<Result<Todo, Error>>;
 
   /**
+   * Move a todo line before/after another todo or to the end of a section.
+   */
+  move(id: TodoId, target: TodoMoveTarget, expected?: TodoLineReference): Promise<Result<Todo, Error>>;
+
+  /**
    * Delete a todo from its source file.
    * Removes the entire line from the markdown file.
    * @param id - Todo ID to delete
@@ -126,6 +143,26 @@ export interface TodoRepositoryPort {
    * @returns Created todo with assigned ID
    */
   create(params: CreateTodoParams, targetFile?: string): Promise<Result<Todo, Error>>;
+
+  /**
+   * Create a top-level markdown section in a dedicated todo-list file.
+   */
+  createSection(filePath: string, title: string): Promise<Result<TodoSection, Error>>;
+
+  /**
+   * Rename a top-level markdown section in a dedicated todo-list file.
+   */
+  renameSection(filePath: string, fromTitle: string, toTitle: string): Promise<Result<TodoSection, Error>>;
+
+  /**
+   * Move a top-level markdown section before or after another section.
+   */
+  moveSection(
+    filePath: string,
+    fromTitle: string,
+    targetTitle: string,
+    position: TodoSectionMovePosition,
+  ): Promise<Result<TodoSection[], Error>>;
 
   /**
    * Create a user-managed dedicated todo-list markdown file in the notes root.

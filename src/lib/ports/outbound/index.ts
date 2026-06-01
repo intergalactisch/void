@@ -117,7 +117,7 @@ export type {
 export type { PagedResult, SummaryQueryBase } from './PagedQuery';
 
 // TODO system ports
-export type { TodoRepositoryPort } from './TodoRepositoryPort';
+export type { TodoLineReference, TodoRepositoryPort } from './TodoRepositoryPort';
 export type { TodoParserPort, ParsedTodoMeta, TodoParseOptions } from './TodoParserPort';
 export type {
   TodoWatcherPort,

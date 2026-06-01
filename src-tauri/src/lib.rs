@@ -25,6 +25,7 @@ use commands::{
     void_read_json, void_read_jsonl, void_read_provenance, void_updater_check,
     void_updater_current_version, void_updater_install, void_updater_restart, void_write_json,
     watch_directory, web_fetch, write_file, PendingUpdate, ProcessRegistry, WatcherRegistry,
+    copy_to_clipboard,
 };
 use serde::Serialize;
 use std::time::{Duration, Instant};
@@ -202,6 +203,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // Original command
             greet,
+            // Clipboard commands
+            copy_to_clipboard,
             // File commands
             read_file,
             write_file,

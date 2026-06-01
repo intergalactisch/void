@@ -18,6 +18,9 @@ import type {
   TodoService,
   TodoStats,
   CreateTodoOptions,
+  TodoMoveTarget,
+  TodoSection,
+  TodoSectionMovePosition,
   TodoUpdatePatch,
   TodoListFile,
   CreateTodoListFileParams,
@@ -99,6 +102,7 @@ class TodoStore {
   showCompleted = $state(false);
   selectedTodoId = $state<TodoId | null>(null);
   todoLists = $state<TodoListFile[]>([]);
+  todoSections = $state<Record<string, TodoSection[]>>({});
   activeListPath = $state<string | null>(null);
   workspacePreferences = $state<Record<string, TodoWorkspacePreference>>({});
 
@@ -125,6 +129,10 @@ class TodoStore {
     });
     this.#listUnsubscribe = service.subscribeTodoLists((lists: TodoListFile[]) => {
       this.todoLists = lists;
+      const paths = new Set(lists.map((list) => list.path));
+      this.todoSections = Object.fromEntries(
+        Object.entries(this.todoSections).filter(([path]) => paths.has(path)),
+      );
       if (this.activeListPath && !lists.some((list) => list.path === this.activeListPath)) {
         this.activeListPath = null;
         this.selectedTodoId = null;
@@ -201,6 +209,25 @@ class TodoStore {
     } else {
       this.error = result.error;
     }
+  }
+
+  async refreshSections(filePath: string): Promise<void> {
+    if (!this.#service) throw new Error('TodoStore not initialized');
+
+    const result = await this.#service.getSections(filePath);
+    if (result.ok) {
+      this.todoSections = {
+        ...this.todoSections,
+        [filePath]: result.value,
+      };
+    } else {
+      this.error = result.error;
+    }
+  }
+
+  async refreshActiveSections(): Promise<void> {
+    if (!this.activeListPath) return;
+    await this.refreshSections(this.activeListPath);
   }
 
   // =========================================================================
@@ -334,6 +361,75 @@ class TodoStore {
     await this.refresh();
   }
 
+  async createSection(filePath: string, title: string): Promise<TodoSection | null> {
+    if (!this.#service) throw new Error('TodoStore not initialized');
+
+    this.error = null;
+    const result = await this.#service.createSection(filePath, title);
+    if (!result.ok) {
+      this.error = result.error;
+      return null;
+    }
+
+    await this.refreshSections(filePath);
+    return result.value;
+  }
+
+  async renameSection(filePath: string, fromTitle: string, toTitle: string): Promise<TodoSection | null> {
+    if (!this.#service) throw new Error('TodoStore not initialized');
+
+    this.error = null;
+    const result = await this.#service.renameSection(filePath, fromTitle, toTitle);
+    if (!result.ok) {
+      this.error = result.error;
+      return null;
+    }
+
+    await this.refreshSections(filePath);
+    return result.value;
+  }
+
+  async moveSection(
+    filePath: string,
+    fromTitle: string,
+    targetTitle: string,
+    position: TodoSectionMovePosition,
+  ): Promise<void> {
+    if (!this.#service) throw new Error('TodoStore not initialized');
+
+    this.error = null;
+    const result = await this.#service.moveSection(filePath, fromTitle, targetTitle, position);
+    if (!result.ok) {
+      this.error = result.error;
+      await this.refresh();
+      await this.refreshSections(filePath);
+      return;
+    }
+
+    this.todoSections = {
+      ...this.todoSections,
+      [filePath]: result.value,
+    };
+  }
+
+  async move(id: TodoId, target: TodoMoveTarget): Promise<void> {
+    if (!this.#service) throw new Error('TodoStore not initialized');
+
+    this.error = null;
+    const wasSelected = this.selectedTodoId === id;
+    const result = await this.#service.move(id, target);
+    if (!result.ok) {
+      this.error = result.error;
+      await this.refresh();
+      return;
+    }
+
+    if (wasSelected) {
+      this.selectedTodoId = result.value.id;
+    }
+    await this.refreshSections(result.value.sourceFile);
+  }
+
   /**
    * Update the content of a todo.
    *
@@ -459,6 +555,7 @@ class TodoStore {
 
   setActiveList(path: string): void {
     this.activeListPath = path;
+    void this.refreshSections(path);
     const visible = this.getTodosForListFile(path);
     if (this.selectedTodoId && visible.some((todo) => todo.id === this.selectedTodoId)) {
       return;
@@ -640,6 +737,11 @@ class TodoStore {
     return this.todoLists.find((list) => list.path === this.activeListPath) ?? null;
   }
 
+  get activeTodoSections(): TodoSection[] {
+    if (!this.activeListPath) return [];
+    return this.todoSections[this.activeListPath] ?? [];
+  }
+
   get currentPreferenceKey(): string {
     return this.activeListPath
       ? this.#preferenceKeyForList(this.activeListPath)
@@ -647,7 +749,7 @@ class TodoStore {
   }
 
   get currentWorkspacePreference(): TodoWorkspacePreference {
-    return this.#preferenceForKey(this.currentPreferenceKey, this.activeView);
+    return this.#preferenceForKey(this.currentPreferenceKey, this.activeView, !!this.activeListPath);
   }
 
   get currentCompletedPreferenceKey(): string {
@@ -708,6 +810,7 @@ class TodoStore {
         this.todos.filter((todo) => todo.sourceFile === this.activeListPath && !todo.isCompleted),
         this.activeView,
         this.currentWorkspacePreference,
+        true,
       );
     }
     return this.#presentTodos(
@@ -718,12 +821,12 @@ class TodoStore {
   }
 
   get visibleCompletedTodos(): Todo[] {
-    if (this.activeView !== 'logbook' && !this.showCompleted) return [];
     if (this.activeListPath) {
       return this.#presentTodos(
         this.todos.filter((todo) => todo.sourceFile === this.activeListPath && todo.isCompleted),
         this.activeView,
         this.currentCompletedWorkspacePreference,
+        true,
       );
     }
     return this.#presentTodos(
@@ -805,7 +908,8 @@ class TodoStore {
     return this.#presentTodos(
       this.todos.filter((todo) => todo.sourceFile === path && isVisibleByCompletion(todo, this.showCompleted)),
       this.activeView,
-      this.#preferenceForKey(this.#preferenceKeyForList(path), this.activeView),
+      this.#preferenceForKey(this.#preferenceKeyForList(path), this.activeView, true),
+      true,
     );
   }
 
@@ -820,6 +924,7 @@ class TodoStore {
       this.activeView,
       this.activeTodoList,
       preference.groupMode,
+      this.activeTodoSections,
     );
   }
 
@@ -830,6 +935,7 @@ class TodoStore {
       this.activeView,
       this.activeTodoList,
       preference.groupMode,
+      this.activeTodoSections,
     );
   }
 
@@ -840,6 +946,7 @@ class TodoStore {
       this.activeView,
       this.activeTodoList,
       preference.groupMode,
+      this.activeTodoSections,
     );
   }
 
@@ -892,14 +999,16 @@ class TodoStore {
     todos: Todo[],
     view: TodoView,
     preference: TodoWorkspacePreference,
+    isList = false,
   ): Todo[] {
     const filtered = applyAdvancedFilters(todos, preference.filters);
-    return sortTodosForMode(filtered, resolveSortMode(preference.sortMode, view), view);
+    return sortTodosForMode(filtered, resolveSortMode(preference.sortMode, view, isList), view);
   }
 
-  #preferenceForKey(key: string, view: TodoView): TodoWorkspacePreference {
+  #preferenceForKey(key: string, view: TodoView, isList = false): TodoWorkspacePreference {
     const saved = this.workspacePreferences[key];
     if (saved) return normalizeTodoWorkspacePreference(saved);
+    if (isList) return defaultPreferenceForList();
     return defaultPreferenceForView(view);
   }
 
@@ -1057,6 +1166,7 @@ class TodoStore {
     this.showCompleted = false;
     this.selectedTodoId = null;
     this.todoLists = [];
+    this.todoSections = {};
     this.activeListPath = null;
     this.workspacePreferences = {};
   }
@@ -1090,6 +1200,15 @@ function defaultPreferenceForView(view: TodoView): TodoWorkspacePreference {
   };
 }
 
+function defaultPreferenceForList(): TodoWorkspacePreference {
+  return {
+    ...DEFAULT_TODO_WORKSPACE_PREFERENCE,
+    sortMode: 'sourceOrder',
+    groupMode: 'section',
+    filters: { ...DEFAULT_TODO_ADVANCED_FILTER },
+  };
+}
+
 function defaultCompletedPreferenceForView(_view: TodoView): TodoWorkspacePreference {
   return {
     ...DEFAULT_TODO_WORKSPACE_PREFERENCE,
@@ -1103,8 +1222,9 @@ function defaultCompletedPreferenceForView(_view: TodoView): TodoWorkspacePrefer
   };
 }
 
-function resolveSortMode(sortMode: TodoSortMode, view: TodoView): TodoSortMode {
+function resolveSortMode(sortMode: TodoSortMode, view: TodoView, isList = false): TodoSortMode {
   if (sortMode !== 'viewDefault') return sortMode;
+  if (isList) return 'sourceOrder';
   return view === 'logbook' ? 'completedNewest' : 'priority';
 }
 
@@ -1187,15 +1307,17 @@ function groupTodosForPresentation(
   view: TodoView,
   activeList: TodoListFile | null,
   groupMode: TodoGroupMode,
+  sections: TodoSection[] = [],
 ): TodoGroup[] {
   const resolvedGroupMode = groupMode === 'viewDefault'
-    ? (view === 'logbook' ? 'completedDate' : 'viewDefault')
+    ? (activeList ? 'section' : view === 'logbook' ? 'completedDate' : 'viewDefault')
     : groupMode;
 
-  if (todos.length === 0) return [];
+  if (todos.length === 0 && !(activeList && resolvedGroupMode === 'section')) return [];
   if (resolvedGroupMode === 'none') {
     return [{ label: activeList?.title ?? getTodoViewLabel(view), todos }];
   }
+  if (activeList && resolvedGroupMode === 'section') return groupBySection(todos, sections);
   if (resolvedGroupMode === 'smartDate') return groupBySmartDate(todos);
   if (resolvedGroupMode === 'completedDate') return groupByDateField(todos, 'completedAt');
   if (resolvedGroupMode === 'createdDate') return groupByDateField(todos, 'createdAt');
@@ -1415,6 +1537,18 @@ function groupByString(todos: Todo[], getLabel: (todo: Todo) => string): TodoGro
     addToGroup(groups, getLabel(todo), todo);
   }
   return mapGroups(groups);
+}
+
+function groupBySection(todos: Todo[], sections: TodoSection[]): TodoGroup[] {
+  const groups = new Map<string, Todo[]>();
+  for (const section of sections) {
+    groups.set(section.title, []);
+  }
+  for (const todo of todos) {
+    const label = todo.section?.trim() || 'No section';
+    groups.set(label, [...(groups.get(label) ?? []), todo]);
+  }
+  return mapGroups(groups).filter((group) => group.todos.length > 0 || sections.some((section) => section.title === group.label));
 }
 
 function addToGroup(groups: Map<string, Todo[]>, label: string, todo: Todo): void {

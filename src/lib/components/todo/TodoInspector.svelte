@@ -17,7 +17,7 @@
   import { todoStore, toastStore } from '$lib/stores';
   import { buildRefId } from '$lib/domain/values';
   import { copyTextToClipboard } from '$lib/utils/clipboard';
-  import SelectShell from '$lib/components/shared/SelectShell.svelte';
+  import { DatePicker, SelectShell, formatDateInputLocal, parseDateInputLocal } from '$lib/components/shared';
 
   interface Props {
     todo: Todo | null;
@@ -37,14 +37,14 @@
   let recurrence = $state('');
 
   /** Track which property is being edited inline. */
-  let editingField = $state<null | 'due' | 'start' | 'priority' | 'list' | 'repeats' | 'tags'>(null);
+  let editingField = $state<null | 'priority' | 'list' | 'repeats' | 'tags'>(null);
 
   let titleInput = $state<HTMLTextAreaElement | null>(null);
 
   $effect(() => {
     title = todo?.content ?? '';
-    dueDate = todo?.dates.dueDate ? formatDateInput(todo.dates.dueDate) : '';
-    scheduledDate = todo?.dates.scheduledDate ? formatDateInput(todo.dates.scheduledDate) : '';
+    dueDate = todo?.dates.dueDate ? formatDateInputLocal(todo.dates.dueDate) : '';
+    scheduledDate = todo?.dates.scheduledDate ? formatDateInputLocal(todo.dates.scheduledDate) : '';
     priority = todo?.priority ?? 'none';
     list = todo?.list ?? 'inbox';
     tags = todo?.tags.join(', ') ?? '';
@@ -64,8 +64,8 @@
   async function saveMetadata() {
     if (!todo) return;
     const patch: TodoUpdatePatch = {
-      dueDate: dueDate ? parseDateInput(dueDate) : null,
-      scheduledDate: scheduledDate ? parseDateInput(scheduledDate) : null,
+      dueDate: dueDate ? parseDateInputLocal(dueDate) : null,
+      scheduledDate: scheduledDate ? parseDateInputLocal(scheduledDate) : null,
       priority: priority === 'none' ? null : priority,
       tags: parseTags(tags),
       recurrence: recurrence.trim() ? recurrence.trim() : null,
@@ -75,6 +75,18 @@
     }
     await todoStore.updatePatch(todo.id, patch);
     editingField = null;
+  }
+
+  async function saveDueDate(value: string) {
+    if (!todo) return;
+    dueDate = value;
+    await todoStore.updatePatch(todo.id, { dueDate: value ? parseDateInputLocal(value) : null });
+  }
+
+  async function saveScheduledDate(value: string) {
+    if (!todo) return;
+    scheduledDate = value;
+    await todoStore.updatePatch(todo.id, { scheduledDate: value ? parseDateInputLocal(value) : null });
   }
 
   async function toggleComplete() {
@@ -127,15 +139,6 @@
       .split(',')
       .map((tag) => tag.trim().replace(/^#/, ''))
       .filter(Boolean);
-  }
-
-  function formatDateInput(date: Date): string {
-    return date.toISOString().slice(0, 10);
-  }
-
-  function parseDateInput(value: string): Date {
-    const [year, month, day] = value.split('-').map(Number);
-    return new Date(year!, month! - 1, day);
   }
 
   function startOfToday(): Date {
@@ -263,25 +266,29 @@
       <!-- Due date -->
       <div class="property" role="listitem">
         <span class="prop-label"><Calendar size={13} strokeWidth={2} /> Due</span>
-        {#if editingField === 'due'}
-          <input type="date" bind:value={dueDate} onchange={commitEdit} onblur={commitEdit} use:focusOnMount />
-        {:else}
-          <button type="button" class="prop-value" onclick={() => startEdit('due')}>
-            {#if dueDate}{formatDisplayDate(parseDateInput(dueDate))}{:else}<span class="placeholder">Add a deadline</span>{/if}
-          </button>
-        {/if}
+        <DatePicker
+          mode="single"
+          name="task-due-date"
+          label="Due date"
+          placeholder="Add a deadline"
+          value={dueDate}
+          class="property-date-picker"
+          onChange={(next: unknown) => { if (typeof next === 'string') void saveDueDate(next); }}
+        />
       </div>
 
       <!-- Start date -->
       <div class="property" role="listitem">
         <span class="prop-label"><Calendar size={13} strokeWidth={2} /> Start</span>
-        {#if editingField === 'start'}
-          <input type="date" bind:value={scheduledDate} onchange={commitEdit} onblur={commitEdit} use:focusOnMount />
-        {:else}
-          <button type="button" class="prop-value" onclick={() => startEdit('start')}>
-            {#if scheduledDate}{formatDisplayDate(parseDateInput(scheduledDate))}{:else}<span class="placeholder">When to start</span>{/if}
-          </button>
-        {/if}
+        <DatePicker
+          mode="single"
+          name="task-start-date"
+          label="Start date"
+          placeholder="When to start"
+          value={scheduledDate}
+          class="property-date-picker"
+          onChange={(next: unknown) => { if (typeof next === 'string') void saveScheduledDate(next); }}
+        />
       </div>
 
       <!-- Priority -->
@@ -615,7 +622,6 @@
     font-weight: 400;
   }
 
-  .property input[type='date'],
   .property input[type='text'] {
     width: calc(100% + 8px);
     margin-left: -8px;
@@ -629,6 +635,30 @@
     padding: 4px 8px;
     outline: none;
     box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+
+  :global(.property-date-picker) {
+    width: calc(100% + 8px);
+    margin-left: -8px;
+  }
+
+  :global(.property-date-picker .date-picker-trigger) {
+    min-height: 28px;
+    border-color: transparent;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    padding: 4px 8px;
+  }
+
+  :global(.property-date-picker .date-picker-trigger:hover),
+  :global(.property-date-picker .date-picker-trigger[aria-expanded='true']) {
+    border-color: transparent;
+    background: var(--bg-hover);
+  }
+
+  :global(.property-date-picker .date-picker-trigger:focus-visible) {
+    border-color: var(--accent-primary);
+    background: var(--bg-app);
   }
 
   :global(.inspector-select-shell) {

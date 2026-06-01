@@ -289,7 +289,44 @@ export const nodes: Record<string, NodeSpec> = {
             ['span', { class: 'void-protected-lines-title' }, locked ? 'Locked lines' : 'Protected lines'],
             ['span', { class: 'void-protected-lines-meta' }, locked ? `${lineLabel} hidden` : `${lineLabel} visible this session`],
           ],
-          ['span', { class: 'void-protected-lines-action' }, locked ? 'Unlock vault' : 'Encrypted on disk'],
+          [
+            'span',
+            { class: 'void-protected-lines-actions' },
+            locked
+              ? [
+                  'button',
+                  {
+                    type: 'button',
+                    class: 'void-protected-lines-action',
+                    'data-protected-lines-action': 'unlock',
+                    'data-protection-id': node.attrs.protectionId,
+                    'data-block-id': node.attrs.id,
+                  },
+                  'Unlock',
+                ]
+              : [
+                  'button',
+                  {
+                    type: 'button',
+                    class: 'void-protected-lines-action',
+                    'data-protected-lines-action': 'unprotect',
+                    'data-protection-id': node.attrs.protectionId,
+                    'data-block-id': node.attrs.id,
+                  },
+                  'Unprotect',
+                ],
+            [
+              'button',
+              {
+                type: 'button',
+                class: 'void-protected-lines-action danger',
+                'data-protected-lines-action': 'delete',
+                'data-protection-id': node.attrs.protectionId,
+                'data-block-id': node.attrs.id,
+              },
+              'Delete',
+            ],
+          ],
         ],
         ['div', { class: 'void-protected-lines-content' }, 0],
       ];
