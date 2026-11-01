@@ -13,9 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 ### Security
 
-## [0.2.3] - 2026-11-01
+## [0.2.4] - 2026-11-01
 
-Includes the improvements prepared for v0.2.2, whose release build was blocked by the macOS 14 runner retirement.
+Includes the improvements prepared for v0.2.2. The v0.2.2 and v0.2.3 tags did not produce releases due to runner retirement and a lockfile versioning error, both corrected here.
 
 ### Changed
 - Move CI and release builds to supported macOS 15 runners.
