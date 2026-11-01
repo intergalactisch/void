@@ -16,7 +16,7 @@ concurrency:
 jobs:
   test:
     name: Test
-    runs-on: macos-14
+    runs-on: macos-15
 
     steps:
       - name: Checkout
@@ -51,7 +51,7 @@ jobs:
   release:
     name: Build & release
     needs: test
-    runs-on: macos-14
+    runs-on: macos-15
 
     # Per-arch matrix — each job builds, signs, and uploads its DMG +
     # .app.tar.gz + .sig, then merges its platform entry into latest.json on

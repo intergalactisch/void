@@ -13,9 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 ### Security
 
-## [0.2.2] - 2026-11-01
+## [0.2.3] - 2026-11-01
+
+Includes the improvements prepared for v0.2.2, whose release build was blocked by the macOS 14 runner retirement.
 
 ### Changed
+- Move CI and release builds to supported macOS 15 runners.
 - Improve editor responsiveness for long notes, large task lists, and complex markdown.
 - Extract focused editor and task helpers to simplify maintenance and reduce duplicated logic.
 - Preserve conflict-resolution drafts while switching files, closing the conflict window, and restarting. Add a clearer Keep Both action and prevent accepting unresolved conflict markers.
