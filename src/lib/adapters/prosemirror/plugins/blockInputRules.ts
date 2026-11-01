@@ -5,7 +5,6 @@
  * - `# ` -> Heading 1, `## ` -> Heading 2, `### ` -> Heading 3
  * - `> ` -> Blockquote
  * - `---` -> Horizontal rule
- * - ``` -> Code block (with optional language)
  *
  * Part of the ProseMirror infrastructure adapter.
  */
@@ -16,7 +15,6 @@ import type { Schema } from 'prosemirror-model';
 import { TextSelection } from 'prosemirror-state';
 import type { Plugin } from 'prosemirror-state';
 import { generateBlockId } from '$lib/domain/entities/Block';
-import { parseCodeFenceInfo } from '$lib/core/codeFence';
 
 /**
  * Create input rules plugin for block-level conversions.
@@ -30,7 +28,6 @@ export function createBlockInputRules(schema: Schema): Plugin {
   const heading = schema.nodes.heading;
   const blockquote = schema.nodes.blockquote;
   const horizontalRule = schema.nodes.horizontalRule;
-  const codeBlock = schema.nodes.codeBlock;
   const paragraph = schema.nodes.paragraph;
 
   // Heading rules: most specific first so ###### matches before ##### etc.
@@ -67,6 +64,7 @@ export function createBlockInputRules(schema: Schema): Plugin {
     rules.push(
       new InputRule(/^---$/, (state, match, start, end) => {
         const $from = state.doc.resolve(start);
+        if (end !== $from.end()) return null;
         const blockStart = $from.before($from.depth);
         const blockEnd = $from.after($from.depth);
 
@@ -76,28 +74,6 @@ export function createBlockInputRules(schema: Schema): Plugin {
         const tr = state.tr.replaceWith(blockStart, blockEnd, Fragment.from([hr, newParagraph]));
         // Place cursor in the new paragraph
         tr.setSelection(TextSelection.near(tr.doc.resolve(blockStart + hr.nodeSize + 1)));
-        return tr;
-      })
-    );
-  }
-
-  // Code block: ``` with optional language
-  if (codeBlock) {
-    rules.push(
-      new InputRule(/^```([^\n`]*)$/, (state, match, start, end) => {
-        const info = parseCodeFenceInfo(match[1]);
-        const $from = state.doc.resolve(start);
-        const blockStart = $from.before($from.depth);
-        const blockEnd = $from.after($from.depth);
-
-        const newBlock = codeBlock.create({
-          id: generateBlockId(),
-          language: info.language,
-          meta: info.meta,
-        });
-        const tr = state.tr.replaceWith(blockStart, blockEnd, newBlock);
-        // Place cursor inside the code block
-        tr.setSelection(TextSelection.near(tr.doc.resolve(blockStart + 1)));
         return tr;
       })
     );

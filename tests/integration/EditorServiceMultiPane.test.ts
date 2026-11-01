@@ -149,6 +149,38 @@ describe('EditorServiceImpl - multi-pane mounted editors', () => {
     editor.destroy();
   });
 
+  it('cleanup of the previous editor preserves a newly selected note', async () => {
+    const oldHost = document.createElement('div');
+    await editor.mountPane('pane-a', oldHost, 'a.md');
+    await editor.openDocument('b.md');
+    expect(editor.getState().document?.path).toBe('b.md');
+    editor.unmountPane('pane-a', oldHost);
+    expect(editor.getState().activePath).toBe('b.md');
+    expect(editor.getState().document?.path).toBe('b.md');
+    expect(editor.getState().activePaneId).toBeNull();
+    expect((await editor.mountPane('pane-b', document.createElement('div'), 'b.md')).ok).toBe(true);
+    expect(editor.getState().isReady).toBe(true);
+  });
+
+  it('resumes autosave when an edited session is remounted without further typing', async () => {
+    vi.useFakeTimers();
+    try {
+      editor.setAutoSaveDelay(50);
+      const host = document.createElement('div');
+      await editor.mountPane('pane-a', host, 'a.md');
+      editor.updateDocumentMeta({ title: 'Unsaved title' });
+      await editor.openDocument('b.md');
+      editor.unmountPane('pane-a', host);
+      await editor.openDocument('a.md');
+      expect(editor.getState().isDirty).toBe(true);
+      await editor.mountPane('pane-a', document.createElement('div'), 'a.md');
+      await vi.advanceTimersByTimeAsync(60);
+      const saved = await fs.readFile('/notes/a.md');
+      expect(saved.ok && saved.value).toContain('Unsaved title');
+      expect(editor.getState().isDirty).toBe(false);
+    } finally { vi.useRealTimers(); }
+  });
+
   it('mounts two independent pane editors for two note paths', async () => {
     const hostA = document.createElement('div');
     const hostB = document.createElement('div');

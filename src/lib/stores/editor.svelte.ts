@@ -9,6 +9,7 @@
  * Part of Hexagonal Architecture primary adapters layer.
  */
 
+import { untrack } from 'svelte';
 import type { EditorPaneState, EditorService, EditorState } from '$lib/ports/inbound';
 import type { Document, Block } from '$lib/domain';
 import type { InlineAIThread } from '$lib/domain/entities/InlineAIThread';
@@ -728,24 +729,32 @@ class EditorStore {
     this.#service?.closeSlashMenu();
   }
 
+  #findRevision = $state(0);
+
   // ─── Find / Replace passthrough ───
   openFindReplace(mode: 'find' | 'replace') {
     this.#service?.openFindReplace(mode);
+    untrack(() => { this.#findRevision += 1; });
   }
   closeFindReplace() {
     this.#service?.closeFindReplace();
+    untrack(() => { this.#findRevision += 1; });
   }
   setFindQuery(query: string, options?: { regex?: boolean; caseSensitive?: boolean; wholeWord?: boolean }) {
     this.#service?.setFindQuery(query, options);
+    untrack(() => { this.#findRevision += 1; });
   }
   findNextMatch() {
     this.#service?.findNextMatch();
+    untrack(() => { this.#findRevision += 1; });
   }
   findPrevMatch() {
     this.#service?.findPrevMatch();
+    untrack(() => { this.#findRevision += 1; });
   }
   replaceCurrentMatch(replacement: string) {
     this.#service?.replaceCurrentMatch(replacement);
+    untrack(() => { this.#findRevision += 1; });
   }
   replaceRange(from: number, to: number, markdown: string) {
     this.#service?.replaceRange(from, to, markdown);
@@ -758,8 +767,13 @@ class EditorStore {
   }
   replaceAllMatches(replacement: string) {
     this.#service?.replaceAllMatches(replacement);
+    untrack(() => { this.#findRevision += 1; });
   }
   getFindReplaceState() {
+    void this.#findRevision;
+    void this.activePaneId;
+    void this.activePath;
+    void this.document;
     return this.#service?.getFindReplaceState() ?? null;
   }
 

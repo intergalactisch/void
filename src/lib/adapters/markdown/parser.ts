@@ -37,6 +37,23 @@ const md = new MarkdownIt({
   linkify: true,
 });
 
+// markdown-it trims both edge spaces even for an all-space code span.
+// CommonMark keeps all-space spans literal; preserve them before that rule.
+for (const parser of [md, renderMd]) {
+  parser.inline.ruler.before('backticks', 'space_only_code', (state, silent) => {
+    if (state.src.charCodeAt(state.pos) !== 0x60) return false;
+    const match = /^(`+)( +)\1(?!`)/.exec(state.src.slice(state.pos, state.posMax));
+    if (!match) return false;
+    if (!silent) {
+      const token = state.push('code_inline', 'code', 0);
+      token.markup = match[1]!;
+      token.content = match[2]!;
+    }
+    state.pos += match[0].length;
+    return true;
+  });
+}
+
 /**
  * Render markdown to HTML string for preview purposes.
  * Uses the same configured markdown-it instance.

@@ -17,6 +17,7 @@
  * - Adds metadata in Obsidian Tasks format
  */
 
+import { literalMarkdownLines } from './markdownStructure';
 import type { TodoParserPort, ParsedTodoMeta, TodoParseOptions } from '$lib/ports/outbound/TodoParserPort';
 import type { CreateTodoParams, Todo } from '$lib/domain/entities/Todo';
 import type { TodoDateMeta } from '$lib/domain/values/TodoDateMeta';
@@ -68,10 +69,12 @@ export class MarkdownTodoParser implements TodoParserPort {
   parse(content: string, filePath: string, options?: TodoParseOptions): Todo[] {
     const lines = content.split('\n');
     const todos: Todo[] = [];
+    const excluded = literalMarkdownLines(lines);
     let currentSection: string | undefined;
     const source: TodoSource = options?.source ?? (isDedicatedTodoFile(filePath) ? 'dedicated' : 'inline');
 
     for (let i = 0; i < lines.length; i++) {
+      if (excluded.has(i)) continue;
       const heading = parseHeading(lines[i]!);
       if (heading) {
         if (source === 'dedicated') {

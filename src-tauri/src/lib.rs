@@ -25,7 +25,7 @@ use commands::{
     void_read_json, void_read_jsonl, void_read_provenance, void_updater_check,
     void_updater_current_version, void_updater_install, void_updater_restart, void_write_json,
     watch_directory, web_fetch, write_file, PendingUpdate, ProcessRegistry, WatcherRegistry,
-    copy_to_clipboard,
+    copy_to_clipboard, complete_app_exit, ExitApproval,
 };
 use serde::Serialize;
 use std::time::{Duration, Instant};
@@ -188,6 +188,7 @@ pub fn run() {
         .manage(ProcessRegistry::default())
         .manage(PendingUpdate::default())
         .manage(WatcherRegistry::default())
+        .manage(ExitApproval::default())
         .on_menu_event(|app, event| {
             handle_menu_event(app, event.id().as_ref());
         })
@@ -201,6 +202,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            complete_app_exit,
             // Original command
             greet,
             // Clipboard commands
@@ -313,6 +315,15 @@ pub fn run() {
     let save_window_placement_after = Instant::now() + WINDOW_PLACEMENT_SAVE_GRACE_PERIOD;
 
     app.run(move |app, event| {
+        if let tauri::RunEvent::ExitRequested { api, code, .. } = &event {
+            // Ordinary Quit (menu, tray, OS) must wait for the main editor.
+            // Nonzero exits, including the updater restart, retain their semantics.
+            if code.unwrap_or(0) == 0 && !app.state::<ExitApproval>().is_approved() {
+                api.prevent_exit();
+                show_main_window(app);
+                let _ = app.emit_to(MAIN_WINDOW_LABEL, "void:exit-requested", ());
+            }
+        }
         if let tauri::RunEvent::WindowEvent { label, event, .. } = &event {
             if label == MAIN_WINDOW_LABEL {
                 match event {
@@ -322,8 +333,9 @@ pub fn run() {
                         save_main_window_placement(app);
                     }
                     tauri::WindowEvent::CloseRequested { api, .. } => {
+                        // The frontend saves all notes before hiding. Never
+                        // hide here first: storage errors must remain visible.
                         api.prevent_close();
-                        hide_main_window(app);
                     }
                     _ => {}
                 }

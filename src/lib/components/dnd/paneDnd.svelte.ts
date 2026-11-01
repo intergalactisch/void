@@ -380,7 +380,8 @@ export function paneSource(node: HTMLElement, params: PaneSourceParams) {
     },
     destroy() {
       node.removeEventListener('pointerdown', onPointerDown);
-      if (paneDrag.sourcePaneId === current.paneId) paneDrag.cancel();
+      // The controller owns the pointer session. Hovering another workspace
+      // tab unmounts this header, but the drag must survive until drop/cancel.
     },
   };
 }

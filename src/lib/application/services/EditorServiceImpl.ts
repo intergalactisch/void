@@ -52,8 +52,9 @@ import type { ToolId } from '$lib/domain/values/ToolId';
 import type { Conversation } from '$lib/domain/entities/Conversation';
 import type { InlineAIThread } from '$lib/domain/entities/InlineAIThread';
 import type { Result } from '$lib/core';
-import { combineMarkdownWithFrontmatter, ok, err } from '$lib/core';
+import { combineMarkdownWithFrontmatter, ok, err, toError } from '$lib/core';
 import { events } from '$lib/events';
+import { ResourceLock } from '$lib/events/queue/ResourceLock';
 import { resolveNoteLinkTarget } from './NoteLinkResolver';
 
 const INITIAL_STATE: EditorState = {
@@ -121,6 +122,7 @@ interface MountedEditorPane {
 
 export class EditorServiceImpl implements EditorService {
   private state: EditorState = { ...INITIAL_STATE };
+  private readonly saveLock = new ResourceLock();
   private subscribers: Set<(state: EditorState) => void> = new Set();
   private editorPort: EditorPort | null = null;
   private editorElement: HTMLElement | null = null;
@@ -464,6 +466,10 @@ export class EditorServiceImpl implements EditorService {
       this.updateState({});
     }
 
+    // A tab switch cancels the old view's timer. Resume pending edits when
+    // that session is mounted again, even if the user does not type another key.
+    if (this.sessions.get(documentToMount.path)?.isDirty) this.scheduleAutosave(paneId);
+
     return ok(undefined);
   }
 
@@ -472,12 +478,19 @@ export class EditorServiceImpl implements EditorService {
     if (element && (!currentPane || currentPane.element !== element)) return;
 
     const wasActive = this.state.activePaneId === paneId;
-    const fallbackSession = currentPane ? this.sessions.get(currentPane.path) : undefined;
+    // Navigation can select a new session before Svelte disposes the old
+    // editor. Its cleanup must not restore the note we just navigated away from.
+    const navigationPending = !!currentPane && this.state.activePath !== currentPane.path;
+    const fallbackSession = navigationPending && this.state.activePath
+      ? this.sessions.get(this.state.activePath)
+      : currentPane ? this.sessions.get(currentPane.path) : undefined;
     this.syncPaneSessionFromEditor(paneId);
     this.teardownPane(paneId, undefined, element ?? undefined);
 
     if (wasActive) {
-      const nextPane = this.mountedPanes.values().next().value as MountedEditorPane | undefined;
+      const nextPane = navigationPending
+        ? (fallbackSession ? this.findMountedPaneByPath(fallbackSession.path) : undefined)
+        : this.mountedPanes.values().next().value as MountedEditorPane | undefined;
       if (nextPane) {
         this.focusPane(nextPane.paneId);
       } else {
@@ -822,14 +835,21 @@ export class EditorServiceImpl implements EditorService {
       if (wasActive) this.clearSaveTimer();
     }
 
+    if (this.sessions.get(path) !== session) return ok(undefined);
+    if (session.isDirty) {
+      const error = new Error('The note changed while saving. It remains open; please close it again when finished.');
+      events.emit('document:save-failed', { path, error });
+      return err(error);
+    }
+    const closesActiveTab = this.state.activePath === path;
     for (const paneId of panesToClose) {
-      this.teardownPane(paneId);
+      if (this.mountedPanes.get(paneId)?.path === path) this.teardownPane(paneId);
     }
     this.sessions.delete(path);
     await this.clearTodoSnapshotForPath(path);
     events.emit('document:closed', { path });
 
-    if (!wasActive) {
+    if (!closesActiveTab) {
       // Just refresh tabs[] for subscribers — no remount needed.
       this.updateState({});
       return ok(undefined);
@@ -851,6 +871,36 @@ export class EditorServiceImpl implements EditorService {
     return this.saveDocumentSnapshot(currentDocument, lineage, this.state.activePaneId);
   }
 
+  async saveAllOpenDocuments(): Promise<Result<void, Error>> {
+    // Re-read dirty sessions after every pass: typing may continue while disk
+    // writes are pending. Never report success with newer unsaved changes.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      for (const paneId of this.mountedPanes.keys()) this.syncPaneSessionFromEditor(paneId);
+      this.syncActiveSessionFromEditor();
+      const pending = [...this.sessions.values()].filter(session => session.isDirty || session.isSaving);
+      if (pending.length === 0) return ok(undefined);
+      for (const session of pending) {
+        if (!this.sessions.has(session.path)) continue;
+        const result = await this.saveOpenDocument(session.path);
+        if (!result.ok) return result;
+      }
+    }
+    if ([...this.sessions.values()].some(session => session.isDirty || session.isSaving)) {
+      return err(new Error('Notes are still changing. Finish editing and try closing again.'));
+    }
+    return ok(undefined);
+  }
+
+  async saveOpenDocument(path: string, lineage?: LineageRecordOptions): Promise<Result<void, Error>> {
+    if (this.state.activePath === path) return this.saveDocument(lineage);
+    for (const [paneId, pane] of this.mountedPanes) {
+      if (pane.path === path) return this.savePane(paneId, lineage);
+    }
+    const session = this.sessions.get(path);
+    if (!session) return err(new Error(`Note is not open: ${path}`));
+    return this.saveDocumentSnapshot(session.document, lineage);
+  }
+
   async savePane(paneId: string, lineage?: LineageRecordOptions): Promise<Result<void, Error>> {
     const pane = this.mountedPanes.get(paneId);
     if (!pane) {
@@ -865,9 +915,37 @@ export class EditorServiceImpl implements EditorService {
   }
 
   private async saveDocumentSnapshot(
-    currentDocument: Document | null,
+    document: Document | null,
     lineage?: LineageRecordOptions,
     paneId?: string | null,
+  ): Promise<Result<void, Error>> {
+    if (!document) return this.persistDocumentSnapshot(document, lineage, paneId, 0);
+    const path = document.path;
+    // Cancel the timer for this snapshot now. A newer edit may schedule its
+    // own autosave while this request waits for an earlier write.
+    if (paneId || this.state.activePath === path) this.clearSaveTimer(paneId ?? undefined);
+    // Capture the revision when requested, not when a queued write begins.
+    const revision = this.sessions.get(path)?.editCounter ?? 0;
+    const persist = async (): Promise<Result<void, Error>> => {
+      try {
+        return await this.persistDocumentSnapshot(document, lineage, paneId, revision);
+      } catch (cause) {
+        const error = toError(cause);
+        const session = this.sessions.get(path);
+        if (session) session.isSaving = false;
+        this.updateState(this.state.activePath === path ? { isSaving: false } : {});
+        events.emit('document:save-failed', { path, error });
+        return err(error);
+      }
+    };
+    return this.saveLock.withLock(path, persist);
+  }
+
+  private async persistDocumentSnapshot(
+    currentDocument: Document | null,
+    lineage: LineageRecordOptions | undefined,
+    paneId: string | null | undefined,
+    editCounterAtStart: number,
   ): Promise<Result<void, Error>> {
     if (!currentDocument) {
       const error = new Error('No document open');
@@ -890,7 +968,6 @@ export class EditorServiceImpl implements EditorService {
       return err(error);
     }
 
-    this.clearSaveTimer(paneId ?? undefined);
     if (session) session.isSaving = true;
     if (this.state.activePath === currentDocument.path) {
       this.updateState({ isSaving: true });
@@ -904,7 +981,6 @@ export class EditorServiceImpl implements EditorService {
     // counter is robust to non-content noise in proseMirrorToDomain (e.g.
     // fresh block ids for nodes whose PM attrs.id is null) that would
     // otherwise make two derived snapshots look unequal.
-    const editCounterAtStart = session?.editCounter ?? 0;
 
     const result = await this.documentPort.save(currentDocument);
     if (!result.ok) {
@@ -924,14 +1000,18 @@ export class EditorServiceImpl implements EditorService {
     // Save succeeded on disk. Keep the visible state in "saving" until the
     // lineage trace is durable too, so "Saved" means the note and history agree.
     await this.recordLineageForDocument(currentDocument, lineage);
-    await this.clearTodoSnapshotForPath(currentDocument.path);
+    if (!session || session.editCounter === editCounterAtStart) {
+      await this.clearTodoSnapshotForPath(currentDocument.path);
+    }
 
     // Save + lineage succeeded enough for user-facing bookkeeping. Lineage
     // failures are logged inside recordLineageForDocument and do not block the
     // markdown save. If another in-memory edit landed while the disk write was
     // in flight, keep that newer editor state dirty instead of stamping the
     // older saved snapshot back over it.
-    const latestDocument = this.getCurrentDocumentForSave();
+    const latestDocument = this.state.activePath === currentDocument.path
+      ? this.getCurrentDocumentForSave()
+      : session?.document ?? null;
     const editCounterAtEnd = session?.editCounter ?? editCounterAtStart;
     const changedDuringSave = editCounterAtEnd !== editCounterAtStart;
     const stateDocument =
@@ -939,6 +1019,11 @@ export class EditorServiceImpl implements EditorService {
         ? latestDocument
         : currentDocument;
     const dirtyAfterSave = changedDuringSave;
+    if (changedDuringSave && stateDocument) {
+      const port = paneId ? this.mountedPanes.get(paneId)?.port ?? null
+        : this.state.activePath === currentDocument.path ? this.editorPort : null;
+      this.syncTodoSnapshotFromEditor(stateDocument, port);
+    }
 
     if (session) {
       session.document = { ...stateDocument, isDirty: dirtyAfterSave };
@@ -1750,13 +1835,8 @@ export class EditorServiceImpl implements EditorService {
     const pane = paneId ? this.mountedPanes.get(paneId) : null;
     const saveTargetPath = pane?.path ?? this.state.document?.path ?? null;
     const timeout = setTimeout(async () => {
-      const result = pane ? await this.savePane(pane.paneId) : await this.saveDocument();
-      if (!result.ok) {
-        events.emit('document:save-failed', {
-          path: saveTargetPath,
-          error: result.error,
-        });
-      }
+      if (pane && this.mountedPanes.get(pane.paneId) === pane) await this.savePane(pane.paneId);
+      else if (saveTargetPath && this.sessions.has(saveTargetPath)) await this.saveOpenDocument(saveTargetPath);
     }, this.autoSaveDelayMs);
 
     if (pane) {
@@ -1914,7 +1994,7 @@ export class EditorServiceImpl implements EditorService {
     const liveDoc = this.readPaneDocument(paneId);
     if (!liveDoc) return;
     session.document = liveDoc;
-    if (this.state.activePaneId === paneId) {
+    if (this.state.activePaneId === paneId && this.state.activePath === pane.path) {
       session.isDirty = this.state.isDirty;
     }
   }

@@ -75,15 +75,103 @@ describe('SyncServiceImpl', () => {
         state.activePath = path;
         return { ok: true, value: undefined };
       }),
-      saveDocument: vi.fn(async () => {
+      saveOpenDocument: vi.fn(async (path: string) => {
         for (const tab of state.tabs) {
-          if (tab.path === state.activePath) tab.isDirty = false;
+          if (tab.path === path) { tab.isDirty = false; tab.isSaving = false; }
         }
         state.isDirty = state.tabs.some((tab) => tab.path === state.activePath && tab.isDirty);
         return { ok: true, value: undefined };
       }),
     } as unknown as EditorService;
   }
+
+  async function conflictingSync() {
+    await credentials.store(CREDENTIAL_KEYS.GITHUB_ACCESS_TOKEN, 'ghp_test');
+    const sync = service();
+    await sync.attachRepository({ remoteUrl: 'https://github.com/me/notes.git' });
+    git.seed(notesPath, { ahead: 1, behind: 1, lastCommit: 'local' });
+    git.seedMergeConflict(notesPath, { path: 'plan.md', base: 'base\n', local: 'local\n', remote: 'remote\n' });
+    await sync.syncNow();
+    return sync;
+  }
+
+  it('persists independent conflict drafts without changing source versions or Git files', async () => {
+    const sync = await conflictingSync();
+    const write = vi.spyOn(git, 'writeWorkingFile');
+    await sync.saveConflictDraft('sync-conflict-plan.md', 'My combined draft\n');
+    const reopened = service();
+    const preview = await reopened.previewConflict('sync-conflict-plan.md');
+    expect(preview.ok && preview.value.mergedMarkdown).toBe('My combined draft\n');
+    expect(preview.ok && preview.value.localMarkdown).toBe('local\n');
+    expect(preview.ok && preview.value.remoteMarkdown).toBe('remote\n');
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('rejects unresolved conflict markers before any file is written or staged', async () => {
+    const sync = await conflictingSync();
+    const write = vi.spyOn(git, 'writeWorkingFile');
+    const stage = vi.spyOn(git, 'stagePaths');
+    const result = await sync.applyConflictResolution('sync-conflict-plan.md', 'use-merged');
+    expect(result.ok).toBe(false);
+    expect(write).not.toHaveBeenCalled();
+    expect(stage).not.toHaveBeenCalled();
+    expect((await sync.loadConflictSession()).ok).toBe(true);
+  });
+
+  it('retries pushing an already committed resolution after reconnecting and restarting', async () => {
+    const sync = await conflictingSync();
+    const commit = vi.spyOn(git, 'commitMerge');
+    const push = vi.spyOn(git, 'push').mockResolvedValueOnce({ ok: false, error: new Error('Network unavailable') });
+    expect((await sync.applyConflictResolution('sync-conflict-plan.md', 'use-merged', 'Both edits\n')).ok).toBe(false);
+    expect(commit).toHaveBeenCalledTimes(1);
+    const saved = await sync.loadConflictSession();
+    expect(saved.ok && saved.value).not.toBeNull();
+    const restarted = service();
+    expect((await restarted.resumeConflictResolution()).ok).toBe(true);
+    expect(push).toHaveBeenCalledTimes(2);
+    expect(commit).toHaveBeenCalledTimes(1);
+    const after = await restarted.loadConflictSession();
+    expect(after.ok && after.value).toBeNull();
+    expect(settings.current().sync.paused).toBe(false);
+  });
+
+  it('retains local commits after a failed fetch and syncs them after reconnecting', async () => {
+    await credentials.store(CREDENTIAL_KEYS.GITHUB_ACCESS_TOKEN, 'ghp_test');
+    const sync = service();
+    await sync.attachRepository({ remoteUrl: 'https://github.com/me/notes.git' });
+    git.seed(notesPath, { ahead: 1, behind: 0, lastCommit: 'offline-edit' });
+    vi.spyOn(git, 'fetch').mockResolvedValueOnce({ ok: false, error: new Error('Offline') });
+    const push = vi.spyOn(git, 'push');
+    expect((await sync.syncNow()).ok).toBe(false);
+    expect(push).not.toHaveBeenCalled();
+    const offline = await git.detect(notesPath);
+    expect(offline.ok && offline.value.ahead).toBeGreaterThan(0);
+    expect((await sync.syncNow()).ok).toBe(true);
+    expect(push).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns malformed conflict recovery data as an error instead of crashing or syncing', async () => {
+    await configureAttachedSync();
+    await voidStorage.writeJson(notesPath, 'sync/conflicts.json', { status: 'conflicted', conflicts: 'corrupt' });
+    const sync = service();
+    const commit = vi.spyOn(git, 'commitAll');
+    const loaded = await sync.loadConflictSession();
+    expect(loaded.ok).toBe(false);
+    const result = await sync.syncNow();
+    expect(result.ok).toBe(false);
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('recovers after an unexpected sync adapter rejection', async () => {
+    await configureAttachedSync();
+    await credentials.store(CREDENTIAL_KEYS.GITHUB_ACCESS_TOKEN, 'ghp_test');
+    vi.spyOn(git, 'commitAll').mockRejectedValueOnce(new Error('Git process failed'));
+    const sync = service();
+    const failed = await sync.syncNow();
+    expect(failed.ok).toBe(false);
+    expect(sync.getStatus()).toMatchObject({ operation: 'idle', kind: 'error', message: 'Git process failed' });
+    expect((await sync.syncNow()).ok).toBe(true);
+  });
 
   it('detects an unattached folder as disabled', async () => {
     const result = await service().refreshStatus();
@@ -461,7 +549,7 @@ describe('SyncServiceImpl', () => {
     const result = await sync.applyConflictResolution('sync-conflict-folder-plan.md', 'duplicate-local');
 
     expect(result.ok).toBe(true);
-    expect(write).toHaveBeenCalledWith(notesPath, expect.stringMatching(/^folder\/plan \(local \d{8}-\d{6}\)\.md$/), 'local\n');
+    expect(write).toHaveBeenCalledWith(notesPath, expect.stringMatching(/^folder\/plan \(local \d{8}-\d{6}-[a-f0-9]{8}\)\.md$/), 'local\n');
     expect(write).toHaveBeenCalledWith(notesPath, 'folder/plan.md', 'remote\n');
     expect(stage).toHaveBeenCalledWith(notesPath, expect.arrayContaining(['folder/plan.md']));
   });
@@ -548,9 +636,9 @@ describe('SyncServiceImpl', () => {
     const result = await sync.syncNow();
 
     expect(result.ok).toBe(true);
-    expect(editor.saveDocument).toHaveBeenCalledTimes(2);
-    expect(editor.switchTab).toHaveBeenCalledWith('idea.md');
-    expect(editor.switchTab).toHaveBeenLastCalledWith('plan.md');
+    expect(editor.saveOpenDocument).toHaveBeenCalledTimes(2);
+    expect(editor.switchTab).not.toHaveBeenCalled();
+    expect(editorState.activePath).toBe('plan.md');
   });
 
   it('blocks sync when an open editor tab has an unresolved file conflict', async () => {
@@ -582,7 +670,7 @@ describe('SyncServiceImpl', () => {
     if (!result.ok) {
       expect(result.error.message).toContain('Resolve editor conflicts before syncing');
     }
-    expect(editor.saveDocument).not.toHaveBeenCalled();
+    expect(editor.saveOpenDocument).not.toHaveBeenCalled();
   });
 
   it('refreshes one note from GitHub as a normal local edit', async () => {

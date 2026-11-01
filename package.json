@@ -1,6 +1,6 @@
 {
   "name": "void",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "description": "AI-powered note-taking app built with Tauri v2 + Svelte 5",
   "keywords": [
@@ -32,7 +32,7 @@
     "test:smoke": "vitest run tests/integration/bootstrap.test.ts tests/integration/system-smoke.test.ts",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test",
-    "test:rust": "cd src-tauri && cargo check",
+    "test:rust": "cargo test --locked --manifest-path src-tauri/Cargo.toml",
     "test:all": "npm run check && npm run test:run && npm run test:rust",
     "tauri:install": "tauri build --bundles app && ./scripts/install.sh",
     "install:app": "./scripts/install.sh",

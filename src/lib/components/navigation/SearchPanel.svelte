@@ -7,7 +7,7 @@
    * scrolls the editor toward the matching line.
    */
 
-  import { onMount, onDestroy } from 'svelte';
+  import { onDestroy } from 'svelte';
   import { noteWorkspaceStore, notesStore, uiStore } from '$lib/stores';
   import { events } from '$lib/events';
   import { getAppContext } from '$lib/bootstrap';
@@ -24,7 +24,6 @@
 
   let { isOpen, onClose, onNoteContextMenu }: Props = $props();
 
-  let query = $state('');
   let regex = $state(false);
   let caseSensitive = $state(false);
   let wholeWord = $state(false);
@@ -39,9 +38,20 @@
   let listRef: HTMLDivElement | null = $state(null);
   let focusTrapCleanup: (() => void) | null = null;
   let searchService: SearchService | null = null;
+  let searchError = $state('');
+  let contentRevision = $state(0);
 
-  onMount(() => {
-    searchService = getAppContext()?.search ?? null;
+  $effect(() => {
+    if (!isOpen) return;
+    const refresh = () => { contentRevision += 1; };
+    events.on('document:saved', refresh);
+    events.on('file:changed', refresh);
+    events.on('protection:changed', refresh);
+    return () => {
+      events.off('document:saved', refresh);
+      events.off('file:changed', refresh);
+      events.off('protection:changed', refresh);
+    };
   });
 
   onDestroy(() => {
@@ -68,19 +78,29 @@
   });
 
   $effect(() => {
-    // Re-run search when query or options change.
-    const currentQuery = query;
+    ++activeRunId;
+    hits = [];
+    searchError = '';
+    isSearching = false;
+    // Cancel stale streams immediately, including when clearing or closing.
+    void contentRevision;
+    const currentQuery = uiStore.searchPanelQuery;
     const currentRegex = regex;
     const currentCase = caseSensitive;
     const currentWord = wholeWord;
     if (!isOpen) return;
+    searchService = getAppContext()?.search ?? null;
     if (!currentQuery.trim() || !searchService) {
       hits = [];
       totalScanned = 0;
       isSearching = false;
       return;
     }
-    runSearch(currentQuery, currentRegex, currentCase, currentWord);
+    isSearching = true;
+    const timer = setTimeout(() => {
+      void runSearch(currentQuery, currentRegex, currentCase, currentWord);
+    }, 150);
+    return () => { clearTimeout(timer); ++activeRunId; };
   });
 
   $effect(() => {
@@ -116,6 +136,7 @@
         totalScanned += 1;
       }
     } catch (e) {
+      if (runId === activeRunId) searchError = 'Search failed. Please try again.';
       console.error('[SearchPanel] search failed:', e);
     } finally {
       if (runId === activeRunId) {
@@ -191,7 +212,7 @@
       <div class="search-header">
         <input
           bind:this={inputRef}
-          bind:value={query}
+          bind:value={uiStore.searchPanelQuery}
           type="text"
           placeholder="Find in all notes..."
           class="search-input"
@@ -229,7 +250,9 @@
       </div>
 
       <div class="search-status">
-        {#if !query.trim()}
+        {#if searchError}
+          <span role="alert">{searchError}</span>
+        {:else if !uiStore.searchPanelQuery.trim()}
           <span class="status-hint">Type to search across all notes</span>
         {:else if isSearching && hits.length === 0}
           <span class="status-hint">Searching…</span>

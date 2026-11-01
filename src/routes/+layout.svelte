@@ -3,9 +3,11 @@
   import { goto } from '$app/navigation';
   import '../app.css';
   import { bootstrap, getAppContext, isBootstrapped } from '$lib';
-  import { operationsStore, settingsStore, notesStore, todoStore, uiStore } from '$lib/stores';
+  import { operationsStore, syncStore, toastStore, settingsStore, notesStore, todoStore, uiStore } from '$lib/stores';
   import { AppTitlebar, ShortcutSheet } from '$lib/components/shared';
   import { DEFAULT_TODO_VIEW } from '$lib/domain/values/TodoView';
+  import { createCloseCoordinator } from '$lib/core/closeCoordinator';
+  import { err, ok } from '$lib/core/result';
   import { events } from '$lib/events';
   import type { EventMap } from '$lib/events/types';
   import { attachGlobalKeymapBinder, type GlobalKeymapBinder } from '$lib/keymap';
@@ -31,6 +33,7 @@
    */
   let error = $state<Error | null>(null);
   let cleanupCloseListener: (() => void) | null = null;
+  let cleanupExitListener: (() => void) | null = null;
   let keymapBinder: GlobalKeymapBinder | null = null;
 
   /**
@@ -138,14 +141,38 @@
       try {
         const { getCurrentWindow } = await import('@tauri-apps/api/window');
         const currentWindow = getCurrentWindow();
-        cleanupCloseListener = await currentWindow.onCloseRequested(async (event) => {
-          event.preventDefault();
-          if (operationsStore.hasActiveOperations) {
-            await operationsStore.persistRunningOperations();
-          }
-          await getAppContext()?.lineage.flush();
-          await currentWindow.hide();
+        const { invoke } = await import('@tauri-apps/api/core');
+        const requestClose = createCloseCoordinator({
+          prepare: async () => {
+            const context = getAppContext();
+            if (!context) return err(new Error('Void is still starting. Please try closing again.'));
+            const drafts = await syncStore.flushConflictDrafts();
+            if (!drafts.ok) return drafts;
+            const saved = await context.editor.saveAllOpenDocuments();
+            if (!saved.ok) return saved;
+            if (operationsStore.hasActiveOperations) await operationsStore.persistRunningOperations();
+            const history = await context.lineage.flush();
+            if (!history.ok) return history;
+            // Edits can arrive while operation/history persistence is pending.
+            const latest = await context.editor.saveAllOpenDocuments();
+            return latest.ok ? ok(undefined) : latest;
+          },
+          hide: () => currentWindow.hide(),
+          quit: () => invoke<void>('complete_app_exit'),
         });
+        const close = async (quit: boolean) => {
+          const result = await requestClose(quit);
+          if (!result.ok) {
+            await currentWindow.show();
+            await currentWindow.setFocus();
+            toastStore.error(`Void stayed open: ${result.error.message}`, { duration: 10000 });
+          }
+        };
+        cleanupCloseListener = await currentWindow.onCloseRequested((event) => {
+          event.preventDefault();
+          void close(false);
+        });
+        cleanupExitListener = await currentWindow.listen('void:exit-requested', () => { void close(true); });
       } catch (e) {
         console.warn('Failed to register close listener:', e);
       }
@@ -177,6 +204,7 @@
     keymapBinder?.dispose();
     keymapBinder = null;
     cleanupCloseListener?.();
+    cleanupExitListener?.();
   });
 </script>
 

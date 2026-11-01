@@ -290,13 +290,8 @@
     overflow: hidden;
   }
 
-  :global(.note-pane-group[data-direction='horizontal'] > .note-pane-cell) {
-    min-width: 360px;
-  }
-
-  :global(.note-pane-group[data-direction='vertical'] > .note-pane-cell) {
-    min-height: 260px;
-  }
+  /* PaneGroup owns size constraints. Fixed pixel minima here overflow nested
+     splits and make the rendered layout disagree with the drop preview. */
 
   .note-pane-leaf {
     position: relative;

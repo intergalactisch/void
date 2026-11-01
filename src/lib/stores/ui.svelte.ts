@@ -20,6 +20,7 @@ class UIStore {
   settingsSection = $state<SettingsSection | null>(null);
   quickSwitcherOpen = $state(false);
   searchPanelOpen = $state(false);
+  searchPanelQuery = $state('');
 
   // Panels
   aiSidebarVisible = $state(false);
@@ -112,7 +113,8 @@ class UIStore {
   }
 
   // ---------- Search panel ----------
-  openSearchPanel() {
+  openSearchPanel(query?: string) {
+    if (query !== undefined) this.searchPanelQuery = query;
     this.searchPanelOpen = true;
   }
 

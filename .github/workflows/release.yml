@@ -45,9 +45,8 @@ jobs:
       - name: Run unit tests
         run: npm run test:run
 
-      - name: cargo check
-        run: cargo check
-        working-directory: src-tauri
+      - name: Rust tests
+        run: npm run test:rust
 
   release:
     name: Build & release

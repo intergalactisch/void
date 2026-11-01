@@ -1,6 +1,7 @@
 use crate::error::VoidError;
 use serde::Serialize;
 use std::path::{Component, Path, PathBuf};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// Cap on bytes read from disk in one shot. The notes app stores markdown —
 /// even a 50 MB note is implausible. Anything bigger is either a stray binary
@@ -20,7 +21,6 @@ const SENSITIVE_COMPONENTS: &[&str] = &[
     ".aws",
     ".azure",
     ".kube",
-    ".config/gh",
     ".docker",
     ".npmrc",
     ".pypirc",
@@ -32,7 +32,9 @@ const SENSITIVE_ROOTS: &[&str] = &[
     "/etc",
     "/private/etc",
     "/var/root",
+    "/private/var/root",
     "/var/db/sudo",
+    "/private/var/db/sudo",
     "/Library/Keychains",
     "/System",
 ];
@@ -51,7 +53,7 @@ fn expand_tilde(path: &str) -> String {
 /// existing prefix of the path and re-joins the remaining tail. This lets
 /// us validate paths that are about to be created (e.g. `write_file` on a
 /// new file) without blowing up because the leaf doesn't exist yet.
-fn canonicalize_existing_prefix(path: &Path) -> PathBuf {
+pub(crate) fn canonicalize_existing_prefix(path: &Path) -> PathBuf {
     let mut current = path.to_path_buf();
     let mut tail: Vec<std::ffi::OsString> = Vec::new();
 
@@ -121,6 +123,17 @@ pub fn validate_path(path: &str) -> Result<PathBuf, VoidError> {
         }
     }
 
+    // A multi-component credential directory cannot match a single component.
+    let components: Vec<_> = resolved.components().collect();
+    if components
+        .windows(2)
+        .any(|pair| pair[0].as_os_str() == ".config" && pair[1].as_os_str() == "gh")
+    {
+        return Err(VoidError::PathNotAllowed(
+            "Access to GitHub credentials is not allowed".into(),
+        ));
+    }
+
     // Block sensitive absolute roots.
     for root in SENSITIVE_ROOTS {
         if resolved_str.starts_with(root) {
@@ -154,28 +167,33 @@ pub struct FileEntry {
 pub async fn read_file(path: String) -> Result<String, VoidError> {
     let expanded_path = validate_path(&path)?;
 
-    let metadata = tokio::fs::metadata(&expanded_path).await.map_err(|e| {
-        VoidError::FileRead {
-            path: expanded_path.to_string_lossy().to_string(),
-            source: e,
-        }
-    })?;
-    if metadata.len() > MAX_READ_BYTES {
-        return Err(VoidError::FileRead {
-            path: expanded_path.to_string_lossy().to_string(),
-            source: std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("File exceeds {MAX_READ_BYTES}-byte read limit"),
-            ),
-        });
-    }
-
-    tokio::fs::read_to_string(&expanded_path)
+    let read_error = |source| VoidError::FileRead {
+        path: expanded_path.to_string_lossy().to_string(),
+        source,
+    };
+    let file = tokio::fs::File::open(&expanded_path)
         .await
-        .map_err(|e| VoidError::FileRead {
-            path: expanded_path.to_string_lossy().to_string(),
-            source: e,
-        })
+        .map_err(read_error)?;
+    let metadata = file.metadata().await.map_err(read_error)?;
+    if !metadata.is_file() || metadata.len() > MAX_READ_BYTES {
+        return Err(read_error(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Expected a regular file within the read limit",
+        )));
+    }
+    // Bound the actual read too: the file can grow after the metadata check.
+    let mut content = String::new();
+    file.take(MAX_READ_BYTES + 1)
+        .read_to_string(&mut content)
+        .await
+        .map_err(read_error)?;
+    if content.len() as u64 > MAX_READ_BYTES {
+        return Err(read_error(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "File exceeds the read limit",
+        )));
+    }
+    Ok(content)
 }
 
 /// Write content to a file, creating parent directories if needed
@@ -204,12 +222,57 @@ pub async fn write_file(path: String, content: String) -> Result<(), VoidError> 
         }
     }
 
-    tokio::fs::write(&expanded_path, content)
+    atomic_write(&expanded_path, content.as_bytes())
         .await
         .map_err(|e| VoidError::FileWrite {
             path: expanded_path.to_string_lossy().to_string(),
             source: e,
         })
+}
+
+/// Stage beside the destination, flush, then rename. Failed writes leave the
+/// previous note intact. Resolve existing symlinks so saving preserves the link.
+pub(crate) async fn atomic_write(path: &Path, content: &[u8]) -> std::io::Result<()> {
+    let target = canonicalize_existing_prefix(path);
+    let parent = target.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "Missing parent directory")
+    })?;
+    let temporary = parent.join(format!(".void-save-{}.tmp", uuid::Uuid::new_v4()));
+    let mut options = tokio::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options.open(&temporary).await?;
+    let result = async {
+        match tokio::fs::metadata(&target).await {
+            Ok(metadata) => {
+                if !metadata.is_file() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "Expected a regular file",
+                    ));
+                }
+                if metadata.permissions().readonly() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "File is read-only",
+                    ));
+                }
+                file.set_permissions(metadata.permissions()).await?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        file.write_all(content).await?;
+        file.sync_all().await?;
+        drop(file);
+        tokio::fs::rename(&temporary, &target).await
+    }
+    .await;
+    if result.is_err() {
+        let _ = tokio::fs::remove_file(&temporary).await;
+    }
+    result
 }
 
 /// Delete a file
@@ -361,4 +424,94 @@ pub async fn rename_path(from: String, to: String) -> Result<(), VoidError> {
             to: expanded_to.to_string_lossy().to_string(),
             source: e,
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TestDirectory(PathBuf);
+    impl TestDirectory {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!("void-files-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn sensitive_paths_and_traversal_are_rejected() {
+        let dir = TestDirectory::new();
+        for suffix in [
+            ".ssh/key",
+            ".config/gh/hosts.yml",
+            "notes/../secret",
+            ".aws/credentials",
+        ] {
+            assert!(
+                validate_path(dir.0.join(suffix).to_str().unwrap()).is_err(),
+                "{suffix}"
+            );
+        }
+        for suffix in [".config/gh-notes/readme.md", "notes-aws/file..md"] {
+            assert!(
+                validate_path(dir.0.join(suffix).to_str().unwrap()).is_ok(),
+                "{suffix}"
+            );
+        }
+        assert!(validate_path("/private/var/root/new-note.md").is_err());
+    }
+
+    #[tokio::test]
+    async fn saves_replace_complete_content_and_leave_no_temporary_files() {
+        let dir = TestDirectory::new();
+        let note = dir.0.join("note.md");
+        atomic_write(&note, b"original").await.unwrap();
+        atomic_write(&note, b"updated").await.unwrap();
+        assert_eq!(std::fs::read_to_string(&note).unwrap(), "updated");
+        assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 1);
+    }
+
+    #[tokio::test]
+    async fn failed_save_preserves_destination_and_cleans_up() {
+        let dir = TestDirectory::new();
+        let target = dir.0.join("folder");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("note.md"), "original").unwrap();
+        assert!(atomic_write(&target, b"replacement").await.is_err());
+        assert_eq!(
+            std::fs::read_to_string(target.join("note.md")).unwrap(),
+            "original"
+        );
+        assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn saves_preserve_symlinks_and_permissions() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let dir = TestDirectory::new();
+        let note = dir.0.join("note.md");
+        let link = dir.0.join("link.md");
+        std::fs::write(&note, "original").unwrap();
+        std::fs::set_permissions(&note, std::fs::Permissions::from_mode(0o640)).unwrap();
+        symlink(&note, &link).unwrap();
+        atomic_write(&link, b"updated").await.unwrap();
+        assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink());
+        assert_eq!(std::fs::read_to_string(&note).unwrap(), "updated");
+        assert_eq!(
+            std::fs::metadata(&note).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        let sensitive = dir.0.join(".config/gh");
+        std::fs::create_dir_all(&sensitive).unwrap();
+        let alias = dir.0.join("alias");
+        symlink(sensitive, &alias).unwrap();
+        assert!(validate_path(alias.join("hosts.yml").to_str().unwrap()).is_err());
+    }
 }

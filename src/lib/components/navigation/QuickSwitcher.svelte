@@ -11,7 +11,7 @@
    * - Focus trap (WCAG 2.1 compliant)
    */
 
-  import { noteWorkspaceStore, notesStore } from '$lib/stores';
+  import { noteWorkspaceStore, notesStore, uiStore } from '$lib/stores';
   import { noteSource } from '$lib/components/dnd/paneDnd.svelte';
   import type { NotePaneDropIntent } from '$lib/domain';
   import type { NotesListItem, TagGroup } from '$lib/ports/inbound';
@@ -443,6 +443,14 @@
         {/if}
       </div>
 
+      {#if query.trim() && !isCommandMode && !isTagMode && !placeMode}
+        <button type="button" class="content-search" onclick={() => {
+          const searchQuery = query.trim();
+          handleClose();
+          uiStore.openSearchPanel(searchQuery);
+        }}>Search inside all notes for “{query.trim()}”</button>
+      {/if}
+
       <!-- Results list -->
       <div class="switcher-list" bind:this={listRef}>
         {#if placeMode}
@@ -624,6 +632,21 @@
 {/if}
 
 <style>
+  .content-search {
+    display: block;
+    width: 100%;
+    padding: 10px 16px;
+    text-align: left;
+    overflow-wrap: anywhere;
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border-subtle);
+    cursor: pointer;
+  }
+  .content-search:hover, .content-search:focus-visible {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
   /* ─── Quick switcher / command palette ─── */
   .switcher-backdrop {
     position: fixed;

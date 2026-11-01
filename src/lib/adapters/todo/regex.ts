@@ -77,6 +77,7 @@ export interface TodoLineMatch {
  * @returns Match result or null if not a todo line
  */
 export function matchTodoLine(line: string): TodoLineMatch | null {
+  line = line.replace(/\r$/, '');
   // Standard list markers: -, *, +
   const standardMatch = TODO_PATTERN.exec(line);
   if (standardMatch) {

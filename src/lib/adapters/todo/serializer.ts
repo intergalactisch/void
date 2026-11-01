@@ -24,14 +24,9 @@ import { createIndentation } from './regex';
  * Changes `[ ]` to `[x]` or `[x]` to `[ ]`.
  */
 export function toggleCheckbox(line: string): string {
-  // Match both unchecked and checked states
-  if (/\[\s\]/.test(line)) {
-    return line.replace(/\[\s\]/, '[x]');
-  }
-  if (/\[[xX]\]/.test(line)) {
-    return line.replace(/\[[xX]\]/, '[ ]');
-  }
-  return line;
+  return line.replace(/^(\s*(?:(?:[-*+]|\d+[.)])\s+)?\[)([ xX])(\])/, (_: string, prefix: string, state: string, suffix: string) =>
+    `${prefix}${state.toLowerCase() === 'x' ? ' ' : 'x'}${suffix}`,
+  );
 }
 
 /**
@@ -68,7 +63,7 @@ export function addCompletionTimestamp(line: string, completedAt: Date): string 
  */
 export function removeCompletionTimestamp(line: string): string {
   const pattern = new RegExp(`\\s*${DATE_MARKERS.COMPLETED}\\s*\\d{4}-\\d{2}-\\d{2}(?:T\\d{2}:\\d{2})?`, 'g');
-  return line.replace(pattern, '').trim();
+  return line.replace(pattern, '').trimEnd();
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -129,7 +124,8 @@ export function updateLineInContent(content: string, lineNumber: number, newLine
     throw new Error(`Line number ${lineNumber} out of bounds (0-${lines.length - 1})`);
   }
 
-  lines[lineNumber] = newLine;
+  const carriageReturn = lines[lineNumber]!.endsWith('\r') && !newLine.endsWith('\r') ? '\r' : '';
+  lines[lineNumber] = newLine + carriageReturn;
   return lines.join('\n');
 }
 
@@ -299,7 +295,8 @@ export function batchUpdateLines(
 
   for (const [lineNumber, newLine] of updates) {
     if (lineNumber >= 0 && lineNumber < lines.length) {
-      lines[lineNumber] = newLine;
+      const carriageReturn = lines[lineNumber]!.endsWith('\r') && !newLine.endsWith('\r') ? '\r' : '';
+  lines[lineNumber] = newLine + carriageReturn;
       modifiedCount++;
     }
   }

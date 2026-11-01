@@ -147,9 +147,9 @@ async function dragPaneToPane(
   await page.mouse.down();
   await page.mouse.move(startX + 8, startY + 2);
   await page.mouse.move(targetX, targetY);
-  await expect(page.locator('.pane-move-preview-rect')).toBeVisible();
+  await expect(page.locator('.pane-drop-insert')).toBeVisible();
   await page.mouse.up();
-  await expect(page.locator('.pane-move-preview-rect')).toHaveCount(0);
+  await expect(page.locator('.pane-drop-insert')).toHaveCount(0);
 }
 
 async function dragTreeNoteToPane(
@@ -256,7 +256,7 @@ test.describe('note split panes', () => {
 
     await page.locator('.note-pane-header').first().getByRole('button', { name: 'More' }).click();
 
-    await expect(page.locator('.pane-move-preview-rect')).toHaveCount(0);
+    await expect(page.locator('.pane-drop-insert')).toHaveCount(0);
     await expect(page.getByRole('menu', { name: 'Pane options' })).toBeVisible();
   });
 
@@ -297,7 +297,7 @@ test.describe('note split panes', () => {
     const targetBox = await targetPane.boundingBox();
     expect(targetBox).toBeTruthy();
     await page.mouse.move(targetBox!.x + targetBox!.width - 12, targetBox!.y + targetBox!.height / 2);
-    await expect(page.locator('.pane-move-preview-rect')).toBeVisible();
+    await expect(page.locator('.pane-drop-insert')).toBeVisible();
     await page.mouse.up();
 
     const panes = page.locator('.note-pane-leaf');
@@ -319,12 +319,12 @@ test.describe('note split panes', () => {
     await page.mouse.move(sourceBox!.x + 42, sourceBox!.y + sourceBox!.height / 2);
     await page.mouse.down();
     await page.mouse.move(targetBox!.x + targetBox!.width / 2, targetBox!.y + targetBox!.height / 2);
-    await expect(page.locator('.pane-move-preview-rect')).toBeVisible();
+    await expect(page.locator('.pane-drop-insert')).toBeVisible();
     await page.keyboard.press('Escape');
     await page.mouse.up();
 
     const panes = page.locator('.note-pane-leaf');
-    await expect(page.locator('.pane-move-preview-rect')).toHaveCount(0);
+    await expect(page.locator('.pane-drop-insert')).toHaveCount(0);
     await expect(panes.nth(0)).toContainText('Alpha pane body');
     await expect(panes.nth(1)).toContainText('Beta pane body');
   });
@@ -429,7 +429,8 @@ test.describe('note split panes', () => {
     const widths = await panes.evaluateAll((nodes) =>
       nodes.map((node) => node.getBoundingClientRect().width),
     );
-    expect(Math.max(...widths) - Math.min(...widths)).toBeLessThan(14);
+    expect(Math.abs(widths[0]! - widths[1]!)).toBeLessThan(14);
+    expect(widths[2]!).toBeGreaterThan(widths[0]!);
   });
 
   test('Open in Split Down appends an unopened note to the visible layout edge', async ({ page }) => {
@@ -455,7 +456,8 @@ test.describe('note split panes', () => {
     const heights = await panes.evaluateAll((nodes) =>
       nodes.map((node) => node.getBoundingClientRect().height),
     );
-    expect(Math.max(...heights) - Math.min(...heights)).toBeLessThan(14);
+    expect(Math.abs(heights[0]! - heights[1]!)).toBeLessThan(14);
+    expect(heights[2]!).toBeGreaterThan(heights[0]!);
   });
 
   test('unopened note can be added to an existing multi-pane layout', async ({ page }) => {
@@ -523,7 +525,7 @@ test.describe('note split panes', () => {
     await expect(panes.first()).toHaveClass(/active/);
   });
 
-  test('closing one of four side-by-side panes rebalances the remaining widths', async ({ page }) => {
+  test('closing an appended pane preserves the remaining nested layout', async ({ page }) => {
     await createQuickNote(page, 'Alpha width body');
     await createQuickNote(page, 'Beta width body');
     const betaPath = await selectedTreeNotePath(page);
@@ -550,12 +552,11 @@ test.describe('note split panes', () => {
     const widths = await page.locator('.note-pane-leaf').evaluateAll((nodes) =>
       nodes.map((node) => node.getBoundingClientRect().width),
     );
-    const max = Math.max(...widths);
-    const min = Math.min(...widths);
-    expect(max - min).toBeLessThan(14);
+    expect(Math.abs(widths[0]! - widths[1]!)).toBeLessThan(14);
+    expect(widths[2]!).toBeGreaterThan(widths[0]!);
   });
 
-  test('dragging a pane from a mixed layout into a row creates equal columns with an honest preview', async ({ page }) => {
+  test('dragging a pane splits only the target and matches its preview', async ({ page }) => {
     await createThreeNoteMixedLayout(page);
 
     const sourceHeader = page.locator('.note-pane-leaf').nth(2).locator('.note-pane-header');
@@ -569,17 +570,15 @@ test.describe('note split panes', () => {
     await page.mouse.down();
     await page.mouse.move(sourceBox!.x + 52, sourceBox!.y + sourceBox!.height / 2);
     await page.mouse.move(targetBox!.x + targetBox!.width - 12, targetBox!.y + targetBox!.height / 2);
-    const preview = page.locator('.pane-move-preview-rect');
+    const preview = page.locator('.pane-drop-insert');
     await expect(preview).toBeVisible();
 
-    const workspaceBox = await page.locator('.note-pane-workspace').boundingBox();
     const previewBox = await preview.boundingBox();
-    expect(workspaceBox).toBeTruthy();
     expect(previewBox).toBeTruthy();
-    expect(Math.abs(previewBox!.width - workspaceBox!.width / 3)).toBeLessThan(16);
+    expect(Math.abs(previewBox!.width - targetBox!.width / 2)).toBeLessThan(16);
 
     await page.mouse.up();
-    await expect(page.locator('.pane-move-preview-rect')).toHaveCount(0);
+    await expect(page.locator('.pane-drop-insert')).toHaveCount(0);
 
     const panes = page.locator('.note-pane-leaf');
     await expect(panes).toHaveCount(3);
@@ -589,10 +588,12 @@ test.describe('note split panes', () => {
     const widths = await panes.evaluateAll((nodes) =>
       nodes.map((node) => node.getBoundingClientRect().width),
     );
-    expect(Math.max(...widths) - Math.min(...widths)).toBeLessThan(14);
+    expect(Math.abs(widths[1]! - widths[2]!)).toBeLessThan(14);
+    expect(Math.abs(widths[2]! - previewBox!.width)).toBeLessThan(16);
+    expect(widths[0]!).toBeGreaterThan(widths[1]!);
   });
 
-  test('dragging a sidebar note into a mixed layout edge creates equal columns', async ({ page }) => {
+  test('dragging a sidebar note splits the target without resizing unrelated panes', async ({ page }) => {
     await createQuickNote(page, 'Alpha mixed body');
     await createQuickNote(page, 'Beta mixed body');
     const betaPath = await selectedTreeNotePath(page);
@@ -627,7 +628,9 @@ test.describe('note split panes', () => {
     const widths = await panes.evaluateAll((nodes) =>
       nodes.map((node) => node.getBoundingClientRect().width),
     );
-    expect(Math.max(...widths) - Math.min(...widths)).toBeLessThan(14);
+    expect(Math.abs(widths[1]! - widths[2]!)).toBeLessThan(14);
+    expect(Math.abs(widths[0]! - widths[3]!)).toBeLessThan(14);
+    expect(widths[0]!).toBeGreaterThan(widths[1]!);
   });
 
   test('switching from a single-note tab back to a multi-pane tab renders pane editors', async ({ page }) => {

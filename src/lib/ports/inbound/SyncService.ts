@@ -75,6 +75,7 @@ export interface SyncService {
   resolveConflict(conflictId: string, resolution: SyncConflictResolution): Promise<Result<SyncConflict | null, Error>>;
   loadConflictSession(): Promise<Result<SyncConflictSession | null, Error>>;
   refreshConflictSession(): Promise<Result<SyncConflictSession | null, Error>>;
+  saveConflictDraft(conflictId: string, markdown: string): Promise<Result<void, Error>>;
   previewConflict(conflictId: string): Promise<Result<SyncConflictPreview, Error>>;
   applyConflictResolution(
     conflictId: string,

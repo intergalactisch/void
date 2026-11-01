@@ -1,6 +1,7 @@
 /**
  * Integration tests for ProseMirrorAdapter
  */
+import { undo, redo } from 'prosemirror-history';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { ProseMirrorAdapter } from '$lib/adapters/prosemirror/ProseMirrorAdapter';
 import { splitBlock } from '$lib/adapters/prosemirror/commands/blocks';
@@ -15,7 +16,7 @@ import {
 import { createTestDocument, createDocumentWithHeadings, createDocumentWithLists } from '../fixtures/documents';
 import type { Document } from '$lib/domain/entities/Document';
 import type { EditorView } from 'prosemirror-view';
-import { NodeSelection, TextSelection } from 'prosemirror-state';
+import { NodeSelection, TextSelection, Plugin } from 'prosemirror-state';
 
 describe('ProseMirrorAdapter', () => {
   let adapter: ProseMirrorAdapter;
@@ -35,6 +36,74 @@ describe('ProseMirrorAdapter', () => {
   afterEach(() => {
     adapter.destroy();
     document.body.removeChild(container);
+  });
+
+  it('publishes document edits appended by a plugin to a metadata-only transaction', async () => {
+    await adapter.mount(container, createTestDocument());
+    const view = getMountedView(adapter);
+    const changeHandler = vi.fn();
+    adapter.on('editor:change', changeHandler);
+    const plugin = new Plugin({
+      appendTransaction(transactions, _oldState, state) {
+        if (!transactions.some(tr => tr.getMeta('test:append-text'))) return null;
+        return state.tr.insertText('Appended ', 1);
+      },
+    });
+    view.updateState(view.state.reconfigure({ plugins: [...view.state.plugins, plugin] }));
+    view.dispatch(view.state.tr.setMeta('test:append-text', true));
+    expect(changeHandler).toHaveBeenCalledTimes(1);
+    expect(changeHandler.mock.calls[0]?.[0].document.blocks[0].content).toContain('Appended ');
+  });
+
+  it('Backspace reverses automatic list formatting even after identity repair', async () => {
+    await adapter.mount(container, createTestDocument({ blocks: [] }));
+    const view = getMountedView(adapter);
+    for (const text of ['-', ' ']) {
+      const { from, to } = view.state.selection;
+      const handled = view.someProp('handleTextInput', handler => handler(view, from, to, text, () => view.state.tr.insertText(text, from, to)));
+      if (!handled) view.dispatch(view.state.tr.insertText(text, from, to));
+    }
+    expect(view.state.doc.firstChild?.type.name).toBe('bulletList');
+    view.dom.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true, cancelable: true }));
+    expect(view.state.doc.firstChild?.type.name).toBe('paragraph');
+    expect(view.state.doc.textContent).toBe('- ');
+  });
+
+  it('undoes a multiline HTML paste in one step, retaining unique IDs through redo', async () => {
+    await adapter.mount(container, createTestDocument());
+    const view = getMountedView(adapter);
+    const before = view.state.doc;
+    const clipboardData = new DataTransfer();
+    const original = before.firstChild!;
+    clipboardData.setData('text/html', '<p data-block-id="' + original.attrs.id + '">Copied</p><p>Second</p>');
+    clipboardData.setData('text/plain', 'Copied');
+    view.dispatch(view.state.tr.setSelection(TextSelection.atEnd(view.state.doc)));
+    view.dom.dispatchEvent(new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }));
+    expect(view.state.doc.textContent).toContain('Copied');
+    expect(undo(view.state, view.dispatch)).toBe(true);
+    expect(view.state.doc.eq(before)).toBe(true);
+    expect(redo(view.state, view.dispatch)).toBe(true);
+    expect(view.state.doc.textContent).toContain('Copied');
+    const ids: string[] = [];
+    view.state.doc.descendants(node => { if (node.attrs.id) ids.push(node.attrs.id); });
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('separates paragraphs, list items and hard breaks in plain text and word counts', async () => {
+    await adapter.mount(container, createTestDocument({ blocks: [] }));
+    const view = getMountedView(adapter);
+    const { schema } = view.state;
+    const paragraph = (text: string) => schema.node('paragraph', null, schema.text(text));
+    const content = [
+      schema.node('paragraph', null, [schema.text('First line'), schema.node('hardBreak'), schema.text('Second line')]),
+      schema.node('bulletList', null, [
+        schema.node('listItem', null, paragraph('Third line')),
+        schema.node('listItem', null, paragraph('Fourth line')),
+      ]),
+    ];
+    view.dispatch(view.state.tr.replaceWith(0, view.state.doc.content.size, content));
+    expect(adapter.getTextContent()).toBe('First line\nSecond line\nThird line\nFourth line');
+    expect(adapter.getTextContent().split(/\s+/)).toHaveLength(8);
   });
 
   describe('mount()', () => {
@@ -2331,7 +2400,7 @@ describe('ProseMirrorAdapter', () => {
       expect(blocks.map((block) => block.content)).toEqual(['Title', '']);
     });
 
-    it('pressing Enter at the end of a callout breaks out to a regular paragraph', async () => {
+    it('Enter continues a callout and a second Enter on the empty line exits', async () => {
       const doc = createTestDocument({
         blocks: [
           {
@@ -2358,6 +2427,10 @@ describe('ProseMirrorAdapter', () => {
       const view = getMountedView(adapter);
       setCursorAfterText(view, 'Remember this');
 
+      splitBlock()(view.state, view.dispatch);
+
+      expect(adapter.getDocument().blocks.map(block => block.type)).toEqual(['callout']);
+      expect(adapter.getDocument().blocks[0]?.children.map(block => block.content)).toEqual(['Remember this', '']);
       splitBlock()(view.state, view.dispatch);
 
       const blocks = adapter.getDocument().blocks;

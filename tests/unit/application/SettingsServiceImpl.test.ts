@@ -369,3 +369,40 @@ describe('SettingsServiceImpl', () => {
     });
   });
 });
+
+
+describe('settings persistence ordering', () => {
+  it('preserves concurrent changes to different settings in storage and cache', async () => {
+    const adapter = new MemorySettingsAdapter();
+    const service = new SettingsServiceImpl(adapter);
+    const results = await Promise.all([
+      service.set('theme', 'dark'),
+      service.set('fontSize', 20),
+      service.set('autoSave', false),
+    ]);
+    expect(results.every((result) => result.ok)).toBe(true);
+    expect(service.current()).toMatchObject({ theme: 'dark', fontSize: 20, autoSave: false });
+    const stored = await adapter.load();
+    expect(stored.ok && stored.value).toMatchObject({ theme: 'dark', fontSize: 20, autoSave: false });
+  });
+
+  it('returns adapter rejections as Results and continues processing subsequent updates', async () => {
+    const adapter = new MemorySettingsAdapter();
+    const service = new SettingsServiceImpl(adapter);
+    vi.spyOn(adapter, 'save').mockRejectedValueOnce(new Error('Disk unavailable'));
+    const first = service.set('theme', 'dark');
+    const second = service.set('fontSize', 20);
+    expect(await first).toEqual({ ok: false, error: new Error('Disk unavailable') });
+    expect((await second).ok).toBe(true);
+    expect(service.get('theme')).toBe(DEFAULT_SETTINGS.theme);
+    expect(service.get('fontSize')).toBe(20);
+  });
+
+  it('orders reset and subsequent changes without restoring stale values', async () => {
+    const adapter = new MemorySettingsAdapter();
+    const service = new SettingsServiceImpl(adapter);
+    await service.set('theme', 'dark');
+    await Promise.all([service.reset(), service.set('fontSize', 20)]);
+    expect(service.current()).toMatchObject({ theme: DEFAULT_SETTINGS.theme, fontSize: 20 });
+  });
+});

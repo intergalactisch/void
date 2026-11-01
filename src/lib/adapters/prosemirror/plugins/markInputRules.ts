@@ -30,9 +30,11 @@ function markInputRule(regex: RegExp, markType: MarkType): InputRule {
     const textContent = match[2];
     if (!textContent || !fullMatch) return null;
 
-    const matchStart = end - fullMatch.length;
+    const matchStart = start + match[0].length - fullMatch.length;
     const tr = state.tr;
-    tr.replaceWith(matchStart, end, state.schema.text(textContent, [markType.create()]));
+    const marks = markType.create().addToSet(state.doc.resolve(matchStart).marks());
+    tr.replaceWith(matchStart, end, state.schema.text(textContent, marks));
+    tr.removeStoredMark(markType);
     return tr;
   });
 }
@@ -46,22 +48,22 @@ export function createMarkInputRules(schema: Schema): Plugin {
 
   if (schema.marks.bold) {
     // Bold: **text** -- lookbehind rejects *** (triple asterisk)
-    rules.push(markInputRule(/(?:^|[^*])(\*\*(.+?)\*\*)$/, schema.marks.bold));
+    rules.push(markInputRule(/(?:^|[^*])(\*\*([^*]+?)\*\*)$/, schema.marks.bold));
   }
 
   if (schema.marks.italic) {
     // Italic: *text* -- lookbehind rejects **text** (double asterisk)
-    rules.push(markInputRule(/(?:^|[^*])(\*(.+?)\*)$/, schema.marks.italic));
+    rules.push(markInputRule(/(?:^|[^*])(\*([^*]+?)\*)$/, schema.marks.italic));
   }
 
   if (schema.marks.code) {
     // Inline code: `text` -- lookbehind rejects `` (double backtick)
-    rules.push(markInputRule(/(?:^|[^`])(`(.+?)`)$/, schema.marks.code));
+    rules.push(markInputRule(/(?:^|[^`])(`([^`]+?)`)$/, schema.marks.code));
   }
 
   if (schema.marks.strikethrough) {
     // Strikethrough: ~~text~~ -- lookbehind rejects ~~~ (triple tilde)
-    rules.push(markInputRule(/(?:^|[^~])(~~(.+?)~~)$/, schema.marks.strikethrough));
+    rules.push(markInputRule(/(?:^|[^~])(~~([^~]+?)~~)$/, schema.marks.strikethrough));
   }
 
   return inputRules({ rules });

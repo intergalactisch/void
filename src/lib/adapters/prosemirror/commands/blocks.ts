@@ -12,10 +12,11 @@ import type { Command } from 'prosemirror-state';
 import type { EditorState, Transaction } from 'prosemirror-state';
 import { Selection, TextSelection } from 'prosemirror-state';
 import type { Node as PmNode, NodeType, Schema } from 'prosemirror-model';
-import { setBlockType as pmSetBlockType, liftEmptyBlock, wrapIn } from 'prosemirror-commands';
+import { liftEmptyBlock, wrapIn, newlineInCode, splitBlockAs } from 'prosemirror-commands';
 import { generateBlockId } from '$lib/domain/entities/Block';
 import type { BlockType } from '$lib/domain/values/BlockType';
 import { toggleList } from './lists';
+import { isolateHistory } from '../plugins/history';
 import { getVisibleBlockOrder } from './blockUtils';
 import {
   buildFinalBlockContinuationTransaction,
@@ -230,7 +231,17 @@ export function moveBlockDown(blockId: string): Command {
  * @returns ProseMirror command
  */
 export function setBlockType(nodeType: NodeType, attrs?: Record<string, unknown>): Command {
-  return pmSetBlockType(nodeType, attrs);
+  return (state, dispatch) => {
+    const tr = state.tr;
+    for (const { $from, $to } of state.selection.ranges) {
+      tr.setBlockType($from.pos, $to.pos, nodeType, node => ({
+        ...attrs, id: node.attrs.id ?? generateBlockId(),
+      }));
+    }
+    if (!tr.docChanged) return false;
+    if (dispatch) dispatch(isolateHistory(tr).scrollIntoView());
+    return true;
+  };
 }
 
 /**
@@ -356,31 +367,24 @@ export function insertHorizontalRule(): Command {
  */
 export function splitBlock(): Command {
   return (state: EditorState, dispatch?: (tr: Transaction) => void): boolean => {
-    const { $from, $to } = state.selection;
+    const { $from } = state.selection;
 
-    // Don't split if there's a selection
-    if ($from.pos !== $to.pos) return false;
+    // Enter inside code inserts a newline, never a second code block.
+    if (newlineInCode(state, dispatch)) return true;
 
     const paragraphType = state.schema.nodes.paragraph;
-    if (paragraphType) {
-      const exitedContainer = exitContainerAtEnd(state, dispatch, paragraphType);
-      if (exitedContainer) return true;
-
-      const splitSpecial = splitTextblockToParagraph(state, dispatch, paragraphType);
-      if (splitSpecial) return true;
+    if (state.selection.empty && paragraphType) {
+      if (exitContainerAtEnd(state, dispatch, paragraphType)) return true;
+      if (splitTextblockToParagraph(state, dispatch, paragraphType)) return true;
     }
 
-    const parentNode = $from.parent;
-
-    // Create new block ID for the split block
-    const newAttrs = { ...parentNode.attrs, id: generateBlockId() };
-
-    if (dispatch) {
-      const tr = state.tr.split($from.pos, 1, [{ type: parentNode.type, attrs: newAttrs }]);
-      dispatch(tr.scrollIntoView());
-    }
-
-    return true;
+    return splitBlockAs((node, atEnd) => ({
+      type: node.type.name === 'heading' && atEnd && paragraphType ? paragraphType : node.type,
+      attrs: { ...node.attrs, id: generateBlockId() },
+    }))(state, dispatch && (tr => {
+      tr.ensureMarks(state.storedMarks ?? $from.marks());
+      dispatch(tr);
+    }));
   };
 }
 
@@ -395,7 +399,7 @@ function splitTextblockToParagraph(
 ): boolean {
   const { $from } = state.selection;
   const parentNode = $from.parent;
-  if (parentNode.type.name !== 'heading') return false;
+  if (parentNode.type.name !== 'heading' || $from.parentOffset !== parentNode.content.size) return false;
 
   if (dispatch) {
     if (parentNode.content.size === 0) {
@@ -417,7 +421,7 @@ function splitTextblockToParagraph(
 }
 
 /**
- * Pressing Enter at the end of a callout or quote exits the container and
+ * Pressing Enter in an empty trailing line of a callout or quote exits it and
  * creates a regular paragraph after it. Empty trailing paragraphs are removed
  * as part of the exit, matching the "break out" behavior users expect.
  */
@@ -428,50 +432,29 @@ function exitContainerAtEnd(
 ): boolean {
   const { $from } = state.selection;
   const parentNode = $from.parent;
-  if (parentNode.type.name !== 'paragraph') return false;
+  if (parentNode.type.name !== 'paragraph' || parentNode.content.size !== 0) return false;
   if ($from.parentOffset !== parentNode.content.size) return false;
 
-  let containerDepth = -1;
-  for (let depth = $from.depth - 1; depth >= 1; depth--) {
-    const nodeName = $from.node(depth).type.name;
-    if (nodeName === 'callout' || nodeName === 'blockquote') {
-      containerDepth = depth;
-      break;
-    }
-  }
-  if (containerDepth === -1) return false;
-
+  const containerDepth = $from.depth - 1;
   const container = $from.node(containerDepth);
-  const childIndex = $from.index(containerDepth);
-  if (childIndex !== container.childCount - 1) return false;
+  if (!['callout', 'blockquote'].includes(container.type.name)) return false;
+  if ($from.index(containerDepth) !== container.childCount - 1) return false;
 
   if (dispatch) {
     const newParagraph = paragraphType.create({ id: generateBlockId() });
     const tr = state.tr;
-
-    if (parentNode.content.size === 0) {
-      if (container.childCount === 1) {
-        const containerStart = $from.before(containerDepth);
-        const containerEnd = $from.after(containerDepth);
-        tr.replaceWith(containerStart, containerEnd, newParagraph);
-        tr.setSelection(TextSelection.create(tr.doc, containerStart + 1));
-      } else {
-        const paragraphStart = $from.before($from.depth);
-        const paragraphEnd = $from.after($from.depth);
-        const containerEnd = $from.after(containerDepth);
-        tr.delete(paragraphStart, paragraphEnd);
-        const insertPos = tr.mapping.map(containerEnd);
-        tr.insert(insertPos, newParagraph);
-        tr.setSelection(TextSelection.create(tr.doc, insertPos + 1));
-      }
+    const containerStart = $from.before(containerDepth);
+    const containerEnd = $from.after(containerDepth);
+    if (container.childCount === 1) {
+      tr.replaceWith(containerStart, containerEnd, newParagraph);
+      tr.setSelection(TextSelection.create(tr.doc, containerStart + 1));
     } else {
-      const insertPos = $from.after(containerDepth);
+      tr.delete($from.before(), $from.after());
+      const insertPos = tr.mapping.map(containerEnd);
       tr.insert(insertPos, newParagraph);
       tr.setSelection(TextSelection.create(tr.doc, insertPos + 1));
     }
-
     dispatch(tr.scrollIntoView());
   }
-
   return true;
 }

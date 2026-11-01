@@ -142,7 +142,7 @@ test.describe('Note CRUD', () => {
 
     await expect.poll(() => page.getByRole('treeitem').count()).toBe(initialCount);
 
-    await page.getByRole('link', { name: 'Trash' }).click();
+    await page.getByRole('button', { name: 'Trash', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Trash', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: /^restore$/i })).toBeVisible();
     await page.getByRole('button', { name: /^restore$/i }).click();

@@ -54,6 +54,16 @@ describe('Bootstrap', () => {
       expect(context.credentials).toBeDefined();
     });
 
+    it('searches notes created in the mock workspace through the actual filesystem port', async () => {
+      const context = await bootstrap({ useMocks: true });
+      const created = await context.notesService.createNote('', 'Searchable atlas');
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+      const hits = await context.search.searchAll({ query: 'Searchable atlas' });
+      expect(hits.some(hit => hit.path === created.value.path)).toBe(true);
+      expect(hits[0]?.title).toBe('Searchable atlas');
+    });
+
     it('registers all core services', async () => {
       const context = await bootstrap({ useMocks: true });
       const { container } = context;

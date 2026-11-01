@@ -13,7 +13,7 @@ import { EditorView } from 'prosemirror-view';
 import { Fragment, Slice, type Node as PmNode } from 'prosemirror-model';
 import { baseKeymap, chainCommands, exitCode, toggleMark } from 'prosemirror-commands';
 import { keymap } from 'prosemirror-keymap';
-import { splitListItem, liftListItem, sinkListItem } from 'prosemirror-schema-list';
+import { splitListItemKeepMarks, liftListItem, sinkListItem } from 'prosemirror-schema-list';
 import { dropCursor } from 'prosemirror-dropcursor';
 import { gapCursor } from 'prosemirror-gapcursor';
 
@@ -49,8 +49,9 @@ import {
   cloneNodeWithNewIds,
   getNodeTypeForBlockType,
 } from './DocumentConverter';
+import { convertBlock } from './commands/convertBlock';
 import { AIInlineCoordinator } from './AIInlineCoordinator';
-import { historyPlugin, historyKeymap, canUndo, canRedo, undoCommand, redoCommand } from './plugins/history';
+import { historyPlugin, historyKeymap, historyBoundaryPlugin, isolatedCommand, canUndo, canRedo, undoCommand, redoCommand } from './plugins/history';
 import { placeholderPlugin } from './plugins/placeholder';
 import { createSlashMenuPlugin, slashMenuKey, type SlashMenuState } from './plugins/slashMenu';
 import { createDragDropPlugin, type DragDropPluginOptions } from './plugins/dragDrop';
@@ -107,6 +108,9 @@ import {
   duplicateCurrentBlock,
   deleteCurrentBlock,
 } from './commands/blockNavigation';
+import { repairBlockIdentities } from './blockIdentity';
+import { createMarkdownPastePlugin } from './plugins/markdownPaste';
+import { undoInputRule } from 'prosemirror-inputrules';
 import { createListInputRules } from './plugins/listInputRules';
 import { createBlockInputRules } from './plugins/blockInputRules';
 import { createMarkInputRules } from './plugins/markInputRules';
@@ -122,6 +126,9 @@ import {
   splitBlock,
 } from './commands/blocks';
 import { deleteEmptyListItem } from './commands/lists';
+import { indentCode } from './commands/codeEditing';
+import { createCodeBlockFromFence } from './commands/codeFence';
+import { splitTodo, unwrapTodo } from './commands/todos';
 import { toggleMarkFromDomain, setLink, removeLink } from './commands/marks';
 import { createBlockNodeViewFactory, createContextAwareFactory, type BlockNodeViewOptions } from './views/BlockNodeView';
 import type { CommandRegistryPort, RegisteredCommand, CommandContext } from '$lib/ports/outbound';
@@ -735,7 +742,8 @@ export class ProseMirrorAdapter implements EditorPort {
    */
   getTextContent(): string {
     if (!this.view) return '';
-    return this.view.state.doc.textContent;
+    const doc = this.view.state.doc;
+    return doc.textBetween(0, doc.content.size, '\n', node => node.type.name === 'hardBreak' ? '\n' : '');
   }
 
   getTextBetween(from: number, to: number): string {
@@ -1074,12 +1082,13 @@ export class ProseMirrorAdapter implements EditorPort {
   private createPlugins(): Plugin[] {
     // Plugin ordering follows SPEC section 10: first handler wins.
     // Plugins earlier in the array get first crack at key events.
-    const plugins: Plugin[] = [];
+    const plugins: Plugin[] = [createMarkdownPastePlugin()];
 
     // ---- 1. History + history keymap (undo/redo always wins) ----
     plugins.push(
       historyPlugin({ depth: 100, newGroupDelay: 500 }),
       historyKeymap(),
+      historyBoundaryPlugin(),
     );
 
     // ---- 2. SlashMenu plugin (intercepts Enter/arrows when menu open) ----
@@ -1168,14 +1177,22 @@ export class ProseMirrorAdapter implements EditorPort {
       })
     );
 
+    plugins.push(keymap({
+      'Enter': createCodeBlockFromFence,
+      'Tab': indentCode(),
+      'Shift-Tab': indentCode(true),
+    }));
+
+    plugins.push(keymap({ 'Backspace': undoInputRule }));
+
     // ---- 6. List keymap (Tab/Shift-Tab/Enter/Backspace in lists) ----
     const listItemType = voidSchema.nodes.listItem;
     if (listItemType) {
       plugins.push(
         keymap({
-          'Enter': chainCommands(splitListItem(listItemType), liftListItem(listItemType)),
-          'Tab': sinkListItem(listItemType),
-          'Shift-Tab': liftListItem(listItemType),
+          'Enter': chainCommands(splitListItemKeepMarks(listItemType), liftListItem(listItemType)),
+          'Tab': isolatedCommand(sinkListItem(listItemType)),
+          'Shift-Tab': isolatedCommand(liftListItem(listItemType)),
           'Backspace': chainCommands(
             deleteEmptyListItem(listItemType),
             (state, dispatch) => {
@@ -1189,47 +1206,10 @@ export class ProseMirrorAdapter implements EditorPort {
     }
 
     // ---- 7. Todo keymap (Enter/Backspace in todo items) ----
-    const todoItemType = voidSchema.nodes.todoItem;
-    const paragraphType = voidSchema.nodes.paragraph;
-    if (todoItemType && paragraphType) {
-      plugins.push(
-        keymap({
-          'Enter': (state, dispatch) => {
-            const { $from } = state.selection;
-            if ($from.parent.type !== todoItemType) return false;
-
-            if ($from.parent.content.size === 0) {
-              if (dispatch) {
-                const pos = $from.before($from.depth);
-                const tr = state.tr.setNodeMarkup(pos, paragraphType, { id: generateBlockId() });
-                dispatch(tr.scrollIntoView());
-              }
-              return true;
-            }
-
-            if (dispatch) {
-              const newAttrs = { ...($from.parent.attrs), id: generateBlockId(), checked: false };
-              const tr = state.tr.split($from.pos, 1, [{ type: todoItemType, attrs: newAttrs }]);
-              dispatch(tr.scrollIntoView());
-            }
-            return true;
-          },
-          'Backspace': (state, dispatch) => {
-            const { $from, empty } = state.selection;
-            if (!empty || $from.parentOffset !== 0) return false;
-            if ($from.parent.type !== todoItemType) return false;
-            if ($from.parent.content.size !== 0) return false;
-
-            if (dispatch) {
-              const pos = $from.before($from.depth);
-              const tr = state.tr.setNodeMarkup(pos, paragraphType, { id: generateBlockId() });
-              dispatch(tr.scrollIntoView());
-            }
-            return true;
-          },
-        })
-      );
-    }
+    plugins.push(keymap({
+      'Enter': splitTodo,
+      'Backspace': unwrapTodo,
+    }));
 
     // ---- 8. Block navigation keymap (Cmd+Shift+Up/Down, Cmd+D, Cmd+Shift+Delete) ----
     plugins.push(
@@ -1461,12 +1441,14 @@ export class ProseMirrorAdapter implements EditorPort {
     if (!this.view) return;
 
     try {
-      let newState = this.view.state.apply(tr);
+      const applied = this.view.state.applyTransaction(tr);
+      let newState = applied.state;
+      const documentChanged = applied.transactions.some(transaction => transaction.docChanged);
 
       // Fix duplicate block IDs BEFORE updating the view (single render pass)
-      if (tr.docChanged) {
+      if (documentChanged) {
         try {
-          const dedupTr = this.buildDedupTransaction(newState);
+          const dedupTr = repairBlockIdentities(newState, applied.transactions);
           if (dedupTr) {
             newState = newState.apply(dedupTr);
           }
@@ -1479,14 +1461,14 @@ export class ProseMirrorAdapter implements EditorPort {
       this.view.updateState(newState);
 
       // Emit change event if document changed
-      if (tr.docChanged && this.currentDocument) {
+      if (documentChanged && this.currentDocument) {
         const newDocument = this.proseMirrorToDomain(newState.doc);
         this.currentDocument = newDocument;
         this.emit('editor:change', { document: newDocument });
       }
 
       // Emit selection event if selection changed
-      if (tr.selectionSet || tr.docChanged) {
+      if (applied.transactions.some(transaction => transaction.selectionSet) || documentChanged) {
         this.emit('editor:selection', { selection: this.getSelection() });
       }
     } catch (error) {
@@ -1498,39 +1480,6 @@ export class ProseMirrorAdapter implements EditorPort {
         // Editor is unrecoverable — but at least we logged the error
       }
     }
-  }
-
-  /**
-   * Build a transaction to fix duplicate block IDs, or return null if no duplicates.
-   * Does NOT call updateState — caller applies the transaction.
-   */
-  private buildDedupTransaction(state: EditorState): Transaction | null {
-    const seen = new Set<string>();
-    const duplicates: Array<{ pos: number; node: PmNode }> = [];
-
-    state.doc.descendants((node, pos) => {
-      const id = node.attrs.id as string | null;
-      if (id) {
-        if (seen.has(id)) {
-          duplicates.push({ pos, node });
-        } else {
-          seen.add(id);
-        }
-      }
-      return true;
-    });
-
-    if (duplicates.length === 0) return null;
-
-    let tr = state.tr;
-    for (const { pos, node } of duplicates) {
-      tr = tr.setNodeMarkup(tr.mapping.map(pos), undefined, {
-        ...node.attrs,
-        id: generateBlockId(),
-      });
-    }
-
-    return tr;
   }
 
   /**
@@ -1825,42 +1774,6 @@ export class ProseMirrorAdapter implements EditorPort {
     }
   }
 
-  private getNodeTypeForBlockType(type: BlockType) {
-    switch (type) {
-      case 'paragraph':
-        return voidSchema.nodes.paragraph;
-      case 'heading1':
-      case 'heading2':
-      case 'heading3':
-      case 'heading4':
-      case 'heading5':
-      case 'heading6':
-        return voidSchema.nodes.heading;
-      case 'bulletList':
-        return voidSchema.nodes.bulletList;
-      case 'numberedList':
-        return voidSchema.nodes.orderedList;
-      case 'todoItem':
-        return voidSchema.nodes.todoItem;
-      case 'blockquote':
-        return voidSchema.nodes.blockquote;
-      case 'codeBlock':
-        return voidSchema.nodes.codeBlock;
-      case 'horizontalRule':
-        return voidSchema.nodes.horizontalRule;
-      case 'callout':
-        return voidSchema.nodes.callout;
-      case 'image':
-        return voidSchema.nodes.image;
-      case 'toggle':
-        return voidSchema.nodes.toggle;
-      case 'table':
-        return voidSchema.nodes.table;
-      default:
-        return null;
-    }
-  }
-
   // =========================================================================
   // Block-level Commands (selectBlock, duplicateBlock, convertBlock, AI lock)
   // =========================================================================
@@ -1906,52 +1819,7 @@ export class ProseMirrorAdapter implements EditorPort {
 
   private executeConvertBlock(blockId: string, targetType: Block['type']): void {
     if (!this.view) return;
-
-    let targetNode: PmNode | null = null;
-    let targetPos = -1;
-
-    this.view.state.doc.descendants((node, pos) => {
-      if (targetNode) return false;
-      if (node.attrs?.id === blockId) {
-        targetNode = node;
-        targetPos = pos;
-        return false;
-      }
-      return true;
-    });
-
-    if (!targetNode || targetPos < 0) return;
-
-    const newNodeType = getNodeTypeForBlockType(targetType);
-    if (!newNodeType) return;
-
-    // Build attrs for the target type
-    const attrs: Record<string, unknown> = { id: blockId };
-    if (targetType.startsWith('heading')) {
-      attrs.level = parseInt(targetType.replace('heading', ''), 10);
-    }
-
-    // Preserve inline content if both source and target support it
-    const content = (targetNode as PmNode).content;
-    try {
-      const converted = newNodeType.create(attrs, content);
-      const tr = this.view.state.tr.replaceWith(
-        targetPos,
-        targetPos + (targetNode as PmNode).nodeSize,
-        converted
-      );
-      this.view.dispatch(tr);
-    } catch {
-      // If content is incompatible (e.g. converting code block to image),
-      // create an empty node of the target type
-      const empty = newNodeType.create(attrs);
-      const tr = this.view.state.tr.replaceWith(
-        targetPos,
-        targetPos + (targetNode as PmNode).nodeSize,
-        empty
-      );
-      this.view.dispatch(tr);
-    }
+    convertBlock(blockId, targetType)(this.view.state, this.view.dispatch);
   }
 
   private executeLockBlockForAI(blockId: string, operationLabel: string): void {

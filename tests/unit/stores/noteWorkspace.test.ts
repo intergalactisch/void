@@ -76,8 +76,21 @@ describe('noteWorkspaceStore split pane operations', () => {
   beforeEach(() => {
     installMemoryLocalStorage();
     localStorage.clear();
-    noteWorkspaceStore.init();
+    noteWorkspaceStore.init('');
     noteWorkspaceStore.reset();
+  });
+
+  it('keeps open tabs isolated by notes folder and restores each workspace separately', () => {
+    noteWorkspaceStore.init('/notes/work');
+    noteWorkspaceStore.openNoteTab('work.md');
+    noteWorkspaceStore.init('/notes/personal');
+    expect(noteWorkspaceStore.activeNotePath).toBeNull();
+    expect(noteWorkspaceStore.tabs).toHaveLength(0);
+    noteWorkspaceStore.openNoteTab('personal.md');
+    noteWorkspaceStore.init('/notes/work');
+    expect(noteWorkspaceStore.activeNotePath).toBe('work.md');
+    noteWorkspaceStore.init('/notes/personal');
+    expect(noteWorkspaceStore.activeNotePath).toBe('personal.md');
   });
 
   it('creates an active placeholder when splitting a single-note tab', () => {

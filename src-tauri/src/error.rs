@@ -20,6 +20,9 @@ fn redact_path(path: &str) -> String {
 /// Application-wide error type for void
 #[derive(Error, Debug)]
 pub enum VoidError {
+    #[error("Application shutdown failed: {0}")]
+    Lifecycle(String),
+
     #[error("Failed to read file {}: {source}", redact_path(path))]
     FileRead {
         path: String,

@@ -40,35 +40,8 @@
     }
   }
 
-  // Calculate progress for the progress bar
-  let progress = $state(100);
-  let animationFrame: number | null = null;
-
-  // Start progress animation
-  $effect(() => {
-    if (duration <= 0) return;
-
-    const startTime = createdAt;
-    const endTime = startTime + duration;
-
-    function updateProgress() {
-      const now = Date.now();
-      const remaining = endTime - now;
-      progress = Math.max(0, (remaining / duration) * 100);
-
-      if (remaining > 0) {
-        animationFrame = requestAnimationFrame(updateProgress);
-      }
-    }
-
-    updateProgress();
-
-    return () => {
-      if (animationFrame !== null) {
-        cancelAnimationFrame(animationFrame);
-      }
-    };
-  });
+  // CSS handles the countdown without a reactive render on every frame.
+  const elapsed = $derived(Math.max(0, Date.now() - createdAt));
 
   function handleClose() {
     onClose(id);
@@ -167,7 +140,7 @@
     <div class="toast-progress">
       <div
         class="toast-progress-bar"
-        style="width: {progress}%; background-color: {styles.accentColor}"
+        style="background-color: {styles.accentColor}; animation-duration: {duration}ms; animation-delay: -{elapsed}ms"
       ></div>
     </div>
   {/if}
@@ -179,8 +152,8 @@
     display: flex;
     align-items: flex-start;
     gap: 12px;
-    min-width: 320px;
-    max-width: 420px;
+    width: min(420px, calc(100vw - 32px));
+    box-sizing: border-box;
     padding: 12px 14px 14px;
     background: var(--bg-card);
     border: 1px solid var(--border-light);
@@ -287,7 +260,18 @@
 
   .toast-progress-bar {
     height: 100%;
-    transition: width 0.1s linear;
+    transform-origin: left;
+    animation: toast-countdown linear forwards;
+  }
+
+  @keyframes toast-countdown {
+    from { transform: scaleX(1); }
+    to { transform: scaleX(0); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .toast { animation: none; }
+    .toast-progress-bar { animation: none; }
   }
 
   /* Semantic colors aligned with design system */

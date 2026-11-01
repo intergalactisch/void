@@ -7,22 +7,12 @@
  * Part of the ProseMirror infrastructure adapter.
  */
 
-import type { Command, EditorState } from 'prosemirror-state';
+import type { Command } from 'prosemirror-state';
 import { TextSelection } from 'prosemirror-state';
 import type { NodeType, Schema } from 'prosemirror-model';
 import { wrapInList, liftListItem } from 'prosemirror-schema-list';
+import { isolateHistory } from '../plugins/history';
 import { generateBlockId } from '$lib/domain/entities/Block';
-
-/**
- * Check if the selection is currently inside a list of the given type.
- */
-function isInList(state: EditorState, listType: NodeType): boolean {
-  const { $from } = state.selection;
-  for (let d = $from.depth; d > 0; d--) {
-    if ($from.node(d).type === listType) return true;
-  }
-  return false;
-}
 
 /**
  * Toggle a list type on the current selection.
@@ -44,34 +34,24 @@ export function toggleList(schema: Schema, listTypeName: string): Command {
   }
 
   return (state, dispatch) => {
-    if (isInList(state, listType)) {
-      // Already in this list type — lift out
-      return liftListItem(listItemType)(state, dispatch);
+    const { $from } = state.selection;
+    for (let depth = $from.depth; depth > 0; depth--) {
+      const list = $from.node(depth);
+      if (list.type !== schema.nodes.bulletList && list.type !== schema.nodes.orderedList) continue;
+      if (list.type === listType) {
+        return liftListItem(listItemType)(state, dispatch && (tr => dispatch(isolateHistory(tr))));
+      }
+      // Change the nearest list in place. Lifting first would flatten nested
+      // items and can accidentally act on an ancestor of the requested type.
+      const parent = $from.node(depth - 1);
+      const index = $from.index(depth - 1);
+      if (!parent.canReplaceWith(index, index + 1, listType) || !listType.validContent(list.content)) return false;
+      if (dispatch) dispatch(isolateHistory(state.tr.setNodeMarkup($from.before(depth), listType, {
+        ...list.attrs,
+      })).scrollIntoView());
+      return true;
     }
-
-    // Check if we're in the other list type
-    const otherListName = listTypeName === 'bulletList' ? 'orderedList' : 'bulletList';
-    const otherListType = schema.nodes[otherListName];
-    if (otherListType && isInList(state, otherListType)) {
-      // In a different list type — lift out first, then wrap
-      const lifted = liftListItem(listItemType)(state, (tr) => {
-        if (dispatch) {
-          // After lifting, apply the wrap on the new state
-          const newState = state.apply(tr);
-          const wrapped = wrapInList(listType)(newState, (tr2) => {
-            dispatch(tr2);
-          });
-          if (!wrapped) {
-            // If wrapping fails, at least apply the lift
-            dispatch(tr);
-          }
-        }
-      });
-      return lifted;
-    }
-
-    // Not in any list — wrap in the target list type
-    return wrapInList(listType)(state, dispatch);
+    return wrapInList(listType)(state, dispatch && (tr => dispatch(isolateHistory(tr))));
   };
 }
 

@@ -1520,3 +1520,69 @@ describe('MarkdownTodoRepository', () => {
     });
   });
 });
+
+
+describe('Markdown-safe todo mutations', () => {
+  it('toggles only the task checkbox and preserves nested indentation and CRLF', async () => {
+    const path = '/notes/nested.md';
+    fileSystem.seed({ [path]: '- [ ] Parent\r\n  - [x] Explain the [ ] syntax ✅ 2026-10-31\r\n' });
+    expect((await repository.toggle(generateTodoId(path, 1))).ok).toBe(true);
+    const saved = await fileSystem.readFile(path);
+    expect(saved.ok && saved.value).toBe('- [ ] Parent\r\n  - [ ] Explain the [ ] syntax\r\n');
+  });
+
+  it('refuses to mutate a stale todo that is now inside a code fence', async () => {
+    const path = '/notes/example.md';
+    const content = '```markdown\n- [ ] Example\n```';
+    fileSystem.seed({ [path]: content });
+    const result = await repository.toggle(generateTodoId(path, 1), { lineNumber: 1, rawLine: '- [ ] Example' });
+    expect(result.ok).toBe(false);
+    const saved = await fileSystem.readFile(path);
+    expect(saved.ok && saved.value).toBe(content);
+  });
+
+  it('ignores example headings when listing or renaming task sections', async () => {
+    const path = '/notes/TODO.md';
+    fileSystem.seed({ [path]: '## Inbox\n- [ ] Real\n\n```md\n## Example\n- [ ] Fake\n```' });
+    const sections = await repository.getSections(path);
+    expect(sections.ok && sections.value.map((section) => [section.title, section.todoCount])).toEqual([['Inbox', 1]]);
+    expect((await repository.renameSection(path, 'Example', 'Changed')).ok).toBe(false);
+  });
+});
+
+
+it('does not guess between equally close duplicate tasks after external edits', async () => {
+  const path = '/notes/duplicates.md';
+  const content = '- [ ] Same task\nChanged line\n- [ ] Same task';
+  fileSystem.seed({ [path]: content });
+  const result = await repository.toggle(generateTodoId(path, 1), { lineNumber: 1, rawLine: '- [ ] Same task' });
+  expect(result.ok).toBe(false);
+  const saved = await fileSystem.readFile(path);
+  expect(saved.ok && saved.value).toBe(content);
+});
+
+it('inserts tasks into the real section rather than a heading inside a code example', async () => {
+  const path = '/notes/TODO.md';
+  const example = '```md\n## Inbox\n- [ ] Example\n```';
+  fileSystem.seed({ [path]: example + '\n\n## Inbox\n- [ ] Real task' });
+  const result = await repository.create({ content: 'New task', list: 'inbox', source: 'dedicated', sourceFile: path, lineNumber: 0, rawLine: '' }, path);
+  expect(result.ok).toBe(true);
+  const saved = await fileSystem.readFile(path);
+  expect(saved.ok && saved.value.startsWith(example)).toBe(true);
+  const todos = await repository.getByFile(path);
+  expect(todos.ok && todos.value.map((todo) => todo.content)).toEqual(['Real task', 'New task']);
+});
+
+
+it('can toggle a Windows task again using the previous mutation result', async () => {
+  const path = '/notes/windows.md';
+  fileSystem.seed({ [path]: '- [ ] Windows task\r\n' });
+  const id = generateTodoId(path, 0);
+  const first = await repository.toggle(id);
+  expect(first.ok).toBe(true);
+  if (!first.ok) return;
+  const second = await repository.toggle(id, { lineNumber: 0, rawLine: first.value.rawLine });
+  expect(second.ok).toBe(true);
+  const saved = await fileSystem.readFile(path);
+  expect(saved.ok && saved.value).toBe('- [ ] Windows task\r\n');
+});

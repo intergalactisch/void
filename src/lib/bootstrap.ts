@@ -95,7 +95,7 @@ import {
   type CaptureMessageBridge,
 } from './adapters/capture';
 import { SettingsKeymapStorageAdapter, MemoryKeymapStorageAdapter } from './adapters/keymap';
-import { JsContentSearchAdapter, MemoryContentSearchAdapter } from './adapters/search';
+import { JsContentSearchAdapter } from './adapters/search';
 import {
   registerScopePredicate,
   defaultEditorFocusedPredicate,
@@ -601,16 +601,13 @@ export async function bootstrap(options?: BootstrapOptions): Promise<AppContext>
 
   // Register content search adapter + service. The JS adapter scans .md
   // files via FileSystemPort; future iterations may swap in a Rust grep.
-  if (useMocks) {
-    container.register(TOKENS.ContentSearch, () => new MemoryContentSearchAdapter());
-  } else {
-    container.register(TOKENS.ContentSearch, () =>
-      new JsContentSearchAdapter(
-        container.resolve<FileSystemPort>(TOKENS.FileSystem),
-        container.resolve<NotesService>(TOKENS.NotesService)
-      )
-    );
-  }
+  container.register(TOKENS.ContentSearch, () =>
+    new JsContentSearchAdapter(
+      container.resolve<FileSystemPort>(TOKENS.FileSystem),
+      container.resolve<NotesService>(TOKENS.NotesService),
+      notesPath,
+    )
+  );
 
   // Register editor factory and external navigation adapters
   container.register(TOKENS.EditorPortFactory, () => new ProseMirrorEditorPortFactory());

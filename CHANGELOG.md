@@ -13,6 +13,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 ### Security
 
+## [0.2.2] - 2026-11-01
+
+### Changed
+- Improve editor responsiveness for long notes, large task lists, and complex markdown.
+- Extract focused editor and task helpers to simplify maintenance and reduce duplicated logic.
+- Preserve conflict-resolution drafts while switching files, closing the conflict window, and restarting. Add a clearer Keep Both action and prevent accepting unresolved conflict markers.
+
+### Fixed
+- Improve markdown paste, selection, undo/redo, list and task editing, code blocks, block conversion, and find/replace behavior.
+- Preserve markdown formatting and task identity through edits and serialization.
+- Save open documents before closing or quitting, and retain newer edits made during an ongoing save.
+- Keep workspace layouts scoped to the active notes folder and improve search and navigation consistency.
+- Resume a failed sync push after a successful merge commit without losing recovery state or creating a second merge commit.
+- Prevent stale conflict previews, preserve both versions with distinct copy names, and keep resolved conflicts read-only.
+
+### Security
+- Write note and sync files atomically so failed writes retain the previous contents.
+- Restrict sync writes through symlinks to the workspace and strengthen sensitive-path and file-read validation.
+
+### Added
+- Regression coverage for editor interactions, long notes, save/close races, persisted conflict drafts, and offline divergence/reconnection using two real Git clones.
+
 ## [0.2.1] - 2026-06-01
 
 ### Added

@@ -1,4 +1,4 @@
-use crate::commands::files::validate_path;
+use crate::commands::files::{atomic_write, canonicalize_existing_prefix, validate_path};
 use crate::commands::settings::get_settings;
 use crate::error::VoidError;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
@@ -1148,7 +1148,15 @@ pub async fn git_write_working_file(
 ) -> Result<(), VoidError> {
     let dir = validate_sync_workspace_path(&notes_path).await?;
     let safe_path = safe_relative_git_path(&path)?;
-    let target = dir.join(&safe_path);
+    write_sync_file(&dir, &safe_path, &content).await
+}
+
+async fn write_sync_file(dir: &Path, path: &str, content: &str) -> Result<(), VoidError> {
+    let safe_path = safe_relative_git_path(path)?;
+    let target = canonicalize_existing_prefix(&dir.join(&safe_path));
+    if !target.starts_with(canonicalize_existing_prefix(dir)) {
+        return Err(VoidError::PathNotAllowed("Sync file points outside the workspace".into()));
+    }
     if let Some(parent) = target.parent() {
         tokio::fs::create_dir_all(parent)
             .await
@@ -1157,7 +1165,7 @@ pub async fn git_write_working_file(
                 source: e,
             })?;
     }
-    tokio::fs::write(&target, content)
+    atomic_write(&target, content.as_bytes())
         .await
         .map_err(|e| VoidError::FileWrite {
             path: target.to_string_lossy().to_string(),
@@ -2161,3 +2169,7 @@ pub async fn github_revoke_token(client_id: String, token: String) -> Result<(),
         Err(github_message(status, &text))
     }
 }
+
+#[cfg(test)]
+#[path = "sync_tests.rs"]
+mod tests;

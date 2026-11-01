@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import {
     AlertTriangle,
     Check,
@@ -11,6 +12,7 @@
   } from '@lucide/svelte';
   import { notesStore, syncStore, toastStore, uiStore } from '$lib/stores';
   import type { SyncConflict, SyncConflictResolution } from '$lib/domain/values';
+  import { hasConflictMarkers } from '$lib/domain/values/ConflictMarkers';
   import InfoPopover from './InfoPopover.svelte';
 
   let selectedId = $state<string | null>(null);
@@ -18,25 +20,35 @@
   let busy = $state(false);
 
   const session = $derived(syncStore.conflictSession);
-  const preview = $derived(syncStore.activeConflictPreview);
+  const preview = $derived(syncStore.activeConflictPreview?.conflictId === selectedId ? syncStore.activeConflictPreview : null);
+  const unresolvedMarkers = $derived(hasConflictMarkers(mergedDraft));
   const conflicts = $derived(session?.conflicts ?? syncStore.status.conflicts);
   const selectedConflict = $derived(conflicts.find((conflict) => conflict.id === selectedId) ?? conflicts[0] ?? null);
 
+  const selectedResolved = $derived(selectedConflict?.mergeStatus === 'resolved' || selectedConflict?.mergeStatus === 'auto-merged');
+
   $effect(() => {
     if (!uiStore.syncConflictWorkspaceOpen) return;
-    void loadSession();
+    untrack(() => void loadSession());
   });
 
   $effect(() => {
     if (!selectedId && selectedConflict) {
       selectedId = selectedConflict.id;
-      void loadPreview(selectedConflict.id);
+      untrack(() => void loadPreview(selectedConflict.id));
     }
   });
 
-  $effect(() => {
-    if (preview) mergedDraft = preview.mergedMarkdown;
-  });
+  async function close() {
+    const saved = await syncStore.flushConflictDrafts();
+    if (!saved.ok) { toastStore.error(saved.error.message); return; }
+    uiStore.closeSyncConflictWorkspace();
+  }
+
+  function editDraft(value: string) {
+    mergedDraft = value;
+    if (selectedId) syncStore.updateConflictDraft(selectedId, value);
+  }
 
   async function loadSession() {
     busy = true;
@@ -55,7 +67,7 @@
   async function loadPreview(conflictId: string) {
     selectedId = conflictId;
     const next = await syncStore.previewConflict(conflictId);
-    if (next) mergedDraft = next.mergedMarkdown;
+    if (next && selectedId === conflictId) mergedDraft = next.mergedMarkdown;
   }
 
   async function apply(resolution: SyncConflictResolution) {
@@ -106,7 +118,7 @@
 </script>
 
 {#if uiStore.syncConflictWorkspaceOpen}
-  <div class="sync-conflict-backdrop" role="presentation" onclick={() => uiStore.closeSyncConflictWorkspace()}></div>
+  <div class="sync-conflict-backdrop" role="presentation" onclick={close}></div>
   <div class="sync-conflict-workspace" role="dialog" aria-modal="true" aria-label="GitHub sync conflicts">
     <header class="sync-conflict-header">
       <div>
@@ -128,7 +140,7 @@
           />
         </h2>
       </div>
-      <button type="button" class="icon-btn" title="Close" aria-label="Close" onclick={() => uiStore.closeSyncConflictWorkspace()}>
+      <button type="button" class="icon-btn" title="Close" aria-label="Close" onclick={close}>
         <X size={18} />
       </button>
     </header>
@@ -154,6 +166,7 @@
             type="button"
             class="sync-conflict-file"
             class:active={selectedId === conflict.id}
+            disabled={busy}
             onclick={() => loadPreview(conflict.id)}
           >
             <FileText size={14} />
@@ -191,7 +204,7 @@
                   Local
                   <InfoPopover
                     title="Local copy"
-                    body="Local is the version currently in this workspace on your device."
+                    body="Local is the saved version from this device when the conflict began."
                     items={['Keep Local uses this version for the conflicted file.']}
                     align="start"
                   />
@@ -237,7 +250,9 @@
                   align="start"
                 />
               </span>
-              <textarea bind:value={mergedDraft} spellcheck="true" aria-labelledby="sync-conflict-merged-label"></textarea>
+              <textarea value={mergedDraft} oninput={(event) => editDraft(event.currentTarget.value)} disabled={busy || selectedResolved} spellcheck="true" aria-labelledby="sync-conflict-merged-label"></textarea>
+              <p role="status">{syncStore.draftError ? 'Draft could not be saved. Keep this window open and retry.' : syncStore.draftSaving ? 'Saving draft…' : 'Draft saved on this device.'}</p>
+              {#if unresolvedMarkers}<p role="alert">Remove the conflict markers before using this version, or choose Keep Both to preserve both copies.</p>{/if}
             </div>
           {:else}
             <div class="sync-conflict-empty">
@@ -265,17 +280,17 @@
             'Resume Sync continues after every conflict is resolved.',
           ]}
         />
-        <button type="button" disabled={busy || !selectedId} onclick={() => apply('keep-local')}>
+        <button type="button" disabled={busy || !selectedId || !preview} onclick={() => apply('keep-local')}>
           Keep Local
         </button>
-        <button type="button" disabled={busy || !selectedId} onclick={() => apply('take-remote')}>
+        <button type="button" disabled={busy || !selectedId || !preview} onclick={() => apply('take-remote')}>
           Take Remote
         </button>
-        <button type="button" disabled={busy || !selectedId} onclick={() => apply('duplicate-local')}>
+        <button type="button" disabled={busy || !selectedId || !preview} onclick={() => apply('duplicate-local')}>
           <Copy size={14} />
-          Duplicate Local
+          Keep Both
         </button>
-        <button type="button" disabled={busy || !selectedId || !preview?.supported} onclick={() => apply('use-merged')}>
+        <button type="button" disabled={busy || selectedResolved || !selectedId || !preview?.supported || unresolvedMarkers} onclick={() => apply('use-merged')}>
           Use Merged
         </button>
         <button type="button" class="primary-btn" disabled={busy} onclick={resume}>

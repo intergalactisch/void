@@ -20,7 +20,9 @@ test.describe('Code blocks', () => {
     await expect(editor).toBeVisible();
     await editor.click();
 
-    await page.keyboard.insertText('```ts title="api.ts" lineNumbers {2} wrap');
+    await page.keyboard.type('```ts title="api.ts" lineNumbers {2} wrap');
+    await expect(page.locator('.void-code-block-header')).toHaveCount(0);
+    await page.keyboard.press('Enter');
 
     await expect(page.locator('.void-code-block-header')).toBeVisible();
     await expect(page.locator('.void-code-block-lang').first()).toHaveText('ts');
@@ -28,6 +30,10 @@ test.describe('Code blocks', () => {
     await expect(page.locator('.void-code-block-meta').first()).toContainText('lineNumbers');
 
     await page.keyboard.insertText('const answer = 41;');
+    await page.keyboard.press('Enter');
+    await page.keyboard.insertText('console.log(answer);');
+    await expect(page.locator('pre.void-code-block')).toHaveCount(1);
+    await expect(page.locator('pre.void-code-block')).toContainText('const answer = 41;\nconsole.log(answer);');
     const shell = page.locator('.void-code-block-shell').first();
     await expect(shell).toBeVisible();
     const structure = await shell.evaluate((element) => {

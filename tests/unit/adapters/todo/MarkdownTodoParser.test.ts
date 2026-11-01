@@ -547,24 +547,18 @@ Just some text
       expect(todos).toHaveLength(0);
     });
 
-    it('does not handle Windows line endings (known limitation)', () => {
-      // The parser splits on \n only, leaving \r at end of lines
-      // This causes the regex to fail matching as content ends with \r
+    it('handles Windows line endings', () => {
       const content = '- [ ] Task 1\r\n- [ ] Task 2\r\n- [ ] Task 3';
       const todos = parser.parse(content, '/notes/windows.md');
 
-      // Only the last line works because it has no trailing \r
-      expect(todos).toHaveLength(1);
-      expect(todos[0]!.content).toBe('Task 3');
+      expect(todos.map((todo) => todo.content)).toEqual(['Task 1', 'Task 2', 'Task 3']);
     });
 
-    it('partially handles mixed line endings (known limitation)', () => {
-      // Lines ending with \n work, lines ending with \r\n do not
+    it('handles mixed line endings', () => {
       const content = '- [ ] Task 1\n- [ ] Task 2\r\n- [ ] Task 3';
       const todos = parser.parse(content, '/notes/mixed.md');
 
-      // Task 1 works (ends with \n), Task 2 fails (\r\n), Task 3 works (no line ending)
-      expect(todos).toHaveLength(2);
+      expect(todos.map((todo) => todo.content)).toEqual(['Task 1', 'Task 2', 'Task 3']);
     });
 
     it('handles backslashes in Windows paths', () => {
@@ -605,5 +599,30 @@ Just some text
       // Clean content should normalize whitespace
       expect(meta.cleanContent).toBe('Task with spaces');
     });
+  });
+});
+
+
+describe('Markdown structure', () => {
+  it('ignores code, frontmatter and comments without changing real task positions or sections', () => {
+    const lines = [
+      '---', 'description: |', '  - [ ] Metadata example', '---',
+      '## Real section', '- [ ] Real task',
+      '````markdown', '## Fake section', '- [ ] Code example', '```', '- [ ] Still code', '````',
+      '<!--', '- [ ] Hidden comment', '-->',
+      '', '    - [ ] Indented code', '',
+      '- [ ] Second real task', '  - [ ] Nested real task',
+      '~~~', '- [ ] Tilde example', '~~~',
+    ];
+    const todos = parser.parse(lines.join('\n'), '/notes/example.md');
+    expect(todos.map((todo) => [todo.content, todo.lineNumber, todo.section])).toEqual([
+      ['Real task', 5, 'Real section'],
+      ['Second real task', 18, 'Real section'],
+      ['Nested real task', 19, 'Real section'],
+    ]);
+  });
+
+  it('does not index unfinished code fences as actionable tasks', () => {
+    expect(parser.parse('```md\n- [ ] Just an example', '/notes/example.md')).toEqual([]);
   });
 });

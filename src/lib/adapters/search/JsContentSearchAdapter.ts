@@ -23,7 +23,8 @@ const DEFAULT_MAX_PER_FILE = 20;
 export class JsContentSearchAdapter implements ContentSearchPort {
   constructor(
     private readonly fs: FileSystemPort,
-    private readonly notes: NotesService
+    private readonly notes: NotesService,
+    private readonly basePath: string,
   ) {}
 
   async *search(options: ContentSearchOptions): AsyncIterable<RawHit> {
@@ -35,14 +36,25 @@ export class JsContentSearchAdapter implements ContentSearchPort {
     const matcher = compileMatcher(options);
     if (!matcher) return;
 
+    // Build the eligibility index once, instead of walking the entire tree
+    // for each scoped path. Always read the canonical path from the note tree.
+    const paths = this.allNotePaths();
+    const byPath = new Map(paths.map((path) => [normalizePath(path), path]));
     const candidates = options.scopePaths && options.scopePaths.length > 0
-      ? options.scopePaths.filter((path) => this.isSearchableNotePath(path))
-      : this.allNotePaths();
+      ? [...new Set(options.scopePaths.flatMap((path) => {
+          const canonical = byPath.get(normalizePath(path));
+          return canonical === undefined ? [] : [canonical];
+        }))]
+      : paths;
 
     let totalHits = 0;
     for (const path of candidates) {
       if (totalHits >= maxResults) return;
-      const result = await this.fs.readFile(path);
+      // NotesService exposes document-relative paths, while FileSystemPort
+      // expects a path rooted in the active workspace.
+      const relative = path.replace(/\\/g, '/');
+      if (/^(?:\/|[A-Za-z]:)/.test(relative) || relative.split('/').some(part => part === '..' || part === '.')) continue;
+      const result = await this.fs.readFile(`${this.basePath.replace(/\/$/, '')}/${relative}`);
       if (!result.ok) continue;
 
       let hitsInFile = 0;
@@ -86,26 +98,10 @@ export class JsContentSearchAdapter implements ContentSearchPort {
     walk(this.notes.getState().items);
     return out;
   }
+}
 
-  private isSearchableNotePath(path: string): boolean {
-    const note = this.findNote(path);
-    return !!note && !note.protection;
-  }
-
-  private findNote(path: string): NotesListItem | null {
-    const normalized = path.replace(/\\/g, '/').replace(/^\/+/, '');
-    const walk = (items: NotesListItem[]): NotesListItem | null => {
-      for (const item of items) {
-        if (!item.isFolder && item.path === normalized) return item;
-        if (item.children && item.children.length > 0) {
-          const found = walk(item.children);
-          if (found) return found;
-        }
-      }
-      return null;
-    };
-    return walk(this.notes.getState().items);
-  }
+function normalizePath(path: string): string {
+  return path.replace(/\\/g, '/').replace(/^\/+/, '');
 }
 
 interface Match {
@@ -113,22 +109,20 @@ interface Match {
   end: number;
 }
 
-type Matcher = (line: string) => Match[];
+type Matcher = (line: string) => Iterable<Match>;
 
 function compileMatcher(options: ContentSearchOptions): Matcher | null {
   if (options.regex) {
     try {
       const flags = options.caseSensitive ? 'g' : 'gi';
       const re = new RegExp(options.query, flags);
-      return (line: string) => {
-        const out: Match[] = [];
+      return function* (line: string) {
         re.lastIndex = 0;
         let m: RegExpExecArray | null;
         while ((m = re.exec(line)) !== null) {
-          out.push({ start: m.index, end: m.index + m[0].length });
+          yield { start: m.index, end: m.index + m[0].length };
           if (m[0].length === 0) re.lastIndex += 1; // avoid infinite loop on empty match
         }
-        return out;
       };
     } catch {
       return null; // invalid regex
@@ -140,11 +134,10 @@ function compileMatcher(options: ContentSearchOptions): Matcher | null {
   const caseSensitive = options.caseSensitive ?? false;
   const ws = /\w/;
 
-  return (line: string) => {
-    const out: Match[] = [];
+  const target = caseSensitive ? needle : needle.toLowerCase();
+  return function* (line: string) {
     const haystack = caseSensitive ? line : line.toLowerCase();
-    const target = caseSensitive ? needle : needle.toLowerCase();
-    if (target.length === 0) return out;
+    if (target.length === 0) return;
 
     let from = 0;
     while (from <= haystack.length) {
@@ -155,10 +148,9 @@ function compileMatcher(options: ContentSearchOptions): Matcher | null {
       const after = end < line.length ? line[end] : '';
       const isWord = !wholeWord || ((!before || !ws.test(before)) && (!after || !ws.test(after)));
       if (isWord) {
-        out.push({ start: idx, end });
+        yield { start: idx, end };
       }
       from = end > from ? end : from + 1;
     }
-    return out;
   };
 }

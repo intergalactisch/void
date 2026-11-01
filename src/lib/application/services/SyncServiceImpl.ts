@@ -1,3 +1,5 @@
+import { ResourceLock } from '$lib/events/queue/ResourceLock';
+import { hasConflictMarkers } from '$lib/domain/values/ConflictMarkers';
 /**
  * SyncServiceImpl - local-first Git/GitHub sync orchestration.
  */
@@ -46,8 +48,9 @@ import {
   type SyncStatus,
   type GitHubVoidReadyProbe,
 } from '$lib/domain/values';
-import { ok, err, type Result } from '$lib/core';
+import { ok, err, toError, type Result } from '$lib/core';
 import { events } from '$lib/events';
+import { isSyncConflictSession } from '$lib/domain/values/SyncConflictSession';
 import { getLogger } from '$lib/logging';
 
 const log = getLogger('GitHubSync');
@@ -86,6 +89,7 @@ export class SyncServiceImpl implements SyncService {
   private currentUser: GitHubUser | null = null;
   private lastAuthError: Error | null = null;
   private activeSyncMode: SyncMode = 'manual';
+  private readonly conflictLock = new ResourceLock();
   private conflictSession: SyncConflictSession | null = null;
   private voidReadyCache = new Map<string, { checkedAt: number; value: GitHubVoidReadyProbe }>();
   /**
@@ -172,7 +176,11 @@ export class SyncServiceImpl implements SyncService {
       message: this.authErrorMessage(),
     }));
     const session = await this.loadConflictSession();
-    if (session.ok && session.value && isActiveConflictSession(session.value)) {
+    if (!session.ok) {
+      this.setFailure(session.error);
+      return err(session.error);
+    }
+    if (session.value && isActiveConflictSession(session.value)) {
       const conflictStatus = {
         ...next,
         kind: 'conflicted' as const,
@@ -507,7 +515,11 @@ export class SyncServiceImpl implements SyncService {
     const mode = options.mode ?? 'manual';
     const previousMode = this.activeSyncMode;
     this.activeSyncMode = mode;
-    this.syncInFlight = this.syncNowUnlocked(mode).finally(() => {
+    this.syncInFlight = this.syncNowUnlocked(mode).catch((cause) => {
+      const error = toError(cause);
+      this.setFailure(error, { mode });
+      return err(error);
+    }).finally(() => {
       this.syncInFlight = null;
       this.activeSyncMode = previousMode;
     });
@@ -600,13 +612,20 @@ export class SyncServiceImpl implements SyncService {
 
   async loadConflictSession(): Promise<Result<SyncConflictSession | null, Error>> {
     if (!this.voidStorage) return ok(this.conflictSession ? cloneSession(this.conflictSession) : null);
-    const loaded = await this.voidStorage.readJson<SyncConflictSession>(this.notesPath, SYNC_CONFLICTS_PATH);
+    const loaded = await this.voidStorage.readJson<unknown>(this.notesPath, SYNC_CONFLICTS_PATH);
     if (!loaded.ok) return err(loaded.error);
+    if (loaded.value !== null && !isSyncConflictSession(loaded.value)) {
+      return err(new Error('Sync conflict recovery data is invalid. Restore .void/sync/conflicts.json from a backup before syncing.'));
+    }
     this.conflictSession = loaded.value ? cloneSession(loaded.value) : null;
     return ok(this.conflictSession ? cloneSession(this.conflictSession) : null);
   }
 
   async refreshConflictSession(): Promise<Result<SyncConflictSession | null, Error>> {
+    return this.conflictLock.withLock('conflicts', () => this.refreshConflictSessionUnlocked());
+  }
+
+  private async refreshConflictSessionUnlocked(): Promise<Result<SyncConflictSession | null, Error>> {
     const loaded = await this.loadConflictSession();
     if (!loaded.ok || !loaded.value) return loaded;
 
@@ -655,7 +674,29 @@ export class SyncServiceImpl implements SyncService {
     });
   }
 
+  async saveConflictDraft(conflictId: string, markdown: string): Promise<Result<void, Error>> {
+    return this.conflictLock.withLock('conflicts', async () => {
+      const loaded = await this.loadConflictSession();
+      if (!loaded.ok) return err(loaded.error);
+      const session = loaded.value;
+      const conflict = session?.conflicts.find(item => item.id === conflictId);
+      if (!session || !conflict || isResolvedConflict(conflict)) return err(new Error('This conflict is no longer editable'));
+      conflict.mergedMarkdown = markdown;
+      session.updatedAt = new Date().toISOString();
+      return this.saveConflictSession(session);
+    });
+  }
+
   async applyConflictResolution(
+    conflictId: string,
+    resolution: SyncConflictResolution,
+    mergedMarkdown?: string,
+  ): Promise<Result<SyncConflictSession | null, Error>> {
+    return this.conflictLock.withLock('conflicts', () =>
+      this.applyConflictResolutionUnlocked(conflictId, resolution, mergedMarkdown));
+  }
+
+  private async applyConflictResolutionUnlocked(
     conflictId: string,
     resolution: SyncConflictResolution,
     mergedMarkdown?: string,
@@ -708,7 +749,11 @@ export class SyncServiceImpl implements SyncService {
   }
 
   async resumeConflictResolution(): Promise<Result<SyncStatus, Error>> {
-    const refreshed = await this.refreshConflictSession();
+    return this.conflictLock.withLock('conflicts', () => this.resumeConflictResolutionUnlocked());
+  }
+
+  private async resumeConflictResolutionUnlocked(): Promise<Result<SyncStatus, Error>> {
+    const refreshed = await this.refreshConflictSessionUnlocked();
     if (!refreshed.ok) return err(refreshed.error);
     if (!refreshed.value) return this.refreshStatus();
     if (refreshed.value.conflicts.some((conflict) => !isResolvedConflict(conflict))) {
@@ -720,6 +765,10 @@ export class SyncServiceImpl implements SyncService {
   }
 
   async abortConflictResolution(): Promise<Result<SyncConflictSession | null, Error>> {
+    return this.conflictLock.withLock('conflicts', () => this.abortConflictResolutionUnlocked());
+  }
+
+  private async abortConflictResolutionUnlocked(): Promise<Result<SyncConflictSession | null, Error>> {
     const loaded = await this.loadConflictSession();
     if (!loaded.ok) return err(loaded.error);
     const aborted = await this.git.abortMerge(this.notesPath);
@@ -847,6 +896,7 @@ export class SyncServiceImpl implements SyncService {
 
     const activeSession = await this.loadConflictSession();
     if (!activeSession.ok) return err(activeSession.error);
+    if (activeSession.value?.status === 'resolved') return this.resumeConflictResolution();
     if (activeSession.value && isActiveConflictSession(activeSession.value)) {
       this.applyConflictSessionToStatus(activeSession.value);
       return err(new Error('Resolve the current GitHub sync conflict before syncing again'));
@@ -1119,11 +1169,17 @@ export class SyncServiceImpl implements SyncService {
     message: string,
   ): Promise<Result<SyncStatus, Error>> {
     if (!settings.repository) return err(new Error('No GitHub repository is attached'));
+    const recovery = await this.saveConflictSession({ ...cloneSession(session), status: 'resolved' });
+    if (!recovery.ok) return err(recovery.error);
     this.setOperation('resolving');
-    const committed = await this.git.commitMerge(this.notesPath, message);
-    if (!committed.ok) {
-      this.setFailure(committed.error);
-      return err(committed.error);
+    const merging = await this.git.isMergeInProgress(this.notesPath);
+    if (!merging.ok) return err(merging.error);
+    if (merging.value) {
+      const committed = await this.git.commitMerge(this.notesPath, message);
+      if (!committed.ok) {
+        this.setFailure(committed.error);
+        return err(committed.error);
+      }
     }
 
     this.setOperation('pushing');
@@ -1176,13 +1232,8 @@ export class SyncServiceImpl implements SyncService {
 
     const merge = await this.git.isMergeInProgress(this.notesPath);
     if (!merge.ok) return err(merge.error);
-    if (!merge.value) {
-      const saved = await this.saveConflictSession(null);
-      if (!saved.ok) return err(saved.error);
-      await this.refreshStatus();
-      return ok(null);
-    }
-
+    // A previous attempt may have committed successfully but failed to push
+    // while offline. Keep the recovery session until that push succeeds.
     const token = await this.getToken();
     const settings = this.syncSettings();
     if (settings.authMode !== 'system-git' && !token) {
@@ -1285,6 +1336,9 @@ export class SyncServiceImpl implements SyncService {
       return err(new Error('Selected conflict resolution has no content to write'));
     }
 
+    if (resolution === 'use-merged' && hasConflictMarkers(resolvedContent)) {
+      return err(new Error('Remove the conflict markers before saving the merged version, or choose Keep Both.'));
+    }
     const written = await this.git.writeWorkingFile(this.notesPath, conflict.path, resolvedContent);
     if (!written.ok) return err(written.error);
     return ok({ pathsToStage: [conflict.path], resolvedContent });
@@ -1304,10 +1358,12 @@ export class SyncServiceImpl implements SyncService {
   }
 
   private async saveConflictSession(session: SyncConflictSession | null): Promise<Result<void, Error>> {
+    if (this.voidStorage) {
+      const saved = await this.voidStorage.writeJson(this.notesPath, SYNC_CONFLICTS_PATH, session);
+      if (!saved.ok) return err(saved.error);
+    }
     this.conflictSession = session ? cloneSession(session) : null;
-    if (!this.voidStorage) return ok(undefined);
-    const saved = await this.voidStorage.writeJson(this.notesPath, SYNC_CONFLICTS_PATH, session);
-    return saved.ok ? ok(undefined) : err(saved.error);
+    return ok(undefined);
   }
 
   private applyConflictSessionToStatus(session: SyncConflictSession): void {
@@ -1370,18 +1426,12 @@ export class SyncServiceImpl implements SyncService {
     }
 
     const dirtyPaths = initial.tabs
-      .filter((tab) => tab.isDirty)
+      .filter((tab) => tab.isDirty || tab.isSaving)
       .map((tab) => tab.path);
     if (dirtyPaths.length === 0) return ok(undefined);
 
-    const originalPath = initial.activePath;
     for (const path of dirtyPaths) {
-      if (this.editor.getState().activePath !== path) {
-        const switched = await this.editor.switchTab(path);
-        if (!switched.ok) return err(switched.error);
-      }
-
-      const saved = await this.editor.saveDocument({
+      const saved = await this.editor.saveOpenDocument(path, {
         actor: { kind: 'user', name: 'Local editor' },
         intentKind: 'update',
         summary: 'Flushed local editor changes before GitHub sync',
@@ -1391,12 +1441,7 @@ export class SyncServiceImpl implements SyncService {
       if (!saved.ok) return err(saved.error);
     }
 
-    if (originalPath && this.editor.getState().activePath !== originalPath) {
-      const restored = await this.editor.switchTab(originalPath);
-      if (!restored.ok) return err(restored.error);
-    }
-
-    const remainingDirty = this.editor.getState().tabs.filter((tab) => tab.isDirty);
+    const remainingDirty = this.editor.getState().tabs.filter((tab) => tab.isDirty || tab.isSaving || tab.conflictState !== 'clean');
     if (remainingDirty.length > 0) {
       return err(new Error(
         `Could not flush editor changes before syncing: ${remainingDirty.map((tab) => tab.path).join(', ')}`
@@ -1577,7 +1622,7 @@ function cloneConflicts(conflicts: SyncConflict[]): SyncConflict[] {
 }
 
 function isActiveConflictSession(session: SyncConflictSession): boolean {
-  return session.status === 'merging' || session.status === 'conflicted';
+  return session.status === 'merging' || session.status === 'conflicted' || session.status === 'resolved';
 }
 
 function isResolvedConflict(conflict: SyncConflict): boolean {
@@ -1595,7 +1640,7 @@ function duplicateLocalPath(path: string, date: Date): string {
   const dot = filename.lastIndexOf('.');
   const stem = dot > 0 ? filename.slice(0, dot) : filename;
   const extension = dot > 0 ? filename.slice(dot) : '';
-  return `${directory}${stem} (local ${timestampForName(date)})${extension}`;
+  return `${directory}${stem} (local ${timestampForName(date)}-${crypto.randomUUID().slice(0, 8)})${extension}`;
 }
 
 function timestampForName(date: Date): string {

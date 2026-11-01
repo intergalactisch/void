@@ -7,9 +7,9 @@
  * Part of the ProseMirror infrastructure adapter.
  */
 
-import { history, undo, redo } from 'prosemirror-history';
+import { history, undo, redo, closeHistory } from 'prosemirror-history';
 import { Plugin } from 'prosemirror-state';
-import type { Command } from 'prosemirror-state';
+import type { Command, Transaction } from 'prosemirror-state';
 import { keymap } from 'prosemirror-keymap';
 
 /**
@@ -117,4 +117,28 @@ export function canUndo(state: Parameters<typeof undo>[0]): boolean {
  */
 export function canRedo(state: Parameters<typeof redo>[0]): boolean {
   return redo(state);
+}
+
+
+const ISOLATED_EDIT = 'void:isolated-edit';
+
+/** A deliberate action (paste, checkbox, list conversion) gets its own undo step. */
+export function isolateHistory(tr: Transaction): Transaction {
+  return closeHistory(tr).setMeta(ISOLATED_EDIT, true);
+}
+
+export function historyBoundaryPlugin(): Plugin {
+  return new Plugin({
+    appendTransaction(transactions, _oldState, state) {
+      if (!transactions.some(tr => tr.docChanged && tr.getMeta(ISOLATED_EDIT))) return null;
+      // Also keep subsequent typing out of the completed action's undo step.
+      return closeHistory(state.tr);
+    },
+  });
+}
+
+/** Keep an explicit keyboard action separate from surrounding typing. */
+export function isolatedCommand(command: Command): Command {
+  return (state, dispatch, view) =>
+    command(state, dispatch && (tr => dispatch(isolateHistory(tr))), view);
 }

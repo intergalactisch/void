@@ -9,6 +9,7 @@
  */
 
 import type { Node as ProseMirrorNode, Mark } from 'prosemirror-model';
+import { escapeMarkdownText, serializeCodeSpan, normalizeBlockSpacing } from './markdownText';
 import { buildCodeFence } from '$lib/core/codeFence';
 
 const PROTECTED_LINES_FENCE = 'void-protected-lines-v1';
@@ -53,7 +54,7 @@ export function serializeToMarkdown(doc: ProseMirrorNode): string {
   serializeNode(doc, state);
 
   // Normalize the inconsistent trailing-newline artifacts the block handlers emit.
-  let out = state.output.replace(/\n{3,}/g, '\n\n').trim();
+  let out = normalizeBlockSpacing(state.output);
 
   // Leading/trailing empty paragraphs can't round-trip through markdown (markdown-it
   // emits no token for edge blank lines and the loader trims the body), so drop them
@@ -73,27 +74,27 @@ export function serializeToMarkdown(doc: ProseMirrorNode): string {
 /**
  * Serialize a single node to markdown
  */
-function serializeNode(node: ProseMirrorNode, state: SerializerState): void {
-  const nodeHandlers: Record<string, (n: ProseMirrorNode, s: SerializerState) => void> = {
-    doc: serializeDoc,
-    paragraph: serializeParagraph,
-    heading: serializeHeading,
-    bulletList: serializeBulletList,
-    orderedList: serializeOrderedList,
-    listItem: serializeListItem,
-    todoItem: serializeTodoItem,
-    blockquote: serializeBlockquote,
-    codeBlock: serializeCodeBlock,
-    protectedBlock: serializeProtectedBlock,
-    horizontalRule: serializeHorizontalRule,
-    image: serializeImage,
-    callout: serializeCallout,
-    toggle: serializeToggle,
-    table: serializeTable,
-    text: serializeText,
-    hardBreak: serializeHardBreak,
-  };
+const nodeHandlers: Record<string, (n: ProseMirrorNode, s: SerializerState) => void> = {
+  doc: serializeDoc,
+  paragraph: serializeParagraph,
+  heading: serializeHeading,
+  bulletList: serializeBulletList,
+  orderedList: serializeOrderedList,
+  listItem: serializeListItem,
+  todoItem: serializeTodoItem,
+  blockquote: serializeBlockquote,
+  codeBlock: serializeCodeBlock,
+  protectedBlock: serializeProtectedBlock,
+  horizontalRule: serializeHorizontalRule,
+  image: serializeImage,
+  callout: serializeCallout,
+  toggle: serializeToggle,
+  table: serializeTable,
+  text: serializeText,
+  hardBreak: serializeHardBreak,
+};
 
+function serializeNode(node: ProseMirrorNode, state: SerializerState): void {
   const handler = nodeHandlers[node.type.name];
   if (handler) {
     handler(node, state);
@@ -252,43 +253,9 @@ function serializeTodoItem(node: ProseMirrorNode, state: SerializerState): void 
  * Serialize a blockquote
  */
 function serializeBlockquote(node: ProseMirrorNode, state: SerializerState): void {
-  const lines = serializeBlockquoteContent(node);
-  for (const line of lines) {
-    state.output += `> ${line}\n`;
-  }
-  state.output += '\n';
-}
-
-/**
- * Serialize blockquote content, returning lines
- */
-function serializeBlockquoteContent(node: ProseMirrorNode): string[] {
-  const lines: string[] = [];
-
-  node.forEach((child) => {
-    if (child.type.name === 'paragraph') {
-      let line = '';
-      child.forEach((inline) => {
-        if (inline.isText) {
-          line += serializeMarkedText(inline.text || '', inline.marks);
-        } else if (inline.type.name === 'hardBreak') {
-          lines.push(line);
-          line = '';
-        }
-      });
-      if (line || lines.length === 0) {
-        lines.push(line);
-      }
-    } else if (child.type.name === 'blockquote') {
-      // Nested blockquote
-      const nestedLines = serializeBlockquoteContent(child);
-      for (const nestedLine of nestedLines) {
-        lines.push(`> ${nestedLine}`);
-      }
-    }
-  });
-
-  return lines;
+  const childState: SerializerState = { ...state, output: '', listDepth: 0, tightList: false, blockDepth: state.blockDepth + 1 };
+  node.forEach(child => serializeNode(child, childState));
+  state.output += childState.output.trimEnd().split('\n').map(line => `> ${line}`).join('\n') + '\n\n';
 }
 
 /**
@@ -491,7 +458,6 @@ function renderTableRow(cells: string[]): string {
 
 function escapeTableCell(value: string): string {
   return value
-    .replace(/\\/g, '\\\\')
     .replace(/\|/g, '\\|')
     .replace(/\n/g, '<br>');
 }
@@ -515,10 +481,10 @@ function serializeHardBreak(_node: ProseMirrorNode, state: SerializerState): voi
  */
 function serializeMarkedText(text: string, marks: readonly Mark[]): string {
   if (marks.length === 0) {
-    return text;
+    return escapeMarkdownText(text);
   }
 
-  let result = text;
+  let result = marks.some(mark => mark.type.name === 'code') ? text : escapeMarkdownText(text);
 
   // Apply marks in a specific order to ensure proper nesting
   // Links should be outermost, then bold/italic, then code
@@ -541,7 +507,7 @@ function serializeMarkedText(text: string, marks: readonly Mark[]): string {
         result = `*${result}*`;
         break;
       case 'code':
-        result = `\`${result}\``;
+        result = serializeCodeSpan(result);
         break;
       case 'strikethrough':
         result = `~~${result}~~`;

@@ -112,40 +112,48 @@ export function createCodeHighlightPlugin(): Plugin<DecorationSet> {
 class CodeHighlightView {
   private cache = new Map<string, HighlightResult>();
   private pending = new Set<string>();
+  private activeKeys = new Set<string>();
   private destroyed = false;
   private refreshQueued = false;
 
   constructor(private view: EditorView) {
-    this.scheduleForState(view.state);
     this.queueRefresh();
   }
 
   update(view: EditorView, previousState: EditorState): void {
     this.view = view;
     if (view.state.doc === previousState.doc) return;
-    this.scheduleForState(view.state);
     this.queueRefresh();
   }
 
   destroy(): void {
     this.destroyed = true;
     this.pending.clear();
+    this.cache.clear();
+    this.activeKeys.clear();
   }
 
   private scheduleForState(state: EditorState): void {
+    const activeKeys = new Set<string>();
     state.doc.descendants((node) => {
       if (node.type.name !== 'codeBlock') return true;
       const key = keyForNode(node);
+      activeKeys.add(key);
       if (this.cache.has(key) || this.pending.has(key)) return false;
 
       this.pending.add(key);
-      void highlightCodeBlock(node, key).then((result) => {
+      void highlightCodeBlock(node, key, () => !this.destroyed && this.activeKeys.has(key)).then((result) => {
         this.pending.delete(key);
+        if (this.destroyed || !this.activeKeys.has(key)) return;
         this.cache.set(key, result);
         this.queueRefresh();
       });
       return false;
     });
+    this.activeKeys = activeKeys;
+    for (const key of this.cache.keys()) {
+      if (!activeKeys.has(key)) this.cache.delete(key);
+    }
   }
 
   private queueRefresh(): void {
@@ -158,6 +166,7 @@ class CodeHighlightView {
     schedule(() => {
       this.refreshQueued = false;
       if (this.destroyed) return;
+      this.scheduleForState(this.view.state);
       this.view.dispatch(
         this.view.state.tr.setMeta(
           codeHighlightPluginKey,
@@ -168,7 +177,7 @@ class CodeHighlightView {
   }
 }
 
-async function highlightCodeBlock(node: PmNode, key: string): Promise<HighlightResult> {
+async function highlightCodeBlock(node: PmNode, key: string, isCurrent: () => boolean): Promise<HighlightResult> {
   const code = node.textContent;
   const lineCount = code.split('\n').length;
   if (!code || code.length > MAX_HIGHLIGHT_CHARS || lineCount > MAX_HIGHLIGHT_LINES) {
@@ -197,6 +206,7 @@ async function highlightCodeBlock(node: PmNode, key: string): Promise<HighlightR
       return { key, tokens: [], skipped: true };
     }
 
+    if (!isCurrent()) return { key, tokens: [], skipped: true };
     const lines = highlighter.codeToTokensWithThemes(code, {
       lang: language,
       themes: {

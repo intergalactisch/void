@@ -11,7 +11,8 @@
 
 import { inputRules, wrappingInputRule, InputRule } from 'prosemirror-inputrules';
 import type { Schema } from 'prosemirror-model';
-import type { Plugin } from 'prosemirror-state';
+import type { Plugin, Transaction } from 'prosemirror-state';
+import { liftListItem } from 'prosemirror-schema-list';
 import { generateBlockId } from '$lib/domain/entities/Block';
 
 /**
@@ -28,7 +29,8 @@ export function createListInputRules(schema: Schema): Plugin {
   const listItem = schema.nodes.listItem;
   const todoItem = schema.nodes.todoItem;
 
-  // Todo input rule MUST come before bullet list so `- [ ] ` is matched first
+  // Handle a complete marker (for text insertion) and the checkbox suffix
+  // after the bullet rule has already consumed `- ` during normal typing.
   if (todoItem) {
     rules.push(
       new InputRule(
@@ -44,6 +46,24 @@ export function createListInputRules(schema: Schema): Plugin {
         }
       )
     );
+  }
+
+  if (todoItem && bulletList && listItem) {
+    rules.push(new InputRule(/^\[([ xX])\]\s$/, (state, match, start, end) => {
+      const $start = state.doc.resolve(start);
+      // Only the first paragraph of a top-level bullet item is a task marker.
+      // Keep nested lists and their indentation intact.
+      if ($start.depth !== 3 || $start.node(1).type !== bulletList || $start.index(2) !== 0) return null;
+      let transaction: Transaction | null = null;
+      liftListItem(listItem)(state, (tr) => {
+        const from = tr.mapping.map(start);
+        const to = tr.mapping.map(end);
+        transaction = tr.delete(from, to).setBlockType(from, from, todoItem, {
+          checked: match[1] !== ' ', id: generateBlockId(),
+        });
+      });
+      return transaction;
+    }));
   }
 
   if (bulletList && listItem) {

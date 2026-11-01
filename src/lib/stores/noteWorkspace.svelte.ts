@@ -545,18 +545,24 @@ class NoteWorkspaceStore {
   highlightedPaneId = $state<string | null>(null);
   private highlightTimeout: ReturnType<typeof setTimeout> | null = null;
   private loaded = false;
+  private storageKey = STORAGE_KEY;
   private eventsRegistered = false;
 
   constructor() {
     this.registerEventHandlers();
   }
 
-  init(): void {
+  init(notesPath?: string): void {
     this.registerEventHandlers();
-    if (this.loaded) return;
+    const storageKey = notesPath === undefined ? this.storageKey
+      : notesPath ? `${STORAGE_KEY}:${encodeURIComponent(notesPath)}` : STORAGE_KEY;
+    if (this.loaded && this.storageKey === storageKey) return;
+    this.storageKey = storageKey;
     this.loaded = true;
+    this.maximizedPaneId = null;
+    this.highlightedPaneId = null;
     if (typeof localStorage === 'undefined') return;
-    const state = parseStoredState(localStorage.getItem(STORAGE_KEY));
+    const state = parseStoredState(localStorage.getItem(this.storageKey));
     this.tabs = state.tabs;
     this.activeTabId = state.activeTabId;
   }
@@ -592,7 +598,6 @@ class NoteWorkspaceStore {
   }
 
   findOpenNote(notePath: string): OpenNoteLocation | null {
-    this.init();
     const existing = findOpenPaneByPath(this.tabs, notePath);
     if (!existing || !existing.leaf.notePath) return null;
     return openNoteLocation(existing.tab, existing.leaf, this.activeTabId);
@@ -1109,7 +1114,6 @@ class NoteWorkspaceStore {
   }
 
   findPaneByPath(tabId: string, notePath: string): NotePaneLeaf | null {
-    this.init();
     const tab = this.tabs.find((item) => item.id === tabId);
     return tab ? findLeafByPath(tab.root, notePath) : null;
   }
@@ -1360,7 +1364,7 @@ class NoteWorkspaceStore {
         : tabs[0]?.id ?? null,
     };
 
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    localStorage.setItem(this.storageKey, JSON.stringify(state));
   }
 }
 

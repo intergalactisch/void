@@ -297,7 +297,7 @@
     border-top-color: var(--accent-primary);
   }
 
-  :global(.workspace-tab[data-pane-move-hover='true']) {
+  :global(.workspace-tab[data-pane-drag-hover='true']) {
     background: var(--surface-base);
     color: var(--text-primary);
     box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-primary) 38%, transparent);

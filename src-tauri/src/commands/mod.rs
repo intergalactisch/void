@@ -27,3 +27,6 @@ pub use sync::*;
 pub use updater::*;
 pub use void_storage::*;
 pub use web_fetch::*;
+
+pub mod lifecycle;
+pub use lifecycle::*;

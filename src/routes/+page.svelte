@@ -1403,7 +1403,7 @@
 
   onMount(() => {
     isMounted = true;
-    noteWorkspaceStore.init();
+    noteWorkspaceStore.init(settingsStore.settings?.notesPath);
 
     const restoredNotePath = noteWorkspaceStore.activeNotePath;
     if (restoredNotePath && !notesStore.selectedPath) {

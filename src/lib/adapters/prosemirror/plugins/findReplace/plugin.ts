@@ -13,7 +13,7 @@
  * commands to those helpers.
  */
 
-import { Plugin, PluginKey, type EditorState, type Transaction } from 'prosemirror-state';
+import { Plugin, PluginKey, TextSelection, type EditorState, type Transaction } from 'prosemirror-state';
 import { Decoration, DecorationSet, type EditorView } from 'prosemirror-view';
 
 export interface FindReplaceState {
@@ -64,15 +64,28 @@ function findAllMatches(doc: EditorState['doc'], state: FindReplaceState): Match
 
   const matches: MatchPosition[] = [];
   doc.descendants((node, pos) => {
-    if (!node.isText) return true;
-    const text = node.text ?? '';
-    for (const match of matcher(text)) {
-      matches.push({
-        from: pos + match.start,
-        to: pos + match.end,
-      });
-    }
-    return true;
+    if (!node.isTextblock) return true;
+    // Marks split text nodes but must not split searchable words. Inline
+    // atoms/hard breaks delimit runs so matches never delete hidden content.
+    let text = '';
+    let start = pos + 1;
+    const flush = () => {
+      for (const match of matcher(text)) {
+        if (match.start === match.end) continue;
+        matches.push({ from: start + match.start, to: start + match.end });
+      }
+      text = '';
+    };
+    node.forEach((child, offset) => {
+      if (child.isText) {
+        if (!text) start = pos + 1 + offset;
+        text += child.text ?? '';
+      } else {
+        flush();
+      }
+    });
+    flush();
+    return false;
   });
   return matches;
 }
@@ -137,7 +150,7 @@ function applyMeta(state: FindReplaceState, meta: FindReplaceMeta, doc: EditorSt
         wholeWord: meta.wholeWord ?? state.wholeWord,
       };
       next.matches = findAllMatches(doc, next);
-      next.activeIndex = next.matches.length > 0 ? 0 : 0;
+      next.activeIndex = 0;
       return next;
     }
     case 'next': {
@@ -173,6 +186,9 @@ function buildDecorations(doc: EditorState['doc'], state: FindReplaceState): Dec
 }
 
 export function createFindReplacePlugin(): Plugin<FindReplaceState> {
+  let cachedDoc: EditorState['doc'] | undefined;
+  let cachedState: FindReplaceState | undefined;
+  let cachedDecorations = DecorationSet.empty;
   return new Plugin<FindReplaceState>({
     key: findReplaceKey,
     state: {
@@ -197,7 +213,12 @@ export function createFindReplacePlugin(): Plugin<FindReplaceState> {
       decorations(state: EditorState) {
         const pluginState = findReplaceKey.getState(state);
         if (!pluginState) return null;
-        return buildDecorations(state.doc, pluginState);
+        if (cachedDoc !== state.doc || cachedState !== pluginState) {
+          cachedDoc = state.doc;
+          cachedState = pluginState;
+          cachedDecorations = buildDecorations(state.doc, pluginState);
+        }
+        return cachedDecorations;
       },
     },
   });
@@ -243,7 +264,7 @@ export function replaceCurrent(view: EditorView, replacement: string): void {
   const tr = view.state.tr.replaceWith(
     match.from,
     match.to,
-    view.state.schema.text(replacement)
+    replacement ? view.state.schema.text(replacement) : []
   );
   view.dispatch(tr);
 }
@@ -256,7 +277,7 @@ export function replaceAll(view: EditorView, replacement: string): number {
   const matches = [...state.matches].sort((a, b) => b.from - a.from);
   let tr = view.state.tr;
   for (const match of matches) {
-    tr = tr.replaceWith(match.from, match.to, view.state.schema.text(replacement));
+    tr = tr.replaceWith(match.from, match.to, replacement ? view.state.schema.text(replacement) : []);
   }
   view.dispatch(tr);
   return matches.length;
@@ -267,10 +288,10 @@ function scrollActiveIntoView(view: EditorView): void {
   if (!state || state.matches.length === 0) return;
   const match = state.matches[state.activeIndex];
   if (!match) return;
-  // Use ProseMirror's scrollIntoView meta on a no-op transaction.
-  const tr = view.state.tr.setSelection(view.state.selection).scrollIntoView();
+  const tr = view.state.tr
+    .setSelection(TextSelection.create(view.state.doc, match.from, match.to))
+    .scrollIntoView();
   view.dispatch(tr);
-  void match; // suppress unused
 }
 
 export function getFindReplaceState(state: EditorState): FindReplaceState | null {

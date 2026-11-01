@@ -8,7 +8,7 @@
  * tab strip data exposure.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { ok } from '$lib/core';
+import { ok, err } from '$lib/core';
 import { MemoryFileSystemAdapter, MemoryLineageStorageAdapter } from '$lib/adapters/memory';
 import { MarkdownAdapter } from '$lib/adapters/markdown/MarkdownAdapter';
 import { MarkdownSerializerAdapter } from '$lib/adapters/markdown/MarkdownSerializerAdapter';
@@ -146,6 +146,104 @@ describe('EditorServiceImpl — multi-tab sessions', () => {
 
   afterEach(() => {
     editor.destroy();
+  });
+
+  it('keeps a closing tab open when newer edits arrive during its save', async () => {
+    await editor.openDocument('a.md');
+    editor.updateDocumentMeta({ title: 'Before close' });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    vi.spyOn(documentAdapter, 'save').mockImplementationOnce(async () => { await gate; return ok(undefined); });
+    const closing = editor.closeTab('a.md');
+    await Promise.resolve();
+    editor.updateDocumentMeta({ title: 'Typed while closing' });
+    release();
+    expect((await closing).ok).toBe(false);
+    expect(editor.getState().tabs).toHaveLength(1);
+    expect(editor.getState().document?.meta.title).toBe('Typed while closing');
+    expect(editor.getState().isDirty).toBe(true);
+    expect((await editor.closeTab('a.md')).ok).toBe(true);
+    const disk = await documentAdapter.load('a.md');
+    expect(disk.ok && disk.value.meta.title).toBe('Typed while closing');
+  });
+
+  it('does not steal focus after switching notes during a closing save', async () => {
+    await editor.openDocument('a.md');
+    await editor.openDocument('b.md');
+    await editor.openDocument('c.md');
+    await editor.switchTab('a.md');
+    editor.updateDocumentMeta({ title: 'Saved A' });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    vi.spyOn(documentAdapter, 'save').mockImplementationOnce(async () => { await gate; return ok(undefined); });
+    const closing = editor.closeTab('a.md');
+    await editor.switchTab('c.md');
+    release();
+    expect((await closing).ok).toBe(true);
+    expect(editor.getState().activePath).toBe('c.md');
+  });
+
+  it('flushes background notes and edits arriving during shutdown', async () => {
+    await editor.openDocument('a.md');
+    editor.updateDocumentMeta({ title: 'Background A' });
+    await editor.openDocument('b.md');
+    editor.updateDocumentMeta({ title: 'Initial B' });
+    const save = documentAdapter.save.bind(documentAdapter);
+    vi.spyOn(documentAdapter, 'save').mockImplementationOnce(async doc => {
+      editor.updateDocumentMeta({ title: 'Latest B' });
+      return save(doc);
+    });
+    expect((await editor.saveAllOpenDocuments()).ok).toBe(true);
+    const a = await documentAdapter.load('a.md');
+    const b = await documentAdapter.load('b.md');
+    expect(a.ok && a.value.meta.title).toBe('Background A');
+    expect(b.ok && b.value.meta.title).toBe('Latest B');
+    expect(editor.getState().tabs.every(tab => !tab.isDirty)).toBe(true);
+    expect(editor.getState().activePath).toBe('b.md');
+  });
+
+  it('retains failed shutdown edits and can retry without reopening notes', async () => {
+    await editor.openDocument('a.md');
+    editor.updateDocumentMeta({ title: 'Keep after failure' });
+    vi.spyOn(documentAdapter, 'save').mockResolvedValueOnce(err(new Error('Disk full')));
+    expect((await editor.saveAllOpenDocuments()).ok).toBe(false);
+    expect(editor.getState().isDirty).toBe(true);
+    expect(editor.getState().isSaving).toBe(false);
+    expect((await editor.saveAllOpenDocuments()).ok).toBe(true);
+    const disk = await documentAdapter.load('a.md');
+    expect(disk.ok && disk.value.meta.title).toBe('Keep after failure');
+  });
+
+  it('refuses shutdown rather than looping forever while notes keep changing', async () => {
+    await editor.openDocument('a.md');
+    editor.updateDocumentMeta({ title: 'Start' });
+    const save = documentAdapter.save.bind(documentAdapter);
+    let edits = 0;
+    const spy = vi.spyOn(documentAdapter, 'save').mockImplementation(async doc => {
+      editor.updateDocumentMeta({ title: 'Edit ' + ++edits });
+      return save(doc);
+    });
+    expect((await editor.saveAllOpenDocuments()).ok).toBe(false);
+    expect(spy).toHaveBeenCalledTimes(3);
+    expect(editor.getState().isDirty).toBe(true);
+  });
+
+  it('reports one failed autosave and retains the dirty document', async () => {
+    vi.useFakeTimers();
+    const failures = vi.fn();
+    events.on('document:save-failed', failures);
+    try {
+      await editor.openDocument('a.md');
+      vi.spyOn(documentAdapter, 'save').mockResolvedValueOnce(err(new Error('Disk full')));
+      editor.updateDocumentMeta({ title: 'Unsaved note' });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(failures).toHaveBeenCalledTimes(1);
+      expect(editor.getState().isDirty).toBe(true);
+      expect(editor.getState().document?.meta.title).toBe('Unsaved note');
+    } finally {
+      events.off('document:save-failed', failures);
+      vi.useRealTimers();
+    }
   });
 
   it('openDocument adds a new tab and activates it', async () => {
@@ -394,6 +492,104 @@ describe('EditorServiceImpl — multi-tab sessions', () => {
     expect(editor.getState().isDirty).toBe(true);
     expect(editor.getState().tabs[0]?.isDirty).toBe(true);
   });
+
+  it('serializes overlapping saves and keeps the newest requested revision on disk', async () => {
+    await editor.openDocument('a.md');
+    editor.updateDocumentMeta({ title: 'First' });
+    const originalSave = documentAdapter.save.bind(documentAdapter);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const save = vi.spyOn(documentAdapter, 'save').mockImplementationOnce(async (document) => {
+      await gate;
+      return originalSave(document);
+    });
+    const first = editor.saveDocument();
+    await Promise.resolve();
+    editor.updateDocumentMeta({ title: 'Second' });
+    const second = editor.saveDocument();
+    expect(save).toHaveBeenCalledTimes(1);
+    release();
+    expect((await first).ok).toBe(true);
+    expect((await second).ok).toBe(true);
+    expect(save).toHaveBeenCalledTimes(2);
+    const disk = await documentAdapter.load('a.md');
+    expect(disk.ok && disk.value.meta.title).toBe('Second');
+    expect(editor.getState().isDirty).toBe(false);
+  });
+
+  it('preserves edits newer than a queued save after switching tabs', async () => {
+    await editor.openDocument('a.md');
+    editor.updateDocumentMeta({ title: 'First' });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    vi.spyOn(documentAdapter, 'save').mockImplementationOnce(async () => { await gate; return ok(undefined); });
+    const first = editor.saveDocument();
+    await Promise.resolve();
+    editor.updateDocumentMeta({ title: 'Second' });
+    const second = editor.saveDocument();
+    editor.updateDocumentMeta({ title: 'Third, still unsaved' });
+    await editor.openDocument('b.md');
+    release();
+    await Promise.all([first, second]);
+    expect(editor.getState().activePath).toBe('b.md');
+    await editor.switchTab('a.md');
+    expect(editor.getState().document?.meta.title).toBe('Third, still unsaved');
+    expect(editor.getState().isDirty).toBe(true);
+  });
+
+  it('saves a background tab without changing the active document', async () => {
+    await editor.openDocument('a.md');
+    editor.updateDocumentMeta({ title: 'Background edit' });
+    await editor.openDocument('b.md');
+    expect((await editor.saveOpenDocument('a.md')).ok).toBe(true);
+    expect(editor.getState().activePath).toBe('b.md');
+    const disk = await documentAdapter.load('a.md');
+    expect(disk.ok && disk.value.meta.title).toBe('Background edit');
+  });
+
+  it('recovers the save queue and saving indicator after an adapter rejection', async () => {
+    await editor.openDocument('a.md');
+    editor.updateDocumentMeta({ title: 'Keep this edit' });
+    vi.spyOn(documentAdapter, 'save').mockRejectedValueOnce(new Error('Disk disconnected'));
+    expect((await editor.saveDocument()).ok).toBe(false);
+    expect(editor.getState().isSaving).toBe(false);
+    expect(editor.getState().isDirty).toBe(true);
+    expect((await editor.saveDocument()).ok).toBe(true);
+    expect(editor.getState().isDirty).toBe(false);
+  });
+
+
+  it('autosaves the edited note after switching to another tab', async () => {
+    vi.useFakeTimers();
+    try {
+      await editor.openDocument('a.md');
+      editor.updateDocumentMeta({ title: 'Save A in the background' });
+      await editor.openDocument('b.md');
+      await vi.advanceTimersByTimeAsync(1000);
+      const disk = await documentAdapter.load('a.md');
+      expect(disk.ok && disk.value.meta.title).toBe('Save A in the background');
+      expect(editor.getState().activePath).toBe('b.md');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('saving a background note does not cancel autosave in the active tab', async () => {
+    vi.useFakeTimers();
+    try {
+      await editor.openDocument('a.md');
+      editor.updateDocumentMeta({ title: 'Background' });
+      await editor.openDocument('b.md');
+      editor.updateDocumentMeta({ title: 'Keep B autosave' });
+      await editor.saveOpenDocument('a.md');
+      await vi.advanceTimersByTimeAsync(1000);
+      const disk = await documentAdapter.load('b.md');
+      expect(disk.ok && disk.value.meta.title).toBe('Keep B autosave');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
 });
 
 describe('EditorServiceImpl — page-link navigation', () => {

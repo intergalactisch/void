@@ -202,6 +202,12 @@ export interface EditorService {
    */
   saveDocument(lineage?: LineageRecordOptions): Promise<Result<void, Error>>;
 
+  /** Flush all open notes; failures and ongoing edits prevent safe shutdown. */
+  saveAllOpenDocuments(): Promise<Result<void, Error>>;
+
+  /** Save an open note without changing the active tab or keyboard focus. */
+  saveOpenDocument(path: string, lineage?: LineageRecordOptions): Promise<Result<void, Error>>;
+
   /**
    * Reveal the current document in the system file manager.
    * Opens the containing folder with the markdown file selected.

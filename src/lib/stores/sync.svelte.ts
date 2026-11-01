@@ -1,3 +1,4 @@
+import { err, ok, type Result } from '$lib/core/result';
 /**
  * Sync Store — Primary adapter for GitHub cloud sync UI.
  *
@@ -39,6 +40,11 @@ interface DeviceAuthSession {
 }
 
 class SyncStore {
+  #previewRequest = 0;
+  #drafts = new Map<string, string>();
+  #draftSave: Promise<Result<void, Error>> = Promise.resolve(ok(undefined));
+  draftSaving = $state(false);
+  draftError = $state<Error | null>(null);
   #service: SyncService | null = null;
   #unsubscribe: (() => void) | null = null;
   #eventUnsubscribe: (() => void) | null = null;
@@ -366,12 +372,47 @@ class SyncStore {
     return this.conflictSession;
   }
 
+  updateConflictDraft(conflictId: string, markdown: string): void {
+    this.#drafts.set(conflictId, markdown);
+    this.draftSaving = true;
+    this.draftError = null;
+    this.#draftSave = this.#draftSave.then(async () => {
+      // Coalesce typing bursts while preserving the latest draft per file.
+      const draft = this.#drafts.get(conflictId);
+      if (draft === undefined || !this.#service) return ok(undefined);
+      try {
+        const saved = await this.#service.saveConflictDraft(conflictId, draft);
+        if (saved.ok && this.#drafts.get(conflictId) === draft) this.#drafts.delete(conflictId);
+        this.draftError = saved.ok ? null : saved.error;
+        return saved;
+      } catch (cause) {
+        const error = cause instanceof Error ? cause : new Error(String(cause));
+        this.draftError = error;
+        return err(error);
+      } finally {
+        this.draftSaving = this.#drafts.size > 0;
+      }
+    });
+  }
+
+  async flushConflictDrafts(): Promise<Result<void, Error>> {
+    for (const [id, draft] of this.#drafts) this.updateConflictDraft(id, draft);
+    const result = await this.#draftSave;
+    if (!result.ok) return result;
+    return this.#drafts.size ? err(new Error('Conflict drafts are not saved yet. Please retry.')) : ok(undefined);
+  }
+
   async previewConflict(conflictId: string): Promise<SyncConflictPreview | null> {
     if (!this.#service) return null;
+    const request = ++this.#previewRequest;
+    this.activeConflictPreview = null;
+    if (!(await this.flushConflictDrafts()).ok || request !== this.#previewRequest) return null;
     const result = await this.run(async () => this.#service!.previewConflict(conflictId));
-    if (!result) return null;
-    this.activeConflictPreview = result.value;
-    return result.value;
+    if (!result || request !== this.#previewRequest) return null;
+    const draft = this.#drafts.get(conflictId);
+    const preview = draft === undefined ? result.value : { ...result.value, mergedMarkdown: draft };
+    this.activeConflictPreview = preview;
+    return preview;
   }
 
   async applyConflictResolution(
@@ -380,6 +421,7 @@ class SyncStore {
     mergedMarkdown?: string,
   ): Promise<boolean> {
     if (!this.#service) return false;
+    if (!(await this.flushConflictDrafts()).ok) return false;
     const result = await this.run(async () =>
       this.#service!.applyConflictResolution(conflictId, resolution, mergedMarkdown),
     );
@@ -392,6 +434,7 @@ class SyncStore {
 
   async resumeConflictResolution(): Promise<boolean> {
     if (!this.#service) return false;
+    if (!(await this.flushConflictDrafts()).ok) return false;
     const result = await this.run(async () => this.#service!.resumeConflictResolution());
     if (!result) return false;
     this.conflictSession = null;
@@ -402,6 +445,7 @@ class SyncStore {
 
   async abortConflictResolution(): Promise<boolean> {
     if (!this.#service) return false;
+    if (!(await this.flushConflictDrafts()).ok) return false;
     const result = await this.run(async () => this.#service!.abortConflictResolution());
     if (!result) return false;
     this.conflictSession = result.value ? cloneSession(result.value) : null;

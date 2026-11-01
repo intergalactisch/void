@@ -16,10 +16,6 @@
   let wholeWord = $state(false);
   let inputRef: HTMLInputElement | null = $state(null);
 
-  // Polling-style read of plugin state. The plugin state is derived from the
-  // editor's transaction stream; this component re-reads on every reactive
-  // tick by depending on uiStore.findBarOpen + the transaction trigger flag
-  // (any editor change signals via editorStore.tabs / .document update).
   let findState = $derived.by(() => {
     if (!uiStore.findBarOpen) return null;
     void editorStore.document;
@@ -41,8 +37,9 @@
 
   $effect(() => {
     if (!uiStore.findBarOpen) return;
-    const trimmed = query.trim();
-    if (!trimmed) {
+    void editorStore.activePaneId;
+    void editorStore.activePath;
+    if (!query) {
       editorStore.setFindQuery('');
       return;
     }
@@ -54,6 +51,7 @@
     uiStore.closeFindBar();
     query = '';
     replacement = '';
+    editorStore.focus();
   }
 
   function next() {
@@ -94,6 +92,7 @@
         type="text"
         class="find-input"
         placeholder="Find in document…"
+        aria-label="Find in document"
         onkeydown={handleKeydown}
         autocomplete="off"
         spellcheck="false"
@@ -101,7 +100,7 @@
       <span class="find-status" aria-live="polite">
         {#if totalMatches > 0}
           {activePosition} / {totalMatches}
-        {:else if query.trim()}
+        {:else if query}
           No matches
         {:else}
           0 / 0
@@ -115,6 +114,7 @@
           onclick={() => (caseSensitive = !caseSensitive)}
           aria-pressed={caseSensitive}
           title="Match case"
+          aria-label="Match case"
         >Aa</button>
         <button
           type="button"
@@ -123,6 +123,7 @@
           onclick={() => (wholeWord = !wholeWord)}
           aria-pressed={wholeWord}
           title="Whole word"
+          aria-label="Whole word"
         >W</button>
         <button
           type="button"
@@ -131,10 +132,11 @@
           onclick={() => (regex = !regex)}
           aria-pressed={regex}
           title="Regular expression"
+          aria-label="Regular expression"
         >.*</button>
       </div>
-      <button type="button" class="nav-btn" onclick={prev} aria-label="Previous match" title="Previous (Shift+Enter)">‹</button>
-      <button type="button" class="nav-btn" onclick={next} aria-label="Next match" title="Next (Enter)">›</button>
+      <button type="button" class="nav-btn" onclick={prev} disabled={totalMatches === 0} aria-label="Previous match" title="Previous (Shift+Enter)">‹</button>
+      <button type="button" class="nav-btn" onclick={next} disabled={totalMatches === 0} aria-label="Next match" title="Next (Enter)">›</button>
       <button type="button" class="close-btn" onclick={close} aria-label="Close">×</button>
     </div>
     {#if uiStore.findBarMode === 'replace'}
@@ -144,7 +146,8 @@
           type="text"
           class="find-input"
           placeholder="Replace with…"
-          onkeydown={(e) => { if (e.key === 'Escape') close(); }}
+          aria-label="Replacement text"
+          onkeydown={handleKeydown}
           autocomplete="off"
           spellcheck="false"
         />
@@ -169,12 +172,14 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
-    min-width: 380px;
+    width: min(440px, calc(100% - 32px));
+    box-sizing: border-box;
   }
 
   .find-row {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 4px;
   }
 
@@ -188,7 +193,7 @@
     border-radius: var(--radius-sm);
     outline: none;
     font-family: inherit;
-    min-width: 0;
+    min-width: 100px;
   }
 
   .find-input:focus {
@@ -265,6 +270,11 @@
     border-radius: var(--radius-sm);
     cursor: pointer;
     line-height: 1;
+  }
+
+  button:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 2px;
   }
 
   .close-btn:hover {

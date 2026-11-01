@@ -1,3 +1,4 @@
+import { isolateHistory } from '../plugins/history';
 /**
  * BlockNodeView - Unified NodeView for all block types
  *
@@ -438,6 +439,7 @@ export class BlockNodeView implements NodeView {
         // Checkbox element
         this.checkboxEl = document.createElement('div');
         this.checkboxEl.className = 'void-todo-checkbox';
+        this.checkboxEl.contentEditable = 'false';
         if (node.attrs.checked) this.checkboxEl.classList.add('is-checked');
         this.checkboxEl.setAttribute('role', 'checkbox');
         this.checkboxEl.setAttribute('aria-checked', String(node.attrs.checked));
@@ -931,7 +933,7 @@ export class BlockNodeView implements NodeView {
       ...node.attrs,
       checked: newChecked,
     });
-    dispatch(tr);
+    dispatch(isolateHistory(tr));
 
     const blockId = (node.attrs.id as string) || '';
     const content = node.textContent;

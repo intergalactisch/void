@@ -615,6 +615,7 @@ export const nodes: Record<string, NodeSpec> = {
    */
   hardBreak: {
     inline: true,
+    linebreakReplacement: true,
     group: 'inline',
     selectable: false,
     parseDOM: [{ tag: 'br' }],
